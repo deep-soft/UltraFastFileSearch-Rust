@@ -17,32 +17,118 @@ use anyhow::{Context as _, Result, bail};
 use super::remove::Effects;
 use crate::commands::update::model::Scope;
 
-/// The production effects implementation. Zero-sized; holds no state.
-pub(crate) struct SystemEffects;
+/// The production effects implementation. Carries the running self-binaries so
+/// they can be skipped in place — the OS locks a running image, so deleting it
+/// directly fails; [`schedule_self_delete`] removes them after this process
+/// exits instead.
+pub(crate) struct SystemEffects {
+    /// Absolute paths of the running self-binaries to skip in-place deletes.
+    self_paths: Vec<PathBuf>,
+    /// Windows: the user chose "elevate at removal time" at the elevation gate,
+    /// so admin-only service removal is routed through a one-shot elevated
+    /// helper (a single UAC prompt) instead of failing non-elevated. Stored but
+    /// never read off Windows (no broker service exists there).
+    #[cfg_attr(
+        not(windows),
+        expect(
+            dead_code,
+            reason = "read only by the Windows UAC service-removal routing"
+        )
+    )]
+    elevate_via_uac: bool,
+}
 
 impl SystemEffects {
-    /// Construct the live effects sink.
-    pub(crate) const fn new() -> Self {
-        Self
+    /// Construct the live effects sink, told which running self-binaries to
+    /// skip in-place (they are deferred to [`schedule_self_delete`]) and
+    /// whether admin-only service removal goes through the Windows UAC helper
+    /// (`elevate_via_uac`; meaningless off Windows).
+    pub(crate) const fn new(self_paths: Vec<PathBuf>, elevate_via_uac: bool) -> Self {
+        Self {
+            self_paths,
+            elevate_via_uac,
+        }
+    }
+
+    /// Whether `path` is one of the running self-binaries (case-insensitive,
+    /// matching the verbatim-stripped form the plan carries).
+    fn is_self(&self, path: &Path) -> bool {
+        let target = path.to_string_lossy();
+        self.self_paths
+            .iter()
+            .any(|self_path| self_path.to_string_lossy().eq_ignore_ascii_case(&target))
     }
 }
 
 impl Effects for SystemEffects {
-    fn stop_process(&mut self, _component: &str, pid: u32) -> Result<()> {
+    fn stop_process(&mut self, component: &str, pid: u32) -> Result<()> {
+        // The daemon's analyzed pid can go stale before execution (the deep
+        // sweep's coverage reload restarts it), so stop the CURRENT daemon:
+        // graceful shutdown RPC first — it needs no OS privileges, so it also
+        // stops an ELEVATED daemon (the no-broker sweep's UAC start) that
+        // taskkill could not touch — then the `uffs --daemon kill` handler
+        // (pid-file/socket discovery), then the recorded pid as a last resort.
+        // Finally wait for the process to actually exit so its image is
+        // unlocked before the runtime binaries are deleted.
+        if component == "daemon" {
+            let stopped = uffs_client::connect_sync::UffsClientSync::connect_raw()
+                .is_ok_and(|mut client| client.shutdown().is_ok());
+            if !stopped
+                && crate::commands::daemon_mgmt::daemon_quiet(&crate::args::DaemonAction::Kill)
+                    .is_err()
+            {
+                terminate_pid(pid)?;
+            }
+            wait_daemon_down();
+            return Ok(());
+        }
         terminate_pid(pid)
     }
 
     fn remove_service(&mut self, service: &str) -> Result<()> {
+        // Non-elevated with the gate's "elevate at removal time" choice: run
+        // the removal in a one-shot elevated helper (this is where the single
+        // UAC prompt appears). Elevated runs remove the service in-process.
+        #[cfg(windows)]
+        if self.elevate_via_uac && !uffs_mft::is_elevated() {
+            return remove_service_via_uac(service);
+        }
         remove_windows_service(service)
     }
 
     fn delete_binaries(&mut self, dir: &Path, stems: &[String]) -> Result<()> {
-        for stem in stems {
-            let path = dir.join(exe_file_name(stem));
-            remove_file_if_present(&path)
-                .with_context(|| format!("removing {}", path.display()))?;
+        // Best-effort across the whole set: one locked file must never trap
+        // the remaining deletions (the original failure mode: a lingering
+        // uffsd.exe aborted the loop and left 21 other binaries in place).
+        let failed: Vec<PathBuf> = stems
+            .iter()
+            .map(|stem| dir.join(exe_file_name(stem)))
+            // A running self-binary can't be deleted in place — defer it.
+            .filter(|path| !self.is_self(path))
+            .filter(|path| remove_file_if_present(path).is_err())
+            .collect();
+        if failed.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        // A just-stopped process can hold its image for a beat after the kill
+        // returns; give it one settle-and-retry pass before reporting.
+        std::thread::sleep(core::time::Duration::from_millis(750));
+        let mut errors: Vec<String> = Vec::new();
+        for path in failed {
+            if let Err(err) = remove_file_if_present(&path) {
+                errors.push(format!("{}: {err}", path.display()));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            bail!(
+                "could not remove {} of {} file(s): {}",
+                errors.len(),
+                stems.len(),
+                errors.join("; ")
+            )
+        }
     }
 
     fn delegate_winget(&mut self, package_id: &str, scope: Scope) -> Result<()> {
@@ -51,6 +137,10 @@ impl Effects for SystemEffects {
 
     #[cfg(windows)]
     fn delete_file(&mut self, path: &Path) -> Result<()> {
+        // A running self-binary can't be deleted in place — defer it.
+        if self.is_self(path) {
+            return Ok(());
+        }
         remove_file_if_present(path).with_context(|| format!("removing {}", path.display()))
     }
 
@@ -109,6 +199,8 @@ fn remove_path_entry_impl(dir: &Path) -> Result<()> {
 /// directly, so just remove them.
 #[cfg(windows)]
 pub(crate) fn schedule_self_delete(paths: &[PathBuf]) -> Result<()> {
+    use std::os::windows::process::CommandExt as _;
+
     if paths.is_empty() {
         return Ok(());
     }
@@ -122,8 +214,13 @@ pub(crate) fn schedule_self_delete(paths: &[PathBuf]) -> Result<()> {
         "ping 127.0.0.1 -n 3 >nul & {} & rem self-delete",
         deletes.join(" & ")
     );
+    // `raw_arg`, NOT `args`: std's default Windows quoting wraps the script in
+    // quotes and backslash-escapes the inner `del "path"` quotes — an escaping
+    // scheme cmd.exe does not understand, so the deferred delete silently never
+    // deleted anything. The raw form hands cmd the `/c` payload verbatim.
     Command::new("cmd")
-        .args(["/c", &script])
+        .raw_arg("/c")
+        .raw_arg(&script)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -142,7 +239,7 @@ pub(crate) fn schedule_self_delete(paths: &[PathBuf]) -> Result<()> {
 }
 
 /// The on-disk file name for a binary stem (`uffsd` -> `uffsd.exe` on Windows).
-fn exe_file_name(stem: &str) -> String {
+pub(crate) fn exe_file_name(stem: &str) -> String {
     #[cfg(windows)]
     {
         format!("{stem}.exe")
@@ -194,6 +291,21 @@ fn run_quiet(command: &mut Command, what: &str) -> Result<()> {
     }
 }
 
+/// Poll until the daemon is no longer reachable over IPC (up to 10s), then
+/// give the OS a short beat to release the process image. Bounded — a wedged
+/// teardown degrades to the delete-side retry, never a hang.
+fn wait_daemon_down() {
+    let deadline = std::time::Instant::now() + core::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if uffs_client::connect_sync::UffsClientSync::connect_raw().is_err() {
+            break;
+        }
+        std::thread::sleep(core::time::Duration::from_millis(250));
+    }
+    // IPC down != image released; the loader lock lags the socket teardown.
+    std::thread::sleep(core::time::Duration::from_millis(500));
+}
+
 /// Stop a process by pid (`taskkill` on Windows, `kill` on Unix).
 fn terminate_pid(pid: u32) -> Result<()> {
     let pid_str = pid.to_string();
@@ -217,9 +329,11 @@ fn stop_command(pid_str: &str) -> Command {
 }
 
 /// Stop + delete the broker Windows service. No-op off Windows (where no such
-/// service exists, so the plan never produces this item).
+/// service exists, so the plan never produces this item). `pub(crate)` so the
+/// hidden `--remove-service-helper` mode (the elevated UAC child) can call the
+/// exact same removal.
 #[cfg(windows)]
-fn remove_windows_service(service: &str) -> Result<()> {
+pub(crate) fn remove_windows_service(service: &str) -> Result<()> {
     // Best-effort stop first; an already-stopped service is fine to delete, so
     // proceed whether or not the stop succeeded.
     match uffs_winsvc::stop(service) {
@@ -235,8 +349,64 @@ fn remove_windows_service(service: &str) -> Result<()> {
 /// plan never produces this item off Windows, so this is never reached; if it
 /// somehow were, erroring is the honest outcome.
 #[cfg(not(windows))]
-fn remove_windows_service(service: &str) -> Result<()> {
+pub(crate) fn remove_windows_service(service: &str) -> Result<()> {
     bail!("cannot remove service {service}: the broker is Windows-only")
+}
+
+/// Marker exit code the `PowerShell` launcher script returns when elevation was
+/// not obtained (the UAC prompt was declined, or `Start-Process -Verb RunAs`
+/// failed) — distinguishable from the helper's own success (0) / failure (1).
+#[cfg(windows)]
+const UAC_NOT_GRANTED_EXIT: i32 = 223;
+
+/// Remove `service` through a one-shot **elevated helper**: relaunch this same
+/// `uffs.exe` via `Start-Process -Verb RunAs` (the single UAC prompt) with the
+/// hidden `--uninstall --remove-service-helper <service>` mode, wait for it,
+/// and map its exit code. A declined UAC prompt degrades gracefully into an
+/// error that names the skipped service and the elevated re-run hint — the
+/// executor records it and the rest of the uninstall continues.
+///
+/// `PowerShell` (not raw `ShellExecuteExW`) keeps this crate `unsafe`-free and
+/// matches the module's shell-out design; `-Wait -PassThru` provides the exit
+/// code, and the `catch` arm turns "UAC declined" into
+/// [`UAC_NOT_GRANTED_EXIT`].
+#[cfg(windows)]
+fn remove_service_via_uac(service: &str) -> Result<()> {
+    let raw_exe = std::env::current_exe().context("locating uffs.exe for the elevated helper")?;
+    let exe = crate::commands::update::strip_verbatim_prefix(raw_exe);
+    let exe_escaped = exe.display().to_string().replace('\'', "''");
+    let service_escaped = service.replace('\'', "''");
+    let script = format!(
+        "try {{ \
+           $p = Start-Process -FilePath '{exe_escaped}' \
+                -ArgumentList '--uninstall','--remove-service-helper','{service_escaped}' \
+                -Verb RunAs -Wait -PassThru -WindowStyle Hidden; \
+           exit $p.ExitCode \
+         }} catch {{ exit {UAC_NOT_GRANTED_EXIT} }}"
+    );
+    let status = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("spawning the elevated service-removal helper")?;
+    match status.code() {
+        Some(0) => {
+            // Trust but verify: the helper said OK, confirm the service is gone.
+            if uffs_winsvc::is_installed(service) {
+                bail!("elevated helper reported success but service {service} is still installed");
+            }
+            Ok(())
+        }
+        // Typed so the executor recognises the decline and LEAVES the broker
+        // (service + its locked binary) as a clean outcome, instead of the raw
+        // Access-denied that deleting the still-running broker's image produces.
+        Some(UAC_NOT_GRANTED_EXIT) => Err(super::remove::ElevationDeclined.into()),
+        other => bail!(
+            "elevated service-removal helper failed (exit {other:?}) — {service} may still \
+             be installed"
+        ),
+    }
 }
 
 /// Delegate removal of a `WinGet`-managed root to `winget uninstall`.
@@ -280,11 +450,16 @@ mod tests {
             std::fs::write(base.join(exe_file_name(stem)), b"binary").unwrap();
         }
 
-        let mut effects = SystemEffects::new();
-        // Deletes the named binaries...
+        // The second stem is treated as the running self-binary — it must be
+        // skipped (left for the deferred self-delete), not removed in place.
+        let self_path = base.join(exe_file_name("uffsd"));
+        let mut effects = SystemEffects::new(vec![self_path.clone()], false);
         effects.delete_binaries(&base, &stems).unwrap();
-        assert!(!base.join(exe_file_name("uffs")).exists());
-        assert!(!base.join(exe_file_name("uffsd")).exists());
+        assert!(
+            !base.join(exe_file_name("uffs")).exists(),
+            "non-self binary removed"
+        );
+        assert!(self_path.exists(), "running self-binary skipped (deferred)");
         // ...and is idempotent on already-absent files.
         effects.delete_binaries(&base, &stems).unwrap();
 

@@ -3,73 +3,234 @@
 
 //! Windows deep-sweep drive coverage for `uffs --uninstall`.
 //!
-//! Before the live cross-drive search, make sure the daemon is running and
-//! indexes every NTFS drive, **offering** to start it and index the missing
-//! drives so the sweep is actually complete. Windows-only: off Windows UFFS
-//! indexes offline MFT captures, not the live filesystem, so there is no live
-//! drive coverage to ensure.
+//! The deep sweep searches the daemon's live index for stray family files, so
+//! it is only as complete as the set of drives the daemon has loaded. Before
+//! the sweep we make sure the daemon covers every NTFS drive; if it does not,
+//! we reload it cleanly — **kill then start** — by calling the exact same
+//! handlers the CLI dispatches for `uffs --daemon kill` / `uffs --daemon
+//! start`, in-process (the daemon spawns as a direct child, identical to a
+//! shell start; an earlier subprocess relaunch made it a grandchild and was
+//! abandoned).
 //!
-//! Best-effort throughout: any RPC failure leaves coverage as-is and the sweep
-//! proceeds against whatever is currently indexed.
+//! Two narration modes: **loud** (`-v` sequential runs — everything prints
+//! live, including the daemon handlers' own lines) and **quiet** (the default
+//! background gather — the daemon handlers are silenced via
+//! [`daemon_mgmt::daemon_quiet`] and the narration is *deferred*: collected as
+//! note strings the caller prints with the final presentation, so nothing ever
+//! garbles the interactive prompt on the main thread).
+//!
+//! Best-effort throughout: any failure leaves coverage as-is and the sweep
+//! proceeds against whatever is currently loaded.
 
 #![cfg(windows)]
 
-use anyhow::Result;
+use core::time::Duration;
+use std::time::Instant;
+
 use uffs_client::connect_sync::UffsClientSync;
 use uffs_mft::platform::{DriveLetter, detect_ntfs_drives};
 
-/// How long to wait for newly-requested drives to finish loading before the
-/// sweep runs. A best-effort cap — a slow HDD index may still be in flight.
-const INDEX_WAIT: core::time::Duration = core::time::Duration::from_secs(120);
+use crate::args::DaemonAction;
+use crate::commands::daemon_mgmt;
 
-/// Ensure the daemon covers every NTFS drive before the deep sweep, offering to
-/// start it and index the missing drives. `confirm` prompts the user (returns
-/// their yes/no). Returns `Ok(())` whether or not coverage was completed — the
-/// caller sweeps regardless.
-///
-/// # Errors
-///
-/// Propagates only a failure of the `confirm` callback itself; daemon/RPC
-/// failures are swallowed (best-effort coverage).
-pub(crate) fn ensure_drive_coverage(confirm: &mut dyn FnMut(&str) -> Result<bool>) -> Result<()> {
+/// How long to wait for the daemon to fully exit after `kill` before starting a
+/// fresh one (a lingering pipe would make `start` see "already running" and
+/// skip the reload).
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(15);
+
+/// Poll interval while waiting for shutdown.
+const POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Whether the daemon already covers every NTFS drive — a cheap RPC check used
+/// by the sweep-elevation decision *before* the gather starts (a daemon with
+/// full coverage needs no reload, elevated or not).
+pub(crate) fn coverage_complete() -> bool {
     let all = detect_ntfs_drives();
     if all.is_empty() {
-        return Ok(());
+        return true;
     }
-    // `connect()` auto-starts the daemon if it is not already running.
-    let Ok(mut client) = UffsClientSync::connect() else {
-        // Could not reach or start a daemon: nothing to cover, sweep as-is.
-        return Ok(());
-    };
-    let indexed: Vec<DriveLetter> = client
-        .drives()
-        .map(|response| {
-            response
-                .drives
-                .into_iter()
-                .map(|drive| drive.letter)
-                .collect()
-        })
-        .unwrap_or_default();
+    let managed = current_managed_drives();
+    all.iter().all(|drive| managed.contains(drive))
+}
+
+/// Ensure the daemon covers every NTFS drive before the deep sweep. No-op when
+/// coverage is already complete; otherwise reload the daemon (kill + start)
+/// via the real CLI handlers — with `elevate_daemon` the start requests a UAC
+/// prompt (the user opted in at the sweep gate: without the Access Broker a
+/// daemon can only read the MFT elevated). Returns the deferred narration
+/// notes (always empty in loud mode, where everything printed live).
+/// Best-effort: any failure just means the sweep covers whatever is loaded.
+pub(crate) fn ensure_drive_coverage(quiet: bool, elevate_daemon: bool) -> Vec<String> {
+    let mut notes: Vec<String> = Vec::new();
+    let all = detect_ntfs_drives();
+    if all.is_empty() {
+        return notes;
+    }
+    let managed = current_managed_drives();
     let missing: Vec<DriveLetter> = all
-        .into_iter()
-        .filter(|drive| !indexed.contains(drive))
+        .iter()
+        .filter(|drive| !managed.contains(drive))
+        .copied()
         .collect();
     if missing.is_empty() {
-        return Ok(());
+        // The daemon already covers every system drive — nothing to do.
+        return notes;
     }
+    reload_daemon_for_coverage(&all, &missing, quiet, elevate_daemon, &mut notes);
+    notes
+}
+
+/// The drive letters the daemon currently manages (any tier). Empty when the
+/// daemon is not running or did not answer.
+fn current_managed_drives() -> Vec<DriveLetter> {
+    UffsClientSync::connect_raw()
+        .map_or_else(|_| Vec::new(), |mut client| managed_letters(&mut client))
+}
+
+/// Read the managed drive letters from `status_drives` (every row, regardless
+/// of tier). Any RPC error yields an empty list (best-effort).
+fn managed_letters(client: &mut UffsClientSync) -> Vec<DriveLetter> {
+    client.status_drives().map_or_else(
+        |_| Vec::new(),
+        |resp| resp.drives.into_iter().map(|row| row.letter).collect(),
+    )
+}
+
+/// Reload the daemon so it covers every drive: `kill`, wait for it to exit,
+/// then `start` (blocks until Ready = every drive loaded). Both steps go
+/// through the real CLI handlers — silenced ones in quiet mode.
+fn reload_daemon_for_coverage(
+    all: &[DriveLetter],
+    missing: &[DriveLetter],
+    quiet: bool,
+    elevate_daemon: bool,
+    notes: &mut Vec<String>,
+) {
     let list = missing
         .iter()
-        .map(|drive| format!("{drive}:"))
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    let prompt = format!(
-        "\nThe deep sweep searches every indexed drive. Not yet indexed: {list}.\n\
-         Index {list} now for a complete sweep? [y/N] "
-    );
-    if confirm(&prompt)? && client.load_drive_letters(&missing, false).is_ok() {
-        // Give the freshly-requested drives a chance to load before we search.
-        let _ready = client.await_ready(INDEX_WAIT);
+    // Loud mode announces the attempt live; quiet mode stays silent until the
+    // OUTCOME is known — a pre-declared "reloaded" note would contradict a later
+    // start failure (e.g. a declined UAC prompt), which is exactly what the user
+    // saw. The truthful note is pushed only once `start` actually succeeds.
+    if !quiet {
+        emit(
+            quiet,
+            notes,
+            format!(
+                "\nDaemon is not indexing every drive (missing {list}; {covered} of {total} \
+                 covered).\nReloading it (kill + start) for a complete deep sweep:",
+                covered = all.len().saturating_sub(missing.len()),
+                total = all.len(),
+            ),
+        );
     }
-    Ok(())
+
+    if let Err(err) = run_handler(quiet, &DaemonAction::Kill) {
+        emit(
+            quiet,
+            notes,
+            format!(
+                "\nNote: could not stop the running daemon ({err}).\n\
+                   The deep sweep will scan the drives already indexed."
+            ),
+        );
+        return;
+    }
+    wait_until_daemon_down();
+
+    if let Err(err) = run_handler(quiet, &start_action(elevate_daemon)) {
+        emit(quiet, notes, start_failure_note(elevate_daemon, &err));
+        return;
+    }
+
+    // Success: the daemon is back with full coverage, so the note is truthful.
+    if quiet {
+        notes.push(format!(
+            "\nNote: the index daemon was restarted to cover every drive for the deep\n\
+             sweep (it was missing {list})."
+        ));
+    }
+
+    let managed = current_managed_drives();
+    let covered = all.iter().filter(|drive| managed.contains(drive)).count();
+    if covered < all.len() {
+        emit(
+            quiet,
+            notes,
+            format!(
+                "  daemon covers {covered} of {total} drive(s); the deep sweep will scan those.",
+                total = all.len(),
+            ),
+        );
+    }
+}
+
+/// A coherent note for a failed coverage start — the elevated no-broker case
+/// names the likely cause (a declined UAC prompt) so the message does not read
+/// as a bug. Never claims the daemon "was reloaded" (it was not).
+fn start_failure_note(elevate_daemon: bool, err: &anyhow::Error) -> String {
+    if elevate_daemon {
+        format!(
+            "\nNote: the elevated index daemon a full deep sweep needs could not be\n\
+             started (the UAC prompt was likely declined: {err}).\n\
+             The deep sweep will scan the drives already indexed."
+        )
+    } else {
+        format!(
+            "\nNote: the index daemon could not be started ({err}).\n\
+             The deep sweep will scan the drives already indexed."
+        )
+    }
+}
+
+/// Dispatch `action` through the CLI handlers — the silenced variant in quiet
+/// mode so background work never prints over the interactive prompt.
+fn run_handler(quiet: bool, action: &DaemonAction) -> anyhow::Result<()> {
+    if quiet {
+        daemon_mgmt::daemon_quiet(action)
+    } else {
+        daemon_mgmt::daemon(action)
+    }
+}
+
+/// Route one narration line: printed live in loud mode, deferred as a note in
+/// quiet mode (the caller prints notes with the final presentation).
+#[expect(clippy::print_stdout, reason = "CLI progress output (loud mode only)")]
+fn emit(quiet: bool, notes: &mut Vec<String>, line: String) {
+    if quiet {
+        notes.push(line);
+    } else {
+        println!("{line}");
+    }
+}
+
+/// The [`DaemonAction::Start`] a bare `uffs --daemon start` produces: auto-
+/// discover every NTFS drive, use the cache, default logging. `elevate`
+/// requests the UAC prompt (`--daemon start --elevate`) for the no-broker
+/// sweep path the user opted into.
+fn start_action(elevate: bool) -> DaemonAction {
+    DaemonAction::Start {
+        mft_file: Vec::new(),
+        data_dir: None,
+        drives: Vec::new(),
+        no_cache: false,
+        log_level: "info".to_owned(),
+        log_file: None,
+        elevate,
+    }
+}
+
+/// Poll until the daemon is no longer reachable (fully shut down) or
+/// [`SHUTDOWN_WAIT`] elapses.
+fn wait_until_daemon_down() {
+    let deadline = Instant::now() + SHUTDOWN_WAIT;
+    while Instant::now() < deadline {
+        if UffsClientSync::connect_raw().is_err() {
+            return;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
 }

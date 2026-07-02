@@ -19,10 +19,22 @@ use super::args::{UninstallArgs, UninstallScope};
 use super::inventory::{ArtifactKind, BrokerServiceState, Inventory};
 #[cfg(windows)]
 use super::sweep::StrayHit;
-use crate::commands::update::model::{Channel, DetectionReport, InstallRoot, Scope};
+use crate::commands::update::model::{Channel, Component, DetectionReport, InstallRoot, Scope};
 
 /// The `WinGet` package id UFFS publishes under.
 pub(crate) const WINGET_PACKAGE_ID: &str = "SkyLLC.UFFS";
+
+/// Heading of the shutdown group (daemon stop + broker service removal). Shared
+/// so `RemovalPlan::ensure_daemon_shutdown` (Windows-only) can find / recreate
+/// it verbatim.
+const SHUTDOWN_GROUP_TITLE: &str = "Shutdown (stopped last)";
+
+/// Heading of the data / cache / config group (the shutdown group must precede
+/// it — a running daemon holds handles inside these dirs).
+const DATA_GROUP_TITLE: &str = "Data / cache / config";
+
+/// Heading of the runtime-binaries group (deletable only after shutdown).
+const RUNTIME_GROUP_TITLE: &str = "Runtime binaries (after shutdown)";
 
 /// The concrete target of a plan item: everything the executor needs, and
 /// everything the renderer describes. Group ordering (in [`build_plan`]) plus
@@ -182,6 +194,89 @@ impl RemovalPlan {
         self.items().any(|item| item.needs_elevation)
     }
 
+    /// Drop every item that needs Administrator (the broker service + its
+    /// process), removing any group left empty. Lets a non-elevated run remove
+    /// everything it *can* and leave the broker for an elevated re-run. Returns
+    /// the dropped items' descriptions so the final summary can list exactly
+    /// what this run skips.
+    pub(crate) fn drop_elevation_required(&mut self) -> Vec<String> {
+        let mut dropped: Vec<String> = Vec::new();
+        for group in &mut self.groups {
+            group.items.retain(|item| {
+                if item.needs_elevation {
+                    dropped.push(item.target.describe());
+                    return false;
+                }
+                true
+            });
+        }
+        self.groups.retain(|group| !group.items.is_empty());
+        dropped
+    }
+
+    /// Fill in the reclaim bytes of every binary-delete item, so the summary's
+    /// "Reclaims ~N" reflects the binaries too (not just the data dirs).
+    /// Statting files is IO, which this pure module leaves to the caller:
+    /// `size_of` maps a `(dir, stems)` binary-delete target to its on-disk
+    /// total (best-effort — an absent file contributes 0). `WinGet`
+    /// delegations and directory / process items are untouched (winget owns
+    /// its bytes; dir sizes already came from the inventory).
+    pub(crate) fn size_binaries(&mut self, size_of: impl Fn(&Path, &[String]) -> u64) {
+        for item in self.groups.iter_mut().flat_map(|group| &mut group.items) {
+            if let PlanTarget::DeleteBinaries { dir, stems } = &item.target {
+                item.bytes = size_of(dir, stems);
+            }
+        }
+    }
+
+    /// Make sure the plan stops the daemon at `pid` before its binary is
+    /// deleted. The deep sweep can *start* the daemon (the no-broker path's UAC
+    /// start) **after** the plan was snapshotted, so `report.running` had none
+    /// and the shutdown group carries no stop for it — without this the
+    /// freshly-started, possibly elevated daemon keeps its image locked and the
+    /// runtime-binary delete fails with Access-denied. No-op when a daemon stop
+    /// already exists. The executor stops it with a graceful shutdown RPC (no
+    /// caller elevation needed), so the elevation obtained to *start* it need
+    /// not be re-acquired to stop it.
+    #[cfg(windows)]
+    pub(crate) fn ensure_daemon_shutdown(&mut self, pid: u32) {
+        let already = self.items().any(|item| {
+            matches!(&item.target, PlanTarget::StopProcess { component, .. } if component == "daemon")
+        });
+        if already {
+            return;
+        }
+        let stop = PlanItem {
+            target: PlanTarget::StopProcess {
+                component: Component::Daemon.label().to_owned(),
+                pid,
+            },
+            needs_elevation: false,
+            scope: ItemScope::Any,
+            bytes: 0,
+        };
+        // Prepend to the existing shutdown group, or create it just before the
+        // data / runtime-binary groups it must precede (Windows locks the image
+        // of a running process, so the stop has to run first).
+        if let Some(group) = self
+            .groups
+            .iter_mut()
+            .find(|group| group.title == SHUTDOWN_GROUP_TITLE)
+        {
+            group.items.insert(0, stop);
+            return;
+        }
+        let at = self
+            .groups
+            .iter()
+            .position(|group| group.title == DATA_GROUP_TITLE || group.title == RUNTIME_GROUP_TITLE)
+            .unwrap_or(self.groups.len());
+        self.groups.insert(at, PlanGroup {
+            title: SHUTDOWN_GROUP_TITLE,
+            items: vec![stop],
+        });
+    }
+
     /// Number of items across all groups.
     pub(crate) fn item_count(&self) -> usize {
         self.groups.iter().map(|group| group.items.len()).sum()
@@ -206,63 +301,24 @@ pub(crate) fn build_plan(
 ) -> RemovalPlan {
     let mut groups: Vec<PlanGroup> = Vec::new();
 
-    // 1. Services (the broker, elevated) — removed first conceptually.
-    if inventory.broker_service == BrokerServiceState::Installed {
-        let item = PlanItem {
-            target: PlanTarget::RemoveService {
-                service: uffs_broker_protocol::SERVICE_NAME.to_owned(),
-            },
-            needs_elevation: true,
-            scope: ItemScope::Machine,
-            bytes: 0,
-        };
-        push_group(&mut groups, "Services", vec![item], args.scope);
-    }
+    // The working tools stay alive until the very end: tool binaries first,
+    // then PATH, then the shutdown of the running parts (daemon process +
+    // broker service), then the data dirs they had open, and finally the
+    // runtime binaries whose images were locked until that shutdown. The
+    // running uffs.exe / uffs-update.exe are deferred past process exit
+    // (self-delete) by the executor.
 
-    // 2. Processes (stopped before their binaries are deleted).
-    let processes: Vec<PlanItem> = report
-        .running
+    // 1. Tool binaries — per root: unmanaged/dev delete, winget delegate. The
+    // runtime binaries (daemon, broker, MCP servers) are split into the final
+    // group below: their images are locked while those processes/services run.
+    let binaries: Vec<PlanItem> = report
+        .roots
         .iter()
-        .map(|process| PlanItem {
-            target: PlanTarget::StopProcess {
-                component: process.component.label().to_owned(),
-                pid: process.pid,
-            },
-            needs_elevation: false,
-            scope: ItemScope::Any,
-            bytes: 0,
-        })
+        .filter_map(|root| binary_item(root, StemSet::Tools))
         .collect();
-    push_group(
-        &mut groups,
-        "Processes (stopped first)",
-        processes,
-        args.scope,
-    );
-
-    // 3. Binaries — per root: unmanaged/dev delete, winget delegate.
-    let binaries: Vec<PlanItem> = report.roots.iter().filter_map(binary_item).collect();
     push_group(&mut groups, "Binaries", binaries, args.scope);
 
-    // 4. Data / cache / config dirs that exist (skip config under --keep-config).
-    let dirs: Vec<PlanItem> = inventory
-        .dirs
-        .iter()
-        .filter(|dir| dir.exists)
-        .filter(|dir| !(args.keep_config && dir.kind == ArtifactKind::Config))
-        .map(|dir| PlanItem {
-            target: PlanTarget::DeleteDir {
-                path: dir.path.clone(),
-                label: dir.kind.label(),
-            },
-            needs_elevation: false,
-            scope: ItemScope::User,
-            bytes: dir.size_bytes,
-        })
-        .collect();
-    push_group(&mut groups, "Data / cache / config", dirs, args.scope);
-
-    // 5. PATH entries that point at a removed unmanaged/dev root that is
+    // 2. PATH entries that point at a removed unmanaged/dev root that is
     // *dedicated* to UFFS (only uffs* files) — provably ours, so safe to drop. A
     // shared bin dir (~/bin, ~/.local/bin) is filtered out upstream and never
     // appears here. WinGet roots are managed by winget. Skipped under --no-path.
@@ -294,6 +350,69 @@ pub(crate) fn build_plan(
             .collect();
         push_group(&mut groups, "PATH", path_items, args.scope);
     }
+
+    // 3. Shutdown of the running parts — LAST among the live pieces, so the
+    // tooling stays usable during the run. The broker is a LocalSystem
+    // **service** — `taskkill` can't stop it (returns exit 128, and the SCM
+    // would just restart it), so it is never a StopProcess item; the
+    // RemoveService item stops + deletes it via `sc`. The daemon / MCP are
+    // ordinary user-owned processes, so a plain stop applies and needs no
+    // admin. (At execution the daemon is re-discovered by its pid file — the
+    // analyzed pid can go stale when the deep sweep reloads it.)
+    let mut shutdown: Vec<PlanItem> = report
+        .running
+        .iter()
+        .filter(|process| !matches!(process.component, Component::Broker))
+        .map(|process| PlanItem {
+            target: PlanTarget::StopProcess {
+                component: process.component.label().to_owned(),
+                pid: process.pid,
+            },
+            needs_elevation: false,
+            scope: ItemScope::Any,
+            bytes: 0,
+        })
+        .collect();
+    if inventory.broker_service == BrokerServiceState::Installed {
+        shutdown.push(PlanItem {
+            target: PlanTarget::RemoveService {
+                service: uffs_broker_protocol::SERVICE_NAME.to_owned(),
+            },
+            needs_elevation: true,
+            scope: ItemScope::Machine,
+            bytes: 0,
+        });
+    }
+    push_group(&mut groups, SHUTDOWN_GROUP_TITLE, shutdown, args.scope);
+
+    // 4. Data / cache / config dirs that exist (skip config under
+    // --keep-config). After the daemon shutdown: a running daemon holds open
+    // handles (pid file, socket, mmap'd caches) inside these dirs.
+    let dirs: Vec<PlanItem> = inventory
+        .dirs
+        .iter()
+        .filter(|dir| dir.exists)
+        .filter(|dir| !(args.keep_config && dir.kind == ArtifactKind::Config))
+        .map(|dir| PlanItem {
+            target: PlanTarget::DeleteDir {
+                path: dir.path.clone(),
+                label: dir.kind.label(),
+            },
+            needs_elevation: false,
+            scope: ItemScope::User,
+            bytes: dir.size_bytes,
+        })
+        .collect();
+    push_group(&mut groups, DATA_GROUP_TITLE, dirs, args.scope);
+
+    // 5. Runtime binaries — deletable only now that their processes/services
+    // are stopped (Windows locks a running image).
+    let runtime: Vec<PlanItem> = report
+        .roots
+        .iter()
+        .filter_map(|root| binary_item(root, StemSet::Runtime))
+        .collect();
+    push_group(&mut groups, RUNTIME_GROUP_TITLE, runtime, args.scope);
 
     RemovalPlan { groups }
 }
@@ -336,8 +455,32 @@ fn paths_equal_ignore_case(left: &Path, right: &Path) -> bool {
         .eq_ignore_ascii_case(&right.to_string_lossy())
 }
 
-/// Build the per-root binary plan item, or `None` for an empty root.
-fn binary_item(root: &InstallRoot) -> Option<PlanItem> {
+/// Binary stems whose images are locked while the resident parts run (the
+/// daemon, the broker service, the MCP servers). Deleted in the final plan
+/// group, after the shutdown items; every other stem is a plain tool binary.
+const RUNTIME_STEMS: &[&str] = &["uffsd", "uffs-broker", "uffsmcp", "uffs-mcp-http"];
+
+/// Which slice of a root's binaries a [`binary_item`] call covers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StemSet {
+    /// Plain tool binaries — deletable any time (group 1).
+    Tools,
+    /// [`RUNTIME_STEMS`] — deletable only after the shutdown group.
+    Runtime,
+}
+
+/// Whether `stem` names a runtime binary (see [`RUNTIME_STEMS`]).
+fn is_runtime_stem(stem: &str) -> bool {
+    RUNTIME_STEMS
+        .iter()
+        .any(|runtime| runtime.eq_ignore_ascii_case(stem))
+}
+
+/// Build the per-root binary plan item for the requested stem set, or `None`
+/// when the root has no matching binaries. A `WinGet` root delegates whole to
+/// `winget uninstall` in the Tools pass (winget owns the stop/delete order for
+/// its own package), so its Runtime pass is empty.
+fn binary_item(root: &InstallRoot, set: StemSet) -> Option<PlanItem> {
     if root.binaries.is_empty() {
         return None;
     }
@@ -348,15 +491,31 @@ fn binary_item(root: &InstallRoot) -> Option<PlanItem> {
         ItemScope::User
     };
     let target = match root.channel {
-        Channel::WinGet => PlanTarget::DelegateWinget {
-            package_id: WINGET_PACKAGE_ID.to_owned(),
-            scope: root.scope,
-            dir: root.dir.clone(),
-        },
-        Channel::Unmanaged | Channel::DevBuild | Channel::Unknown => PlanTarget::DeleteBinaries {
-            dir: root.dir.clone(),
-            stems: root.binaries.iter().map(|bin| bin.name.clone()).collect(),
-        },
+        Channel::WinGet => {
+            if set == StemSet::Runtime {
+                return None;
+            }
+            PlanTarget::DelegateWinget {
+                package_id: WINGET_PACKAGE_ID.to_owned(),
+                scope: root.scope,
+                dir: root.dir.clone(),
+            }
+        }
+        Channel::Unmanaged | Channel::DevBuild | Channel::Unknown => {
+            let stems: Vec<String> = root
+                .binaries
+                .iter()
+                .filter(|bin| (set == StemSet::Runtime) == is_runtime_stem(&bin.name))
+                .map(|bin| bin.name.clone())
+                .collect();
+            if stems.is_empty() {
+                return None;
+            }
+            PlanTarget::DeleteBinaries {
+                dir: root.dir.clone(),
+                stems,
+            }
+        }
     };
     Some(PlanItem {
         target,
@@ -421,276 +580,4 @@ const fn scope_admits(requested: UninstallScope, item: ItemScope) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    #[cfg(windows)]
-    use super::build_stray_plan;
-    use super::{PlanTarget, RemovalPlan, build_plan};
-    use crate::commands::uninstall::args::{UninstallArgs, UninstallScope};
-    use crate::commands::uninstall::inventory::{
-        ArtifactDir, ArtifactKind, BrokerServiceState, Inventory,
-    };
-    use crate::commands::update::model::{
-        BinaryInfo, Channel, Component, DetectionReport, InstallRoot, RunningProcess, Scope,
-    };
-
-    fn root(channel: Channel, scope: Scope, dir: &str) -> InstallRoot {
-        InstallRoot {
-            dir: PathBuf::from(dir),
-            channel,
-            scope,
-            anchored_by: Vec::new(),
-            binaries: vec![BinaryInfo {
-                name: "uffs".to_owned(),
-                version: Some("0.6.16".to_owned()),
-            }],
-        }
-    }
-
-    fn inventory(broker: BrokerServiceState, config_size: u64) -> Inventory {
-        Inventory {
-            dirs: vec![
-                ArtifactDir {
-                    kind: ArtifactKind::Cache,
-                    path: PathBuf::from("/x/cache"),
-                    exists: true,
-                    size_bytes: 2048,
-                },
-                ArtifactDir {
-                    kind: ArtifactKind::Config,
-                    path: PathBuf::from("/x/config"),
-                    exists: true,
-                    size_bytes: config_size,
-                },
-            ],
-            broker_service: broker,
-        }
-    }
-
-    fn has_target(plan: &RemovalPlan, predicate: impl Fn(&PlanTarget) -> bool) -> bool {
-        plan.items().any(|item| predicate(&item.target))
-    }
-
-    /// Build a plan with no PATH entries (PATH has its own dedicated test).
-    fn built(report: &DetectionReport, inventory: &Inventory, args: &UninstallArgs) -> RemovalPlan {
-        build_plan(report, inventory, args, &[])
-    }
-
-    #[test]
-    fn winget_root_is_delegated_not_deleted() {
-        let report = DetectionReport {
-            roots: vec![root(Channel::WinGet, Scope::User, r"C:\winget\uffs")],
-            running: Vec::new(),
-        };
-        let plan = built(
-            &report,
-            &inventory(BrokerServiceState::Absent, 1024),
-            &UninstallArgs::default(),
-        );
-        assert!(has_target(&plan, |target| matches!(
-            target,
-            PlanTarget::DelegateWinget { .. }
-        )));
-        assert!(!has_target(&plan, |target| matches!(
-            target,
-            PlanTarget::DeleteBinaries { .. }
-        )));
-    }
-
-    #[test]
-    fn machine_root_needs_elevation() {
-        let report = DetectionReport {
-            roots: vec![root(
-                Channel::Unmanaged,
-                Scope::Machine,
-                r"C:\Program Files\uffs",
-            )],
-            running: Vec::new(),
-        };
-        let plan = built(
-            &report,
-            &inventory(BrokerServiceState::Absent, 1024),
-            &UninstallArgs::default(),
-        );
-        assert!(plan.requires_elevation());
-    }
-
-    #[test]
-    fn service_present_requires_elevation_and_is_first() {
-        let report = DetectionReport {
-            roots: Vec::new(),
-            running: Vec::new(),
-        };
-        let plan = built(
-            &report,
-            &inventory(BrokerServiceState::Installed, 1024),
-            &UninstallArgs::default(),
-        );
-        assert!(plan.requires_elevation());
-        assert!(has_target(&plan, |target| matches!(
-            target,
-            PlanTarget::RemoveService { .. }
-        )));
-        assert_eq!(plan.groups.first().expect("a group").title, "Services");
-    }
-
-    #[test]
-    fn keep_config_drops_the_config_dir() {
-        let report = DetectionReport {
-            roots: Vec::new(),
-            running: Vec::new(),
-        };
-        let inv = inventory(BrokerServiceState::Absent, 4096);
-        let with_config = built(&report, &inv, &UninstallArgs::default());
-        let keep = UninstallArgs {
-            keep_config: true,
-            ..UninstallArgs::default()
-        };
-        let without_config = built(&report, &inv, &keep);
-        assert!(with_config.total_bytes() > without_config.total_bytes());
-    }
-
-    #[test]
-    fn scope_user_excludes_the_machine_service() {
-        let report = DetectionReport {
-            roots: Vec::new(),
-            running: Vec::new(),
-        };
-        let user_only = UninstallArgs {
-            scope: UninstallScope::User,
-            ..UninstallArgs::default()
-        };
-        let plan = built(
-            &report,
-            &inventory(BrokerServiceState::Installed, 1024),
-            &user_only,
-        );
-        assert!(!has_target(&plan, |target| matches!(
-            target,
-            PlanTarget::RemoveService { .. }
-        )));
-        assert!(!plan.requires_elevation());
-    }
-
-    #[test]
-    fn running_process_becomes_a_stop_item() {
-        let report = DetectionReport {
-            roots: Vec::new(),
-            running: vec![RunningProcess {
-                component: Component::Daemon,
-                pid: 4242,
-                image_path: None,
-                command_line: None,
-                version: None,
-            }],
-        };
-        let plan = built(
-            &report,
-            &inventory(BrokerServiceState::Absent, 1024),
-            &UninstallArgs::default(),
-        );
-        assert!(has_target(&plan, |target| matches!(
-            target,
-            PlanTarget::StopProcess { .. }
-        )));
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn stray_plan_is_one_group_of_unprivileged_delete_file_items() {
-        use crate::commands::uninstall::sweep::StrayHit;
-
-        assert!(build_stray_plan(&[]).is_empty(), "no strays -> empty plan");
-        let strays = vec![
-            StrayHit {
-                path: PathBuf::from("/home/me/Downloads/uffs"),
-                version: Some("0.5.0".to_owned()),
-            },
-            StrayHit {
-                path: PathBuf::from("/tmp/x_compact.uffs"),
-                version: None,
-            },
-        ];
-        let plan = build_stray_plan(&strays);
-        assert_eq!(plan.item_count(), 2);
-        assert!(
-            plan.items()
-                .all(|item| matches!(item.target, PlanTarget::DeleteFile { .. })),
-            "every stray item is a DeleteFile"
-        );
-        assert!(
-            !plan.requires_elevation(),
-            "strays never require up-front elevation (best-effort on failure)"
-        );
-    }
-
-    #[test]
-    fn path_entry_matching_a_removed_root_is_offered_and_respects_no_path() {
-        let report = DetectionReport {
-            roots: vec![root(Channel::Unmanaged, Scope::User, r"C:\Users\me\bin")],
-            running: Vec::new(),
-        };
-        let inv = inventory(BrokerServiceState::Absent, 1024);
-        // The 4th arg is the already-vetted removable-dir set; a case-insensitive
-        // match to the removed root → offered. (Exclusivity vetting is tested in
-        // analyze::removable_path_dirs; here we exercise build_plan's emission.)
-        let on_path = [PathBuf::from(r"c:\users\me\bin")];
-        let offered = build_plan(&report, &inv, &UninstallArgs::default(), &on_path);
-        assert!(has_target(&offered, |target| matches!(
-            target,
-            PlanTarget::RemovePathEntry { .. }
-        )));
-        // --no-path suppresses the PATH group entirely.
-        let no_path = UninstallArgs {
-            no_path: true,
-            ..UninstallArgs::default()
-        };
-        let suppressed = build_plan(&report, &inv, &no_path, &on_path);
-        assert!(!has_target(&suppressed, |target| matches!(
-            target,
-            PlanTarget::RemovePathEntry { .. }
-        )));
-        // A PATH entry that does not match any root is never touched.
-        let unrelated = [PathBuf::from(r"C:\unrelated")];
-        let untouched = build_plan(&report, &inv, &UninstallArgs::default(), &unrelated);
-        assert!(!has_target(&untouched, |target| matches!(
-            target,
-            PlanTarget::RemovePathEntry { .. }
-        )));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unix_user_writable_root_skips_escalation_root_owned_flags_it() {
-        use std::path::Path;
-
-        use super::binaries_need_escalation;
-        // The temp dir is user-writable → removable without sudo.
-        assert!(!binaries_need_escalation(
-            Scope::Unknown,
-            &std::env::temp_dir()
-        ));
-        // A non-existent / unwritable path → flagged for escalation.
-        assert!(binaries_need_escalation(
-            Scope::Unknown,
-            Path::new("/nonexistent/uffs-escalation-probe")
-        ));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_escalation_follows_machine_scope() {
-        use std::path::Path;
-
-        use super::binaries_need_escalation;
-        assert!(binaries_need_escalation(
-            Scope::Machine,
-            Path::new(r"C:\Program Files\uffs")
-        ));
-        assert!(!binaries_need_escalation(
-            Scope::User,
-            Path::new(r"C:\Users\me\bin")
-        ));
-    }
-}
+mod tests;
