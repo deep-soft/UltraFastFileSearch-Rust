@@ -14,6 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.18] - 2026-06-29
+
+### Changed: `uffs --uninstall` now finds every copy across the system
+
+Uninstall discovers UFFS wherever it actually lives, not just the running copy.
+It scans `PATH` and the standard binary directories (`~/bin`, `~/.local/bin`,
+`~/.cargo/bin`, `/usr/local/bin`, `/opt/homebrew/bin`) with a stat-only,
+which-style lookup (never a filesystem walk), reusing the real channel/scope
+classifier so a WinGet copy is still delegated to `winget` and a root-owned
+location is still flagged for elevation. Retired and optional binary names
+(`uffs-daemon`, `uffs-mcp`, the legacy `uffs_*` names) are swept too. PATH
+cleanup now only touches a directory that is exclusively UFFS, so a shared
+`~/bin` full of your other tools is left untouched.
+
+On Windows, where UFFS indexes the live drives, uninstall also offers to start
+the daemon and index any missing NTFS drives, then asks UFFS itself for stray
+copies anywhere on the system, versions them, and removes them under a separate
+confirmation (a copy you placed yourself might be among them). The coverage
+offer runs under `--dry-run` too, since starting and indexing are
+non-destructive; only the deletions are withheld.
+
 ### Added — one-line macOS/Linux installer (`install.sh`)
 
 `curl -fsSL https://raw.githubusercontent.com/skyllc-ai/UltraFastFileSearch/main/install.sh | bash`
@@ -2532,7 +2553,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.17...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.18...HEAD
+[0.6.18]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.17...v0.6.18
 [0.6.17]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.15...v0.6.17
 [0.6.15]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.14...v0.6.15
 [0.6.14]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.13...v0.6.14
