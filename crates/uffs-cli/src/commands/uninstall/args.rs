@@ -56,10 +56,18 @@ pub(crate) struct UninstallArgs {
     pub(crate) no_path: bool,
     /// `--json`: emit the analysis + plan as machine-readable JSON.
     pub(crate) json: bool,
+    /// `-v` / `--verbose`: show the full binary resolution table, artifact
+    /// inventory, and deep-sweep diagnostics (default: a one-line summary).
+    pub(crate) verbose: bool,
     /// `--scope`: restrict to user / machine / all (default `all`).
     pub(crate) scope: UninstallScope,
     /// `--help` / `-h`: print usage and exit.
     pub(crate) help: bool,
+    /// `--remove-service-helper <name>`: **internal, undocumented.** The
+    /// elevated child mode spawned via UAC by the non-elevated uninstall's
+    /// "elevate at removal time" choice: remove exactly this Windows service,
+    /// then exit. Never passed by users; deliberately absent from `--help`.
+    pub(crate) admin_helper_service: Option<String>,
 }
 
 impl UninstallArgs {
@@ -80,12 +88,19 @@ impl UninstallArgs {
                 "--no-deep-sweep" => parsed.no_deep_sweep = true,
                 "--no-path" => parsed.no_path = true,
                 "--json" => parsed.json = true,
+                "--verbose" | "-v" => parsed.verbose = true,
                 "--help" | "-h" => parsed.help = true,
                 "--scope" => {
                     let value = iter
                         .next()
                         .ok_or_else(|| anyhow!("--scope requires a value: user | machine | all"))?;
                     parsed.scope = UninstallScope::parse(value)?;
+                }
+                "--remove-service-helper" => {
+                    let value = iter.next().ok_or_else(|| {
+                        anyhow!("--remove-service-helper requires a service name")
+                    })?;
+                    parsed.admin_helper_service = Some(value.clone());
                 }
                 flag if flag.starts_with("--scope=") => {
                     let value = flag.strip_prefix("--scope=").unwrap_or_default();
@@ -124,6 +139,7 @@ mod tests {
             "--no-deep-sweep",
             "--no-path",
             "--json",
+            "--verbose",
         ])
         .unwrap();
         assert!(
@@ -133,7 +149,25 @@ mod tests {
                 && out.no_deep_sweep
                 && out.no_path
                 && out.json
+                && out.verbose
         );
+    }
+
+    #[test]
+    fn verbose_short_form_maps() {
+        assert!(parse(&["-v"]).unwrap().verbose);
+    }
+
+    #[test]
+    fn hidden_service_helper_flag_parses_and_requires_a_name() {
+        assert_eq!(
+            parse(&["--remove-service-helper", "UffsAccessBroker"])
+                .unwrap()
+                .admin_helper_service
+                .as_deref(),
+            Some("UffsAccessBroker")
+        );
+        parse(&["--remove-service-helper"]).unwrap_err();
     }
 
     #[test]

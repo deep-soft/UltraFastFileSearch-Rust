@@ -1,35 +1,37 @@
-# =============================================================================
-# scripts/ci/gen-hooks/Cargo.toml — UFFS gate-manifest hook generator
-# =============================================================================
-#
 # SPDX-License-Identifier: MPL-2.0
 # Copyright (c) 2025-2026 SKY, LLC.
 #
-# Phase 2 of `docs/architecture/gates-manifest-plan.md`.  Reads the
-# canonical `scripts/ci/gates.toml` manifest and emits the matching
-# `scripts/hooks/_lint_pre_push.sh` so that the hook content is never
-# hand-maintained.  Pre-commit (`_lint_fast.sh`) stays hand-written
-# (Phase 3 picks it up).
+# UFFS — Workspace manifest-inheritance drift detector.
 #
-# Lint policy: same as `scripts/ci-pipeline` — does NOT inherit
-# `[lints] workspace = true`.  This is an internal tool; the production
-# library lints (deny unwrap, deny println, deny missing_docs_in_private_items)
-# fight readability for an operational binary.  Default clippy passes on
-# this crate via the standard `cargo clippy` invocation.
-# =============================================================================
+# Phase 1 follow-up from
+# `docs/dev/architecture/code_clean/phase_1_manifest_implementation_plan.md`
+# (local-only).  The Phase 1 audit closed cleanly with zero CHORE
+# findings against 15 manifest invariants; this crate encodes those
+# invariants as machine-checkable assertions so any future regression
+# (e.g. a contributor adding a new crate without `[lints] workspace =
+# true`) surfaces at PR time instead of waiting on the annual re-audit
+# cadence.  See issue #211 for the full motivation + acceptance
+# criteria.
+#
+# Design follows the `uffs-gen-workflow` Phase-3 structural-validator
+# pattern: read-only, `--check`-mode by default, exits non-zero on the
+# first drift detected with a per-finding diagnostic message.  No
+# `--write` mode — the tool can never break a manifest, only fail-loud
+# when one drifts.
 
 [package]
-name = "uffs-gen-hooks"
+name = "uffs-manifest-audit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "UFFS gate-manifest hook generator (Phase 2 of gates-manifest-plan); not published"
+description = "Workspace manifest-inheritance drift detector (phase-1 follow-up, issue #211)"
 # Posture: **permanently non-publishable** — internal workspace CI tooling.
 # Distinct from the 8 Polars-blocked deferred-publishable crates: this
 # crate would remain non-publishable even if Polars upstream released,
-# because it is internal CI orchestration, not a reusable library.
+# because it is internal CI orchestration tied to this workspace's
+# manifest layout, not a reusable library.
 publish.workspace = true
 
 # Phase R6 of `release-automation-plan.md` step 3: docs.rs build configuration.
@@ -42,15 +44,15 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [[bin]]
-name = "gen-hooks"
+name = "uffs-manifest-audit"
 path = "src/main.rs"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dependencies
 # ─────────────────────────────────────────────────────────────────────────────
 # Every dependency is aliased to `[workspace.dependencies]` in the root
-# Cargo.toml so a single Cargo.lock entry serves this tool and every other
-# crate.  See `scripts/ci-pipeline/Cargo.toml` for the rationale.
+# Cargo.toml so a single Cargo.lock entry serves this tool and every
+# other crate.  See `scripts/ci/uffs-gen-hooks/Cargo.toml` for the rationale.
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -58,19 +60,18 @@ serde = { workspace = true }
 toml = { workspace = true }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Lints policy
+# Lints (issue #212)
 # ─────────────────────────────────────────────────────────────────────────────
-# Inherit the full workspace lint stack (matches all 14 product crates).
-#
-# The previous wholesale opt-out (issue #212) was too coarse-grained:
-# only 4 lints in `[workspace.lints.clippy]` are CLI-inappropriate
-# (`print_stderr`, `print_stdout`, `indexing_slicing`, `min_ident_chars`,
-# `std_instead_of_alloc`); the other ~60 deny-level lints (cast_lossless,
-# redundant_clone, manual_memcpy, …) apply just as much to an operational
-# CLI tool as to product code.  Per workspace rule 1 ("targeted allow,
-# keep it minimal, scoped, justify in code comments"), intentional
-# stderr-printing sites carry function-scoped
-# `#[expect(clippy::print_stderr, reason = "…")]` rather than disabling
-# the lint workspace-wide.  See `CLIPPY_POSTURE.md` § CLI-tooling.
+# Inherit the full workspace lint stack (matches all 14 product crates +
+# uffs-diag).  CLI-inappropriate lints (`print_stderr` for the failure
+# report) are suppressed at file scope via `#![expect(...)]` blocks in
+# `src/main.rs` with `reason = "..."` strings, matching the precedent
+# established for `uffs-gen-hooks` / `uffs-gen-workflow` in PR #228.  See
+# `CLIPPY_POSTURE.md` § CLI-tooling for the policy.
+# Embeds the UFFS icon + version info + shared app.manifest into
+# `uffs-manifest-audit.exe` (see build.rs) for branding consistency.
+[build-dependencies]
+winresource.workspace = true
+
 [lints]
 workspace = true

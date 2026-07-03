@@ -36,7 +36,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [[bin]]
-name = "gen-workflow"
+name = "uffs-gen-workflow"
 path = "src/main.rs"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ path = "src/main.rs"
 # ─────────────────────────────────────────────────────────────────────────────
 # Every dependency is aliased to `[workspace.dependencies]` in the root
 # Cargo.toml so a single Cargo.lock entry serves this tool and every
-# other crate.  See `scripts/ci/gen-hooks/Cargo.toml` for the rationale.
+# other crate.  See `scripts/ci/uffs-gen-hooks/Cargo.toml` for the rationale.
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -64,5 +64,10 @@ toml = { workspace = true }
 # blocks in `src/*.rs` with `reason = "..."` strings, matching the
 # precedent in `crates/uffs-diag/src/bin/*.rs`.  See `CLIPPY_POSTURE.md`
 # § CLI-tooling for the policy.
+# Embeds the UFFS icon + version info + shared app.manifest into
+# `uffs-gen-workflow.exe` (see build.rs) for branding consistency.
+[build-dependencies]
+winresource.workspace = true
+
 [lints]
 workspace = true

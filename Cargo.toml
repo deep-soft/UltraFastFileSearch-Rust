@@ -39,12 +39,12 @@ members = [
   "crates/uffs-update", # ⬆️  Self-update acquire helper (HTTP/TLS isolated from the CLI)
   # NOTE: uffs-tui and uffs-gui have moved to the private uffs-products repo.
   # ── Tools ──
-  "crates/uffs-diag",          # 🔬 Retained workspace-only diagnostic tools (not shipped in dist/)
-  "crates/uffs-bench",         # 📊 Benchmark-suite orchestrator (robust-benchmark-flow-*.md)
-  "scripts/ci-pipeline",       # 🛠️ Promoted CI pipeline driver (dev-flow-implementation-plan.md § 7)
-  "scripts/ci/gen-hooks",      # 🧬 Gate-manifest hook generator (gates-manifest-plan.md Phase 2)
-  "scripts/ci/gen-workflow",   # 🧪 Gate-manifest workflow structural validator (gates-manifest-plan.md Phase 3)
-  "scripts/ci/manifest-audit", # 🧾 Workspace manifest-inheritance drift detector (phase-1 follow-up, #211)
+  "crates/uffs-diag",               # 🔬 Retained workspace-only diagnostic tools (not shipped in dist/)
+  "crates/uffs-bench",              # 📊 Benchmark-suite orchestrator (robust-benchmark-flow-*.md)
+  "scripts/ci-pipeline",            # 🛠️ Promoted CI pipeline driver (dev-flow-implementation-plan.md § 7)
+  "scripts/ci/uffs-gen-hooks",      # 🧬 Gate-manifest hook generator (gates-manifest-plan.md Phase 2)
+  "scripts/ci/uffs-gen-workflow",   # 🧪 Gate-manifest workflow structural validator (gates-manifest-plan.md Phase 3)
+  "scripts/ci/uffs-manifest-audit", # 🧾 Workspace manifest-inheritance drift detector (phase-1 follow-up, #211)
 ]
 # Default-members policy: intentionally NOT set. `cargo build` /
 # `cargo test` at the workspace root default to ALL members above, which
@@ -52,14 +52,14 @@ members = [
 # is a first-class part of the deliverable.  When a future contributor
 # adds a member that should be opt-in (e.g. a heavyweight bench harness),
 # define `default-members = [...]` explicitly and exclude the new
-# member.  Per Phase 1 manifest-audit invariant 3.11, this comment is
+# member.  Per Phase 1 uffs-manifest-audit invariant 3.11, this comment is
 # the documented-fallback case the drift-detector looks for.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.6.18"
+version = "0.6.20"
 edition = "2024"
 # No `rust-version` claim: the workspace is structurally nightly-only.
 # `crates/uffs-polars` enables `polars/nightly` unconditionally, which
@@ -126,28 +126,28 @@ publish = false
 # proposed-plan output for 12 days because `release-plz update`
 # failed at `cargo package` with this very error.  See
 # `release-automation-baseline.md` §10 for the diagnostic trail.
-uffs-polars = { path = "crates/uffs-polars", version = "0.6.18" }
-uffs-security = { path = "crates/uffs-security", version = "0.6.18" }
-uffs-text = { path = "crates/uffs-text", version = "0.6.18" }
-uffs-time = { path = "crates/uffs-time", version = "0.6.18" }
-uffs-mft = { path = "crates/uffs-mft", version = "0.6.18" }
-uffs-format = { path = "crates/uffs-format", version = "0.6.18" }
-uffs-core = { path = "crates/uffs-core", version = "0.6.18" }
-uffs-client = { path = "crates/uffs-client", version = "0.6.18" }
+uffs-polars = { path = "crates/uffs-polars", version = "0.6.19" }
+uffs-security = { path = "crates/uffs-security", version = "0.6.19" }
+uffs-text = { path = "crates/uffs-text", version = "0.6.19" }
+uffs-time = { path = "crates/uffs-time", version = "0.6.19" }
+uffs-mft = { path = "crates/uffs-mft", version = "0.6.19" }
+uffs-format = { path = "crates/uffs-format", version = "0.6.19" }
+uffs-core = { path = "crates/uffs-core", version = "0.6.19" }
+uffs-client = { path = "crates/uffs-client", version = "0.6.19" }
 # `uffs-broker-protocol` carries the wire-protocol types shared between
 # `uffs-broker` (the elevated handle vendor, Windows-only binary) and
 # `uffs-daemon::broker_client` (the handle consumer).  Pure-logic
 # Layer-0 lib — cross-platform tests run on every CI lane.  Added in
 # F5 (issue #205) so neither side duplicates `BROKER_PIPE_NAME` /
 # wire-format byte literals.
-uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.18" }
+uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.19" }
 # `uffs-winsvc` — native Windows service control (SCM query/start/stop) +
 # the non-connecting broker-pipe readiness probe.  Layer-0 leaf: its only
 # dependency is the `windows` crate (windows-target), with non-Windows
 # stubs so cross-platform consumers (uffs-update, uffs-cli) compile.
 # Single source of truth for the `sc`/SCM mechanics previously duplicated
 # across uffs-broker, uffs-update, and uffs-cli.
-uffs-winsvc = { path = "crates/uffs-winsvc", version = "0.6.18" }
+uffs-winsvc = { path = "crates/uffs-winsvc", version = "0.6.19" }
 # NOTE: no `uffs-broker` workspace dependency alias on purpose —
 # `uffs-broker` is a binary-only crate (the only `[lib]` it carries is
 # this protocol module's now-extracted sibling); no other workspace
@@ -235,7 +235,7 @@ thiserror = "2.0.18"
 anyhow = "1.0.103"
 
 # ───── MCP (Model Context Protocol) ─────
-rmcp = { version = "1.8.0", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "2.1.0", features = ["server", "transport-io", "macros"] }
 schemars = "1.2.1"
 
 # ───── HTTP / Tower (for MCP Streamable HTTP gateway) ─────
@@ -258,7 +258,7 @@ clap = { version = "4.6.1", features = [
   "unicode",
   "wrap_help",
 ] }
-indicatif = "0.18.4"
+indicatif = "0.18.6"
 devicons = "0.6.12"
 # ANSI terminal colouring.  Used by the `uffs-ci-pipeline` tool; kept at
 # workspace scope so a future UI surface that wants colored output inherits
@@ -328,8 +328,8 @@ num_cpus = "1.17.0"
 uuid = { version = "1.23.4", features = ["v4"] }
 
 # ───── Security / Crypto ─────
-aes-gcm = "0.10"
-rand = "0.10.1"
+aes-gcm = "0.11.0"
+rand = "0.10.2"
 rand_chacha = "0.10.0"
 security-framework = "3.7.0"
 

@@ -45,11 +45,29 @@ fn wide(text: &str) -> Vec<u16> {
 /// stderr-only message comes out empty (as seen on a failed `sc create`).
 #[cfg(windows)]
 fn sc_output(output: &std::process::Output) -> String {
+    // AUDIT-OK(bytes): operator-facing diagnostic text only — the combined
+    // output is formatted into an error message, never parsed or matched.
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // AUDIT-OK(bytes): same display-only argument as stdout above.
     let stderr = String::from_utf8_lossy(&output.stderr);
     format!("{} {}", stdout.trim(), stderr.trim())
         .trim()
         .to_owned()
+}
+
+/// Print an in-progress step label without a trailing newline and flush, so
+/// the operator sees what a slow step (e.g. the blocking `sc start`) is doing
+/// before its "ok"/"failed" verdict lands on the same line.
+#[cfg(windows)]
+#[expect(
+    clippy::print_stdout,
+    reason = "CLI admin command — stdout is the user-visible result channel"
+)]
+fn print_step(label: &str) {
+    use std::io::Write as _;
+
+    print!("{label}");
+    let _flushed = std::io::stdout().flush();
 }
 
 /// Register the broker as an auto-start Windows Service and start it.
@@ -79,7 +97,11 @@ pub(super) fn install_service() -> anyhow::Result<()> {
         );
     }
 
+    // Step-by-step narration: `sc start` blocks until the service reports
+    // ready, which can take a minute — a silent wait reads as a hang.
     let exe = std::env::current_exe()?;
+    println!("Installing the UFFS Access Broker service...");
+    print_step("  registering the service (sc create)... ");
     let create = std::process::Command::new("sc.exe")
         .args([
             "create",
@@ -94,6 +116,7 @@ pub(super) fn install_service() -> anyhow::Result<()> {
         .output()?;
 
     if !create.status.success() {
+        println!("failed");
         // AUDIT-OK(bytes): `sc` output surfaced verbatim to the operator —
         // display only, no decision.
         anyhow::bail!(
@@ -102,21 +125,28 @@ pub(super) fn install_service() -> anyhow::Result<()> {
             sc_output(&create)
         );
     }
+    println!("ok");
 
     // Start it now so the broker is usable immediately — the whole point
     // is "no future UAC", which only holds once the service is running.
     // `start= auto` also brings it back on every boot.
+    print_step(
+        "  starting the service (Windows waits for it to report ready; \
+         this can take a minute)... ",
+    );
     let start = std::process::Command::new("sc.exe")
         .args(["start", SERVICE_NAME])
         .output()?;
 
     if start.status.success() {
+        println!("ok");
         println!(
             "UFFS Access Broker installed and started (auto-start on boot).\n\
              Non-elevated `uffs` searches will now use the broker for volume \
              access — no more UAC prompts."
         );
     } else {
+        println!("failed");
         // AUDIT-OK(bytes): `sc` output surfaced verbatim to the operator.
         println!(
             "Service installed (auto-start on boot), but starting it failed: \

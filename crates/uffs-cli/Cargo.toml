@@ -25,9 +25,9 @@ authors.workspace = true
 # package" warning even though the archived crate already contains a
 # copy.  Pointing at this crate's own `README.md` (alongside this
 # manifest) ships the right doc on the crates.io detail page and
-# silences the warning.  Permitted by manifest-audit invariant 3.5 via
+# silences the warning.  Permitted by uffs-manifest-audit invariant 3.5 via
 # `KnownExceptions::readme_override_ok` (see
-# `scripts/ci/manifest-audit/src/audit.rs`).  Issue #240.
+# `scripts/ci/uffs-manifest-audit/src/audit.rs`).  Issue #240.
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
@@ -69,7 +69,7 @@ path = "src/main.rs"
 # `version = "0.5.90"` is required for `cargo package` validation —
 # see root `Cargo.toml`'s [workspace.dependencies] note for the full
 # rationale (R6 of `release-automation-plan.md`).
-uffs-client = { path = "../uffs-client", version = "0.6.18", default-features = false }
+uffs-client = { path = "../uffs-client", version = "0.6.19", default-features = false }
 
 # Canonical CSV / parity / legacy-footer writer.  Direct dep (not a
 # re-export chain through `uffs-client`) so the CLI and the daemon
@@ -77,7 +77,7 @@ uffs-client = { path = "../uffs-client", version = "0.6.18", default-features = 
 # `version = "0.5.90"` is required for `cargo package` validation —
 # see root `Cargo.toml`'s [workspace.dependencies] note for the full
 # rationale (R6 of `release-automation-plan.md`).
-uffs-format = { path = "../uffs-format", version = "0.6.18" }
+uffs-format = { path = "../uffs-format", version = "0.6.19" }
 
 # Typed drive-letter newtype.  Direct dep so the CLI command signatures
 # (`daemon_load`, `daemon_tiering`, etc.) name `DriveLetter` natively
