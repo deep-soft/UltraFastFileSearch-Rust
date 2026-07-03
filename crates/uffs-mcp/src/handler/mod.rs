@@ -16,11 +16,10 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use rmcp::model::{
-    AnnotateAble as _, CallToolRequestParams, CallToolResult, GetPromptRequestParams,
-    GetPromptResult, Implementation, ListPromptsResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, RawResource, RawResourceTemplate,
-    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-    ServerInfo,
+    CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult, Implementation,
+    ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, Resource,
+    ResourceContents, ResourceTemplate, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
@@ -349,19 +348,31 @@ impl ServerHandler for UffsMcpServer {
         )
     )]
     async fn on_roots_list_changed(&self, context: rmcp::service::NotificationContext<RoleServer>) {
-        // Ask the client for the current list of roots.
+        // Ask the client for the current list of roots. This match is the ONLY
+        // place in uffs-mcp that speaks the SEP-2577-deprecated Roots wire API
+        // (`Peer::list_roots` + `rmcp::model::Root`); `roots.rs` is transport-
+        // agnostic (`AdvertisedRoot`). When rmcp removes the API, delete this
+        // hook — workspace scoping then flows from the explicit path filters
+        // the search tools already accept.
         #[expect(
             deprecated,
-            reason = "rmcp 1.8.0 deprecated Peer::list_roots per MCP SEP-2577 (the Roots \
-                      capability is being phased out). It still functions, and uffs-mcp's \
-                      roots -> NTFS-prefix mapping depends on it; there is no replacement API \
-                      yet. Migrate or drop the roots feature when rmcp removes the method (at \
-                      which point this becomes a hard error, not a silenced warning)."
+            reason = "SEP-2577 deprecates MCP Roots with no replacement API; clients still \
+                      advertise roots today, so this single boundary hook converts them to \
+                      the transport-agnostic AdvertisedRoot. Delete the hook when rmcp \
+                      removes the method (hard error then, not a silenced warning)."
         )]
         match context.peer.list_roots().await {
             Ok(result) => {
+                let advertised: Vec<roots::AdvertisedRoot> = result
+                    .roots
+                    .iter()
+                    .map(|root| roots::AdvertisedRoot {
+                        uri: root.uri.clone(),
+                        name: root.name.clone(),
+                    })
+                    .collect();
                 let mut state = self.roots.write().await;
-                roots::update_roots_state(&mut state, &result.roots);
+                roots::update_roots_state(&mut state, &advertised);
                 let mapped = state
                     .roots
                     .iter()
@@ -483,49 +494,42 @@ impl ServerHandler for UffsMcpServer {
         self.touch();
         Ok(ListResourcesResult {
             resources: vec![
-                RawResource::new("uffs://schema/fields", "Field Catalog")
+                Resource::new("uffs://schema/fields", "Field Catalog")
                     .with_description(
                         "Complete catalog of fields available for searching, filtering, \
                          sorting, and aggregating — includes types and capabilities",
                     )
-                    .with_mime_type("application/json")
-                    .no_annotation(),
-                RawResource::new("uffs://drives", "Indexed Drives")
+                    .with_mime_type("application/json"),
+                Resource::new("uffs://drives", "Indexed Drives")
                     .with_description(
                         "Live listing of currently indexed NTFS drives with record counts",
                     )
-                    .with_mime_type("application/json")
-                    .no_annotation(),
-                RawResource::new("uffs://status", "Daemon Status")
+                    .with_mime_type("application/json"),
+                Resource::new("uffs://status", "Daemon Status")
                     .with_description(
                         "Daemon health, state, uptime, memory, PID, and drive-loading progress",
                     )
-                    .with_mime_type("application/json")
-                    .no_annotation(),
-                RawResource::new("uffs://schema/search", "Search Request Schema")
+                    .with_mime_type("application/json"),
+                Resource::new("uffs://schema/search", "Search Request Schema")
                     .with_description("JSON Schema for the uffs_search tool input parameters")
-                    .with_mime_type("application/json")
-                    .no_annotation(),
-                RawResource::new("uffs://schema/aggregate", "Aggregate Request Schema")
+                    .with_mime_type("application/json"),
+                Resource::new("uffs://schema/aggregate", "Aggregate Request Schema")
                     .with_description("JSON Schema for the uffs_aggregate tool input parameters")
-                    .with_mime_type("application/json")
-                    .no_annotation(),
-                RawResource::new("uffs://presets/aggregate", "Aggregate Presets")
+                    .with_mime_type("application/json"),
+                Resource::new("uffs://presets/aggregate", "Aggregate Presets")
                     .with_description(
                         "Built-in aggregate presets (overview, by_type, by_extension, \
                          storage, etc.) with descriptions",
                     )
-                    .with_mime_type("application/json")
-                    .no_annotation(),
+                    .with_mime_type("application/json"),
                 // ── Agent cookbook (query examples) ──────────────────
-                RawResource::new("uffs://cookbook", "Query Cookbook")
+                Resource::new("uffs://cookbook", "Query Cookbook")
                     .with_description(
                         "Curated example MCP tool calls organized by workflow — \
                          ready-to-use arguments objects, tips, and multi-step patterns. \
                          Read this first to learn how to compose effective UFFS queries.",
                     )
-                    .with_mime_type("application/json")
-                    .no_annotation(),
+                    .with_mime_type("application/json"),
             ],
             next_cursor: None,
             meta: None,
@@ -544,14 +548,13 @@ impl ServerHandler for UffsMcpServer {
         self.touch();
         Ok(ListResourceTemplatesResult {
             resource_templates: vec![
-                RawResourceTemplate::new("uffs://info/{path}", "File/Directory Info")
+                ResourceTemplate::new("uffs://info/{path}", "File/Directory Info")
                     .with_description(
                         "Full metadata for a file or directory by path. \
                      The {path} parameter is a percent-encoded Windows path \
                      with forward slashes (e.g. C:/Users/me/file.txt).",
                     )
-                    .with_mime_type("application/json")
-                    .no_annotation(),
+                    .with_mime_type("application/json"),
             ],
             next_cursor: None,
             meta: None,
