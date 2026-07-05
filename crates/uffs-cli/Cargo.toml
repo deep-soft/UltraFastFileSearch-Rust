@@ -69,7 +69,7 @@ path = "src/main.rs"
 # `version = "0.5.90"` is required for `cargo package` validation —
 # see root `Cargo.toml`'s [workspace.dependencies] note for the full
 # rationale (R6 of `release-automation-plan.md`).
-uffs-client = { path = "../uffs-client", version = "0.6.19", default-features = false }
+uffs-client = { path = "../uffs-client", version = "0.6.23", default-features = false }
 
 # Canonical CSV / parity / legacy-footer writer.  Direct dep (not a
 # re-export chain through `uffs-client`) so the CLI and the daemon
@@ -77,13 +77,18 @@ uffs-client = { path = "../uffs-client", version = "0.6.19", default-features = 
 # `version = "0.5.90"` is required for `cargo package` validation —
 # see root `Cargo.toml`'s [workspace.dependencies] note for the full
 # rationale (R6 of `release-automation-plan.md`).
-uffs-format = { path = "../uffs-format", version = "0.6.19" }
+uffs-format = { path = "../uffs-format", version = "0.6.23" }
 
 # Typed drive-letter newtype.  Direct dep so the CLI command signatures
 # (`daemon_load`, `daemon_tiering`, etc.) name `DriveLetter` natively
 # rather than re-exporting through `uffs-client`.  Wire format is
 # unchanged — the (de)serialise impl emits a single ASCII char.
 uffs-mft.workspace = true
+
+# Shared operator-status styling (color, glyphs, aligned fields) for the
+# `--status` / `--daemon status` surfaces.  Zero-dep leaf crate; keeps the
+# one visual language in exactly one place.
+uffs-statusfmt.workspace = true
 
 # Error handling
 anyhow.workspace = true
@@ -109,6 +114,9 @@ dirs-next.workspace = true
 # object_store.  Use `uffs_time::{filetime_to_calendar,
 # filetime_with_tz_bias}` for timestamp formatting.
 uffs-time.workspace = true
+
+# Shared `--version` strings (short + long build fingerprint). Zero-dep leaf.
+uffs-version.workspace = true
 
 # Broker identity (`SERVICE_NAME` / `PIPE_NAME`) + native SCM status so
 # `uffs --status` can report the Access Broker. Both Layer-0 leaves:
@@ -154,6 +162,9 @@ workspace = true
 # Version is pinned at workspace scope — see root Cargo.toml.
 [build-dependencies]
 winresource.workspace = true
+# Stamps UFFS_GIT_SHA + build metadata for the version macros (build side only).
+uffs-version = { workspace = true, features = ["build"] }
 
 [dev-dependencies]
 assert_cmd.workspace = true
+tempfile.workspace = true

@@ -14,6 +14,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — consistent `--version` across every UFFS binary
+
+All 22 shipped and dev binaries now print the same `--version`: a short line
+`<name>[.exe] <semver> (<sha>)` (with `-dirty` on an uncommitted tree), and a
+multi-line build fingerprint with `--version --verbose` / `-v` (commit + date,
+rustc, target triple, release profile) for bug reports. On Windows the name
+carries its real `.exe` suffix (`uffsd.exe 0.6.23 (…)`). Previously only `uffs`
+showed the build sha; the others were plainer and slightly inconsistent (e.g.
+`uffsmcp` printed `uffs-mcp v…`). Backed by a new zero-dependency `uffs-version`
+leaf crate (macros + a `build.rs` metadata stamp), so it can never drift again.
+
+## [0.6.23] - 2026-07-04
+
+### Fixed — calmer message when WinGet doesn't have the new version yet
+
+Right after a release, the WinGet package manifest publishes a little later than
+the GitHub release, so `uffs --update`'s winget step would print a scary
+`winget upgrade did not complete (0x8a15002b)`. That exit code just means "no
+newer version available yet." It is now recognised and narrated as a plain note
+("WinGet doesn't have vX.Y.Z yet — the winget copy catches up on the next
+`uffs --update`"), and any genuine winget failure still explains the likely
+publish-lag cause rather than only showing a raw code.
+
+### Fixed — self-update now sees a dormant WinGet install
+
+`uffs --update` finds a WinGet-managed install even when nothing is running from
+it. Root discovery used to rely only on live anchors (the invoking `uffs.exe`
+plus any running daemon / broker / MCP), so with the daemon and broker stopped
+and `--update` run from a hand-placed copy, the winget install had no anchor and
+was invisible — never seen, never reconciled. Detection now also scans WinGet's
+well-known package location, so the winget copy is found and updated regardless
+of what is running.
+
+### Fixed — the Access Broker note no longer fires when no broker is running
+
+A non-elevated update skips (and warns about) the Access Broker only when it is
+a *running* `LocalSystem` service — the case that genuinely needs elevation to
+cycle. A plain `uffs-broker.exe` file with no running service is now updated in
+place like any other binary, without the misleading "left running and NOT
+updated" note.
+
+## [0.6.22] - 2026-07-03
+
+Consolidated notes for the 0.6.19–0.6.22 development cycle, which reworked the
+full **install / update / uninstall** lifecycle on Windows and made the
+macOS/Linux binaries portable.
+
+### Added — zero-UAC Access Broker service
+
+`uffs-broker --install` (one-time, from an elevated shell) registers a
+`LocalSystem` Windows service that vends the daemon an elevated, duplicated
+NTFS volume handle over a named pipe. After that, **every** later `uffs` search
+runs non-elevated with **no UAC prompt**, surviving reboots — the daemon reads
+the live MFT through the broker's handle. Install narrates each step with a
+spinner; the one slow step (`sc create`, scanned by antivirus) is called out
+honestly instead of looking hung.
+
+### Added — self-update: `uffs --update` (and the `--upgrade` alias)
+
+One command reconciles any starting state to a complete, current install —
+behind, version-skewed, or even missing a binary — and does nothing when
+already current. It downloads, SHA-256-verifies, and atomically swaps every
+core binary (journaled, with auto-rollback). On a WinGet-managed install it
+stops the daemon and package broker up front (one UAC), runs `winget upgrade`
+against the now-unlocked images, and restarts them — so the bare `winget
+upgrade` that fails on locked binaries is no longer the user's problem.
+
+### Changed — `uffs --uninstall` reworked into a full, safe teardown
+
+Uninstall discovers every UFFS copy across the system (PATH + standard bin
+dirs on all platforms; on Windows also a deep, MFT-driven sweep for strays),
+reloads a version-mismatched daemon before sweeping so it reports the truth,
+and removes binaries, data, cache, config, and the broker service under clear
+CORE / ALL confirmations. Elevation is requested once, only when actually
+needed (the broker service), and the flow degrades cleanly if you decline. The
+`uffs` binary removes itself last, on exit.
+
+### Changed — Linux binary is now a static musl build
+
+The Linux release binary links musl statically (built with cargo-zigbuild), so
+it runs on old-glibc hosts and inside WSL without the previous
+`GLIBC_2.xx not found` failure. macOS and Linux remain **offline MFT analysis
+only** — they do not index the host filesystem (see the platform note in the
+README).
+
+### Changed — binaries renamed with a `uffs-` prefix
+
+Every shipped binary now starts with `uffs` (e.g. `uffs-mcp-http`,
+`uffs-bench`). The pre-rename names are recognized as retired stems, so
+upgrades and uninstall still find and clean up older installs.
+
+### Fixed — USN journal phantom root paths
+
+Live index updates from the NTFS USN journal now apply parent-directory changes
+before their children, so newly-created files resolve under their real parent
+path instead of occasionally appearing at a bare drive root (`C:\name`).
+
+### Fixed — honest winget-upgrade narration
+
+Self-update no longer claims the Access Broker was "not updated" when the
+winget package upgrade actually refreshes it; no longer fires a pointless
+update + UAC when the install is already current (the broker is a
+once-installed service, not required in every CLI folder); and no longer
+reports a scary "failed to restart" for components the winget flow relaunches
+itself.
+
+### Fixed — one-line macOS/Linux installer hardening
+
+`install.sh` resolves the latest version without the intermittent broken-pipe
+failure, verifies every download against the release `SHA256SUMS` (exact match,
+tolerating the `./` prefix), and installs transactionally — it downloads and
+verifies the whole set before moving anything into place, so an interrupted run
+never leaves a half-old / half-new install.
+
 ## [0.6.18] - 2026-06-29
 
 ### Changed: `uffs --uninstall` now finds every copy across the system
@@ -2553,7 +2667,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.18...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.23...HEAD
+[0.6.23]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.22...v0.6.23
 [0.6.18]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.17...v0.6.18
 [0.6.17]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.15...v0.6.17
 [0.6.15]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.14...v0.6.15

@@ -141,10 +141,16 @@ pub(crate) enum DaemonAction {
         /// effect for every auto-spawn.
         elevate: bool,
     },
-    /// Show daemon status.
-    Status,
-    /// Show performance statistics.
-    Stats,
+    /// Show daemon status. `verbose` (`-v`) adds the build fingerprint,
+    /// elevation / broker mode, live-update loops, memory tiers, paths, the
+    /// full per-drive breakdown, and performance counters (the former
+    /// `stats`). `json` emits the machine-readable superset.
+    Status {
+        /// Long view: everything, including the folded-in performance counters.
+        verbose: bool,
+        /// Emit JSON (status + drives + stats) instead of the human view.
+        json: bool,
+    },
     /// Gracefully stop.
     Stop,
     /// Hard kill.
@@ -212,8 +218,11 @@ pub(crate) fn parse_daemon_action(args: &[String]) -> Result<DaemonAction, anyho
     let rest = args.get(1..).unwrap_or_default();
     match action {
         "start" => Ok(parse_daemon_start(rest)),
-        "status" => Ok(DaemonAction::Status),
-        "stats" => Ok(DaemonAction::Stats),
+        "status" => Ok(parse_daemon_status(rest)),
+        "stats" => anyhow::bail!(
+            "`--daemon stats` has been folded into `--daemon status -v` \
+             (or `--daemon status --json` for the machine-readable form)."
+        ),
         "stop" => Ok(DaemonAction::Stop),
         "kill" => Ok(DaemonAction::Kill),
         "restart" => Ok(DaemonAction::Restart),
@@ -223,10 +232,24 @@ pub(crate) fn parse_daemon_action(args: &[String]) -> Result<DaemonAction, anyho
         "forget" => parse_daemon_forget(rest),
         "status_drives" | "status-drives" => Ok(DaemonAction::StatusDrives),
         other => anyhow::bail!(
-            "Unknown daemon action: '{other}'. Use: start, status, stats, stop, kill, \
+            "Unknown daemon action: '{other}'. Use: start, status, stop, kill, \
              restart, load, hibernate, preload, forget, status_drives"
         ),
     }
+}
+
+/// Parse `uffs --daemon status [-v|--verbose] [--json]`.
+fn parse_daemon_status(rest: &[String]) -> DaemonAction {
+    let mut verbose = false;
+    let mut json = false;
+    for arg in rest {
+        match arg.as_str() {
+            "-v" | "--verbose" => verbose = true,
+            "--json" => json = true,
+            _ => {}
+        }
+    }
+    DaemonAction::Status { verbose, json }
 }
 
 /// Parse `uffs --daemon start [flags...]`.
@@ -518,18 +541,17 @@ pub(crate) fn print_help() {
     print!("{HELP}");
 }
 
-/// Print version and exit. Includes the build's short git commit (stamped by
-/// `build.rs` into `UFFS_GIT_SHA`, with `-dirty` for an uncommitted tree) so a
-/// running binary can be tied to the exact source it was built from — match it
-/// against `git rev-parse --short HEAD` to confirm you are not on a stale
-/// build.
+/// Print version and exit. The short line ties a running binary to the exact
+/// source (`<name>[.exe] <semver> (<sha>)`, `-dirty` for an uncommitted tree);
+/// `verbose` adds the multi-line build fingerprint (commit date, rustc, target,
+/// profile) for bug reports. Shared with every UFFS binary via `uffs-version`.
 #[expect(clippy::print_stdout, reason = "intentional version output")]
-pub(crate) fn print_version() {
-    println!(
-        "uffs {} ({})",
-        env!("CARGO_PKG_VERSION"),
-        option_env!("UFFS_GIT_SHA").unwrap_or("unknown")
-    );
+pub(crate) fn print_version(verbose: bool) {
+    if verbose {
+        println!("{}", uffs_version::version_long!("uffs"));
+    } else {
+        println!("{}", uffs_version::version_short!("uffs"));
+    }
 }
 
 // ── Subcommand help texts ─────────────────────────────────────────────
@@ -548,7 +570,8 @@ ACTIONS:
     --elevate          Request a UAC prompt (Windows) if not elevated
                        [env: UFFS_ELEVATE=1]
   status             Show daemon status (running, drives, PID)
-  stats              Show performance statistics
+    -v, --verbose      Long view: build, broker mode, memory, paths, perf stats
+    --json             Machine-readable status + drives + stats
   stop               Gracefully stop the daemon
   kill               Hard kill + remove PID/socket files
   restart            Stop then restart (re-loads all indices)
@@ -626,7 +649,12 @@ pub(crate) fn print_aggregate_help() {
 const STATUS_HELP: &str = "\
 uffs --status — Show combined system status (daemon + broker + MCP)
 
-USAGE:  uffs --status
+USAGE:  uffs --status [OPTIONS]
+
+OPTIONS:
+  -v, --verbose   Expand every section (build, broker mode, live-update,
+                  memory, paths; broker binary + uptime on Windows)
+  --json          Machine-readable superset of all sections
 ";
 
 /// Print status help.

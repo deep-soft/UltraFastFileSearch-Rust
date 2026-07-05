@@ -48,7 +48,10 @@ impl Command {
             "--agg" | "--aggregate" => Self::Agg,
             "--daemon" => Self::Daemon,
             "--mcp" => Self::Mcp,
-            "--update" => Self::Update,
+            // `--upgrade` is a HIDDEN alias for `--update` (winget/apt muscle
+            // memory) — deliberately absent from `COMMAND_TOKENS`, so it never
+            // appears in help or "did you mean" suggestions.
+            "--update" | "--upgrade" => Self::Update,
             "--uninstall" => Self::Uninstall,
             "--status" => Self::Status,
             _ => return None,
@@ -116,13 +119,17 @@ pub(crate) fn dispatch_command(command: Command, args: &[String]) -> Result<()> 
     }
 }
 
-/// `--status` — combined daemon + broker + MCP status (never fails).
+/// `--status [-v] [--json]` — combined daemon + broker + MCP status (never
+/// fails). `-v`/`--verbose` expands every section; `--json` emits the
+/// machine-readable superset.
 fn run_status(args: &[String]) {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         crate::args::print_status_help();
-    } else {
-        commands::system_status::system_status();
+        return;
     }
+    let verbose = args.iter().any(|arg| arg == "-v" || arg == "--verbose");
+    let json = args.iter().any(|arg| arg == "--json");
+    commands::system_status::system_status(verbose, json);
 }
 
 #[cfg(test)]
@@ -132,6 +139,10 @@ mod tests {
     #[test]
     fn command_tokens_resolve() {
         assert_eq!(Command::from_token("--update"), Some(Command::Update));
+        // Hidden alias: resolves, but is not in COMMAND_TOKENS (so it never
+        // appears in help or "did you mean" suggestions).
+        assert_eq!(Command::from_token("--upgrade"), Some(Command::Update));
+        assert!(!super::COMMAND_TOKENS.contains(&"--upgrade"));
         assert_eq!(Command::from_token("--uninstall"), Some(Command::Uninstall));
         assert_eq!(Command::from_token("--daemon"), Some(Command::Daemon));
         assert_eq!(Command::from_token("--mcp"), Some(Command::Mcp));
