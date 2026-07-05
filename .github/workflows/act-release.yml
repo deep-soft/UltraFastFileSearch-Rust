@@ -1,6 +1,13 @@
 # SPDX-FileCopyright (c) 2025-2026 SKY, LLC.
 # SPDX-License-Identifier: MPL-2.0
 # 2026-07-03 21:00 # Linux binary as static musl # https://github.com/skyllc-ai/UltraFastFileSearch/commit/630be95a5a0d75f67c6fedef399c0d07c1ede6c1
+#          - target: x86_64-apple-darwin
+#            os: macos-latest
+#            artifact-name: uffs-macos-x64
+#            binary-suffix: ""
+#            rustflags: "-C target-cpu=x86-64-v3 -C link-arg=-Wl,-dead_strip"
+#            timeout: 75
+
 name: act - 🚀 UFFS Release Pipeline
 
 run-name: act - 🚀 UFFS Release ${{ inputs.version || github.ref_name }}
@@ -354,6 +361,12 @@ jobs:
             artifact-name: uffs-windows-x64
             binary-suffix: ".exe"
             rustflags: "-C target-cpu=x86-64-v3"
+            timeout: 75
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact-name: uffs-macos-x64
+            binary-suffix: ""
+            rustflags: "-C target-cpu=x86-64-v3 -C link-arg=-Wl,-dead_strip"
             timeout: 75
           - target: aarch64-apple-darwin
             os: macos-latest
