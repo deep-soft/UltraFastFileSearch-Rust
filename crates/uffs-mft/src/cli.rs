@@ -23,6 +23,29 @@ pub(crate) enum OutputFormat {
     Json,
 }
 
+/// NTFS metafile selectable via `uffs-mft metafile --kind`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum MetafileKind {
+    /// `$Boot` — volume boot record + BPB (geometry, volume serial).
+    Boot,
+    /// `$Bitmap` — volume cluster-allocation bitmap (free space).
+    Bitmap,
+    /// `$Secure:$SDS` — security-descriptor store (ACLs / owner).
+    Secure,
+    /// `$AttrDef` — NTFS attribute-type definitions.
+    AttrDef,
+    /// `$MFTMirr` — backup of the first four `$MFT` records.
+    MftMirr,
+    /// `$Volume` — the MFT record (volume name / version / flags).
+    Volume,
+    /// `$BadClus` — the MFT record (bad-cluster run list).
+    BadClus,
+    /// `$LogFile` — the NTFS metadata transaction log.
+    LogFile,
+    /// `$UsnJrnl:$J` — the change journal (resolved via `$Extend`).
+    UsnJrnl,
+}
+
 /// `uffs-mft`: Low-level NTFS MFT reading tool.
 #[derive(Parser)]
 #[command(name = "uffs-mft")]
@@ -111,6 +134,98 @@ pub(crate) enum Commands {
         /// Output format: `human`/`table` (default table) or `json`.
         #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
         format: OutputFormat,
+    },
+
+    /// Probe the capture host: OS class (client/server), elevation, VSS
+    /// availability, and per-drive media/geometry. Runs before a capture and
+    /// records the machine the capture was taken on.
+    Sysinfo {
+        /// Write the report to this file (also printed to stdout).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+
+        /// Emit machine-readable JSON instead of the text report (Windows
+        /// only).
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Save an NTFS metafile ($Boot, ...) for offline analysis
+    Metafile {
+        /// Drive letter (e.g., C, D, E)
+        #[arg(short, long)]
+        drive: uffs_mft::platform::DriveLetter,
+
+        /// Which metafile to capture
+        #[arg(short, long, value_enum)]
+        kind: MetafileKind,
+
+        /// Output file path
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+
+    /// Capture all NTFS metafiles for a drive into a hashed, manifested bundle
+    Capture {
+        /// Drive letter (e.g., C, D, E). Required unless `--all-drives` is set.
+        #[arg(short, long)]
+        drive: Option<uffs_mft::platform::DriveLetter>,
+
+        /// Output directory (bundle written to `<out>/drive_<x>/`)
+        #[arg(short, long)]
+        out: PathBuf,
+
+        /// Capture every eligible NTFS volume, each into its own
+        /// `<out>/drive_<x>/` subfolder.
+        #[arg(long)]
+        all_drives: bool,
+
+        /// Also pack each drive bundle into a `<dir>.tar.zst`
+        /// (extract with `tar --zstd -xf`).
+        #[arg(long)]
+        zip: bool,
+
+        /// With `--zip`, split the archive into parts of this many GiB
+        /// (`<dir>.tar.zst.NNN`). 0 = no split.
+        #[arg(long, default_value_t = 0, value_name = "GIB")]
+        split_gib: u64,
+    },
+
+    /// Inspect a captured NTFS metafile offline (header + $Boot geometry, ...)
+    MetafileInfo {
+        /// Path to a captured metafile (from `metafile` or `capture`)
+        #[arg(short, long)]
+        input: PathBuf,
+    },
+
+    /// Extract the raw `$MFT` from a captured `.bin` (decompress + strip
+    /// header) into a byte-exact `$MFT` other tools (analyzeMFT, MFT2CSV,
+    /// ntfstool) can read. Cross-platform.
+    ExtractMft {
+        /// Captured `.bin` (e.g. `C_mft.bin` from `capture`).
+        #[arg(short, long)]
+        input: PathBuf,
+
+        /// Output path for the raw `$MFT`.
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+
+    /// Compare two MFT CSV exports (from `load`) for parity — e.g. Rust on
+    /// Windows vs macOS, or Rust vs a C++ golden. Exits non-zero on mismatch.
+    Verify {
+        /// First CSV export.
+        #[arg(short, long)]
+        left: PathBuf,
+
+        /// Second CSV export.
+        #[arg(short, long)]
+        right: PathBuf,
+
+        /// Columns to compare (matched by header name; default: all columns of
+        /// `--left`). Comma-separated, e.g. `frs,parent_frs,name,size`.
+        #[arg(long, value_delimiter = ',')]
+        columns: Vec<String>,
     },
 
     /// Benchmark MFT reading with detailed phase timing

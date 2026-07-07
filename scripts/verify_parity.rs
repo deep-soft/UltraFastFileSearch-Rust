@@ -17,10 +17,20 @@
 //! rust-script scripts/verify_parity.rs ~/uffs_data --regenerate
 //! rust-script scripts/verify_parity.rs ~/uffs_data --drive G --regenerate
 //!
+//! # Offline from bundles: drop drive_<x>.tar.zst files in a dir; each is
+//! # temp-expanded, validated, then removed (no uncompressed copies kept).
+//! rust-script scripts/verify_parity.rs ~/bundles --regenerate
+//!
 //! # Live: run both tools on Windows (elevated), auto-detect NTFS drives
 //! rust-script scripts/verify_parity.rs --live
 //! rust-script scripts/verify_parity.rs --live --drive C --keep
 //! rust-script scripts/verify_parity.rs --live --drive C,D,F --out-dir D:\parity
+//!
+//! # Live + transport bundle: also capture the MFT + metafiles and pack each
+//! # drive dir (MFT + metafiles + manifest + cpp/rust outputs) → drive_<x>.tar.zst
+//! # for offline `--regenerate` on the Mac. Needs uffs-mft (--mft-bin or auto).
+//! # (ustar+zstd, no PowerShell 2 GB Compress-Archive limit.)
+//! rust-script scripts/verify_parity.rs --live --drive C --bundle
 //! ```
 //!
 //! # Parity contract
@@ -287,12 +297,38 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
         std::process::exit(1);
     }
 
+    // Expand any drive_<x>.tar.zst transport bundles into temp drive dirs so a
+    // dropped-in archive can be validated without keeping the uncompressed copy
+    // around. Extracted dirs are removed again once verification finishes.
+    let mut temp_dirs: Vec<PathBuf> = Vec::new();
+    for (drive_lower, archive) in discover_archives(base_dir, specific_drive.as_deref()) {
+        let target = base_dir.join(format!("drive_{drive_lower}"));
+        if target.exists() {
+            println!(
+                "ℹ️  {} already exists — using it (not expanding {})",
+                target.display(),
+                archive.display()
+            );
+            continue;
+        }
+        print!("Expanding {} → {} ...", archive.display(), target.display());
+        io::stdout().flush().ok();
+        match extract_archive(&archive, &target) {
+            Ok(()) => {
+                println!(" ✅");
+                temp_dirs.push(target);
+            }
+            Err(e) => println!(" ❌ {e}"),
+        }
+    }
+
     // Discover all drive directories
     let drives = discover_drives(base_dir, specific_drive.as_deref());
 
     if drives.is_empty() {
         eprintln!("ERROR: No drive directories found in {}", base_dir.display());
         eprintln!("  Expected directories like: drive_d, drive_e, drive_f, ...");
+        eprintln!("  (or drive_<x>.tar.zst bundles to expand)");
         std::process::exit(1);
     }
 
@@ -379,6 +415,13 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
 
     // Print summary
     print_summary(&results);
+
+    // Dump the temp dirs we expanded from .tar.zst bundles.
+    for temp in &temp_dirs {
+        if fs::remove_dir_all(temp).is_ok() {
+            println!("🧹 removed expanded {}", temp.display());
+        }
+    }
 
     // Exit with failure if any drive mismatched
     let any_mismatch = results.iter().any(|r| r.result == VerifyResult::Mismatch);
@@ -467,6 +510,20 @@ fn run_live_mode(args: &[String]) {
     let keep_files = args.iter().any(|a| a == "--keep");
     let name_only = args.iter().any(|a| a == "--name-only");
 
+    // --bundle: after each live compare, capture the MFT + metafiles and zip
+    // the drive dir (MFT + metafiles + manifest + cpp/rust outputs) for offline
+    // transport. Needs the uffs-mft binary (--mft-bin or auto-detected).
+    let bundle = args.iter().any(|a| a == "--bundle");
+    let mft_bin: Option<PathBuf> = parse_live_arg(args, "--mft-bin")
+        .map(PathBuf::from)
+        .or_else(find_uffs_mft_bin);
+    if bundle {
+        match mft_bin {
+            Some(ref p) => println!("  Bundle:      ON — uffs-mft: {}", p.display()),
+            None => println!("  Bundle:      ON — ⚠️  uffs-mft not found (use --mft-bin <path>)"),
+        }
+    }
+
     // Determine drives
     let drives: Vec<String> = if let Some(d) = parse_drive_filter(args) {
         vec![d.to_uppercase()]
@@ -516,6 +573,8 @@ fn run_live_mode(args: &[String]) {
             es_bin.as_deref(),
             &out_dir,
             keep_files,
+            bundle,
+            mft_bin.as_deref(),
             pipeline.as_deref(),
             i + 1,
             drives.len(),
@@ -592,6 +651,8 @@ fn run_live_drive_parity(
     es_bin: Option<&Path>,
     out_dir: &Path,
     keep_files: bool,
+    bundle: bool,
+    mft_bin: Option<&Path>,
     pipeline: Option<&str>,
     drive_index: usize,
     total_drives: usize,
@@ -884,7 +945,13 @@ fn run_live_drive_parity(
     //     compare_with_everything(&es_raw_path, &rust_raw, &drive_upper);
     // }
 
-    cleanup_live_files(keep_files, &[&cpp_raw, &rust_raw, &es_raw_path]);
+    // Build the offline transport bundle (capture MFT + metafiles into the same
+    // drive dir, then zip it with the cpp/rust outputs). Bundling implies keep.
+    if bundle {
+        create_transport_bundle(&drive_upper, &drive_lower, out_dir, mft_bin);
+    }
+
+    cleanup_live_files(keep_files || bundle, &[&cpp_raw, &rust_raw, &es_raw_path]);
 
     LiveDriveResult {
         drive_letter: drive_upper,
@@ -894,6 +961,91 @@ fn run_live_drive_parity(
         extra_rust_lines: parity_result.1,
         cpp_time: cpp_elapsed,
         rust_time: rust_elapsed,
+    }
+}
+
+/// Auto-detect the `uffs-mft` binary (MFT capture tool).
+///
+/// Looks in `$USERPROFILE\bin` / `$HOME/bin` first (the standard deploy
+/// location), then the workspace `target/release`.
+fn find_uffs_mft_bin() -> Option<PathBuf> {
+    let name = if cfg!(windows) { "uffs-mft.exe" } else { "uffs-mft" };
+    for var in ["USERPROFILE", "HOME"] {
+        if let Ok(home) = env::var(var) {
+            let candidate = PathBuf::from(home).join("bin").join(name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    let workspace = find_workspace_root().join("target").join("release").join(name);
+    workspace.exists().then_some(workspace)
+}
+
+/// Capture the MFT + metafiles into the drive dir and pack it for transport.
+///
+/// A single `uffs-mft capture --out <out_dir> --zip` writes into
+/// `<out_dir>/drive_<x>/` — the same dir the live cpp/rust outputs already live
+/// in — then packs the whole dir into `<out_dir>/drive_<x>.tar.zst`. That
+/// bundler is ustar + zstd, so unlike PowerShell `Compress-Archive` (which
+/// silently fails past ~2 GB — e.g. a large drive's `<DRIVE>_mft.bin`) it has no
+/// size limit. On the Mac: `tar --zstd -xf drive_<x>.tar.zst`, then
+/// `verify_parity.rs <dir> --regenerate`.
+fn create_transport_bundle(
+    drive_upper: &str,
+    drive_lower: &str,
+    out_dir: &Path,
+    mft_bin: Option<&Path>,
+) {
+    println!();
+    println!("  [bundle] Building transport bundle for drive {drive_upper}...");
+
+    let Some(mft_bin) = mft_bin else {
+        println!("  [bundle] ⚠️  skipped: uffs-mft binary not found (pass --mft-bin <path>)");
+        return;
+    };
+
+    // Capture MFT + metafiles alongside the cpp/rust outputs, then --zip packs
+    // the whole drive dir into drive_<x>.tar.zst.
+    print!("  [bundle] uffs-mft capture --drive {drive_upper} --zip...");
+    io::stdout().flush().ok();
+    let capture = Command::new(mft_bin)
+        .args([
+            "capture",
+            "--drive",
+            drive_upper,
+            "--out",
+            &out_dir.to_string_lossy(),
+            "--zip",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output();
+    match capture {
+        Ok(out) if out.status.success() => println!(" ✅"),
+        Ok(out) => println!(
+            " ⚠️  exited {}: {}",
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => {
+            println!(" ❌ failed to run: {e}");
+            return;
+        }
+    }
+
+    // Verify the archive actually landed (never trust exit code alone).
+    let archive = out_dir.join(format!("drive_{drive_lower}.tar.zst"));
+    match fs::metadata(&archive) {
+        Ok(meta) if meta.len() > 0 => {
+            #[allow(clippy::cast_precision_loss)] // display only
+            let mb = meta.len() as f64 / (1024.0 * 1024.0);
+            println!("  [bundle] ✅ {} ({mb:.1} MB)", archive.display());
+        }
+        _ => println!(
+            "  [bundle] ❌ archive not produced: {}",
+            archive.display()
+        ),
     }
 }
 
@@ -1908,6 +2060,66 @@ fn discover_drives(base_dir: &Path, filter: Option<&str>) -> Vec<String> {
     drives
 }
 
+/// Discover `drive_<x>.tar.zst` transport bundles in `base_dir`, honoring the
+/// optional single-drive filter. Returns `(drive_lower, archive_path)` pairs.
+fn discover_archives(base_dir: &Path, filter: Option<&str>) -> Vec<(String, PathBuf)> {
+    let mut archives = Vec::new();
+
+    let Ok(entries) = fs::read_dir(base_dir) else {
+        return archives;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(letter) = name
+            .strip_prefix("drive_")
+            .and_then(|rest| rest.strip_suffix(".tar.zst"))
+        else {
+            continue;
+        };
+        if letter.len() != 1 || !letter.chars().all(|c| c.is_ascii_alphabetic()) {
+            continue;
+        }
+        if let Some(f) = filter {
+            if !letter.eq_ignore_ascii_case(f) {
+                continue;
+            }
+        }
+        archives.push((letter.to_lowercase(), path));
+    }
+
+    archives.sort();
+    archives
+}
+
+/// Extract a `.tar.zst` bundle into `target` (created if absent).
+///
+/// Tries `tar --zstd -xf` first, then plain `tar -xf` (libarchive on macOS /
+/// bsdtar auto-detects zstd on extraction).
+fn extract_archive(archive: &Path, target: &Path) -> Result<(), String> {
+    fs::create_dir_all(target).map_err(|e| format!("mkdir {}: {e}", target.display()))?;
+    let archive_str = archive.to_string_lossy().to_string();
+    let target_str = target.to_string_lossy().to_string();
+
+    let attempts: [Vec<&str>; 2] = [
+        vec!["--zstd", "-xf", &archive_str, "-C", &target_str],
+        vec!["-xf", &archive_str, "-C", &target_str],
+    ];
+    let mut last_err = String::from("tar not found");
+    for args in &attempts {
+        match Command::new("tar").args(args).output() {
+            Ok(out) if out.status.success() => return Ok(()),
+            Ok(out) => last_err = String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    let _ = fs::remove_dir_all(target);
+    Err(format!("tar extract failed: {last_err}"))
+}
+
 /// Verify a single drive and return the result
 fn verify_single_drive(
     base_dir: &Path,
@@ -2811,6 +3023,44 @@ fn parse_bin_path(args: &[String]) -> Option<PathBuf> {
     None
 }
 
+/// Kill any running daemon and purge on-disk caches so the next `uffs` run
+/// starts from a clean slate, loading only the drive we ask for.
+///
+/// Offline `--regenerate` uses `uffs --mft-file` via autospawn; if a daemon
+/// from a previous drive/session is still resident it serves that stale
+/// in-memory index instead (`--no-cache` only skips the cache *file*, not the
+/// hot daemon). We don't know which drive/version a running daemon holds, so we
+/// reset it.
+fn purge_daemon_and_cache(uffs_bin: &Path) {
+    let _ = Command::new(uffs_bin)
+        .args(["--daemon", "kill"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    std::thread::sleep(Duration::from_secs(1));
+
+    // Best-effort cache removal across platforms.
+    let mut cache_dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(local) = env::var("LOCALAPPDATA") {
+        cache_dirs.push(PathBuf::from(local).join("uffs").join("cache")); // Windows
+    }
+    if let Ok(tmp) = env::var("TEMP") {
+        cache_dirs.push(PathBuf::from(tmp).join("uffs_index_cache")); // Windows legacy
+    }
+    if let Ok(home) = env::var("HOME") {
+        cache_dirs.push(PathBuf::from(&home).join("Library/Caches/uffs")); // macOS
+        cache_dirs.push(PathBuf::from(&home).join(".cache/uffs")); // Linux
+    }
+    if let Ok(xdg) = env::var("XDG_CACHE_HOME") {
+        cache_dirs.push(PathBuf::from(xdg).join("uffs"));
+    }
+    for dir in cache_dirs {
+        if dir.exists() {
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+}
+
 fn regenerate_rust_output(
     data_dir: &Path,
     drive_letter: &str,
@@ -2946,6 +3196,14 @@ fn regenerate_rust_output(
     // NOTE: --pipeline flag removed from uffs binary (Step 4).
     let _ = pipeline;
     println!("Pipeline: unified (only pipeline)");
+
+    // Clean slate: reset any daemon (it may hold a different drive/version from
+    // an earlier run) so uffs loads only this drive's MFT via autospawn.
+    print!("Resetting daemon + cache for a clean single-drive load...");
+    io::stdout().flush().ok();
+    purge_daemon_and_cache(&binary_path);
+    println!(" ✅");
+
     let status = Command::new(&binary_path)
         .args(&args)
         .status();
@@ -3638,6 +3896,7 @@ fn verify_hardlinks_inline(golden_baseline_file: &Path, only_in_rust_data: &[Str
 /// 0=path 1=name 2=parent 3=size 4=allocated 5=created 6=modified
 /// 7=accessed 8=descendant-count …
 const COL_SIZE: usize = 3;
+const COL_ALLOCATED: usize = 4;
 const COL_ACCESSED: usize = 7;
 const COL_COUNT: usize = 8;
 
@@ -3709,8 +3968,10 @@ fn classify_live_skew(baseline: &str, rust: &str) -> Option<&'static str> {
         if i == COL_ACCESSED {
             continue;
         }
-        if is_dir && (i == COL_SIZE || i == COL_COUNT) {
-            accessed_only = false; // a subtree aggregate also moved
+        if is_dir && (i == COL_SIZE || i == COL_ALLOCATED || i == COL_COUNT) {
+            // Size, size-on-disk, and descendant count are all subtree
+            // aggregates that move when a child changes between the two reads.
+            accessed_only = false;
             continue;
         }
         return None; // a structural field differs — real diff
