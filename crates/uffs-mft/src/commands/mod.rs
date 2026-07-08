@@ -7,13 +7,18 @@ use anyhow::Result;
 
 use crate::cli::Commands;
 
+mod extract_mft;
 mod load;
+mod metafile_info;
+mod sysinfo;
+mod verify;
 #[cfg(windows)]
 mod windows;
 
 /// Dispatches parsed CLI commands to their handlers.
 #[expect(
     clippy::too_many_lines,
+    clippy::cognitive_complexity,
     reason = "single match arm per CLI subcommand keeps the dispatch table flat and easy to audit; splitting fragments the routing surface"
 )]
 #[cfg(windows)]
@@ -35,6 +40,26 @@ pub(crate) async fn dispatch_command(command: Commands) -> Result<()> {
             format,
         } => windows::cmd_info(drive, deep, no_bitmap, unique, format).await,
         Commands::Drives { format } => windows::cmd_drives(format).await,
+        Commands::Sysinfo { out, json } => sysinfo::run(out.as_deref(), json),
+        Commands::Metafile {
+            drive,
+            kind,
+            output,
+        } => windows::cmd_metafile(drive, kind, &output).await,
+        Commands::Capture {
+            drive,
+            out,
+            all_drives,
+            zip,
+            split_gib,
+        } => windows::cmd_capture(drive, &out, all_drives, zip, split_gib).await,
+        Commands::MetafileInfo { input } => metafile_info::cmd_metafile_info(&input),
+        Commands::ExtractMft { input, output } => extract_mft::cmd_extract_mft(&input, &output),
+        Commands::Verify {
+            left,
+            right,
+            columns,
+        } => verify::cmd_verify(&left, &right, &columns),
         Commands::Bench {
             drive,
             json,
@@ -189,7 +214,17 @@ pub(crate) async fn dispatch_command(command: Commands) -> Result<()> {
             drive,
             forensic,
         ),
-        Commands::Read { .. }
+        Commands::Sysinfo { out, json } => sysinfo::run(out.as_deref(), json),
+        Commands::MetafileInfo { input } => metafile_info::cmd_metafile_info(&input),
+        Commands::ExtractMft { input, output } => extract_mft::cmd_extract_mft(&input, &output),
+        Commands::Verify {
+            left,
+            right,
+            columns,
+        } => verify::cmd_verify(&left, &right, &columns),
+        Commands::Metafile { .. }
+        | Commands::Capture { .. }
+        | Commands::Read { .. }
         | Commands::Info { .. }
         | Commands::Drives { .. }
         | Commands::Bench { .. }

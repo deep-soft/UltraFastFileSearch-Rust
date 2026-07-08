@@ -37,6 +37,13 @@ mod extents;
 /// detection through [`Lcn::is_hole`] / [`Lcn::is_zero`] instead of
 /// open-coded `< 0` / `== 0` checks at every call site.
 pub mod lcn;
+/// NTFS metafile capture ($Boot, ...) from a live volume.
+pub mod metafile;
+/// Offline decoders for captured metafiles ($Boot geometry, $Bitmap free
+/// space).
+pub mod metafile_decode;
+/// Live-volume NTFS metafile readers ($Boot, $DATA streams, $UsnJrnl).
+pub mod metafile_read;
 /// Native Windows process introspection for the self-update detector.
 ///
 /// Image path + pid enumeration — keeps the `unsafe` FFI out of `uffs-cli`.

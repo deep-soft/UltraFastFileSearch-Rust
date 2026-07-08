@@ -812,9 +812,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-channel"
-version = "0.5.15"
+version = "0.5.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+checksum = "d85363c37faeca707aef026efa9f3b34d077bce547e48f770770625c6013679e"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -831,9 +831,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -3449,9 +3449,9 @@ dependencies = [
 
 [[package]]
 name = "rustc-hash"
-version = "2.1.2"
+version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustix"
@@ -4379,7 +4379,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "uffs-bench"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "chrono",
  "clap",
@@ -4396,7 +4396,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-broker"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "tracing",
@@ -4411,14 +4411,14 @@ dependencies = [
 
 [[package]]
 name = "uffs-broker-protocol"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "uffs-ci-pipeline"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4437,7 +4437,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-cli"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4459,7 +4459,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-client"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "dirs-next",
  "libc",
@@ -4479,7 +4479,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-core"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4510,7 +4510,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-daemon"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "clap",
@@ -4543,7 +4543,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-diag"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4558,7 +4558,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-format"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "chrono",
  "itoa",
@@ -4569,7 +4569,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-gen-hooks"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "clap",
@@ -4581,7 +4581,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-gen-workflow"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "clap",
@@ -4594,7 +4594,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-manifest-audit"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "clap",
@@ -4606,7 +4606,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-mcp"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "axum",
@@ -4630,7 +4630,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-mft"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -4671,14 +4671,14 @@ dependencies = [
 
 [[package]]
 name = "uffs-polars"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "polars",
 ]
 
 [[package]]
 name = "uffs-security"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "aes-gcm",
  "dirs-next",
@@ -4693,22 +4693,22 @@ dependencies = [
 
 [[package]]
 name = "uffs-statusfmt"
-version = "0.6.23"
+version = "0.6.24"
 
 [[package]]
 name = "uffs-text"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "bytemuck",
 ]
 
 [[package]]
 name = "uffs-time"
-version = "0.6.23"
+version = "0.6.24"
 
 [[package]]
 name = "uffs-update"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "dirs-next",
@@ -4727,11 +4727,11 @@ dependencies = [
 
 [[package]]
 name = "uffs-version"
-version = "0.6.23"
+version = "0.6.24"
 
 [[package]]
 name = "uffs-winsvc"
-version = "0.6.23"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "windows 0.62.2",
