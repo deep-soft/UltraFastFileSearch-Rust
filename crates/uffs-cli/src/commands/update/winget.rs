@@ -168,6 +168,7 @@ mod windows_impl {
     use anyhow::{Context as _, Result, bail};
 
     use super::{UpgradeOutcome, WINGET_PACKAGE_ID};
+    use crate::commands::spinner::spinner_while;
     use crate::commands::update::model::{Channel, DetectionReport, InstallRoot, Scope};
     use crate::commands::update::strip_verbatim_prefix;
 
@@ -382,6 +383,16 @@ mod windows_impl {
             // ~69s on a cold cache), so animate a spinner — a silent minute is
             // the very "looks hung" symptom this rework set out to remove.
             spinner_while("Restarting the index daemon", restart_daemon);
+            // A daemon that needs elevation to read the MFT (no broker) cannot
+            // come back from this non-elevated restart. Say so with the one-time
+            // fix instead of leaving a silently-stopped daemon.
+            if !daemon_running() {
+                println!(
+                    "\u{26a0} The index daemon was stopped for the update and couldn't restart\n\
+                     \x20 non-elevated (no broker). Run `uffs-broker --install` for zero-UAC\n\
+                     \x20 restarts, or start it from an elevated terminal."
+                );
+            }
         }
     }
 
@@ -482,6 +493,15 @@ mod windows_impl {
         true
     }
 
+    /// Whether the resident daemon is up: a fresh PID file naming a live
+    /// process. Used after the best-effort restart to tell the user when a
+    /// no-broker elevated daemon could not come back non-elevated.
+    fn daemon_running() -> bool {
+        let path = uffs_client::daemon_ctl::pid_file_path();
+        uffs_client::daemon_ctl::parse_pid_file(&path)
+            .is_some_and(|(pid, ..)| uffs_client::daemon_ctl::is_pid_alive(pid))
+    }
+
     /// Best-effort daemon restart after the upgrade (auto-start on the next
     /// search covers any failure).
     fn restart_daemon() {
@@ -564,28 +584,6 @@ mod windows_impl {
             std::thread::sleep(POLL);
             frame = frame.wrapping_add(1);
         }
-    }
-
-    /// Run `body` on a scoped thread while animating a spinner (for a blocking
-    /// call with no incremental progress, e.g. `winget upgrade`).
-    #[expect(clippy::print_stdout, reason = "interactive progress spinner")]
-    fn spinner_while<T: Send>(label: &str, body: impl FnOnce() -> T + Send) -> T {
-        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        std::thread::scope(|scope| {
-            let handle = scope.spawn(body);
-            let mut frame = 0_usize;
-            while !handle.is_finished() {
-                let glyph = FRAMES.get(frame % FRAMES.len()).copied().unwrap_or("*");
-                print!("\r  {glyph} {label}\u{2026}      ");
-                let _flushed = std::io::stdout().flush();
-                std::thread::sleep(POLL);
-                frame = frame.wrapping_add(1);
-            }
-            clear_line();
-            // Our closures never panic; if one somehow did, aborting is safer
-            // than an unwrap that the workspace lints forbid anyway.
-            handle.join().unwrap_or_else(|_| std::process::abort())
-        })
     }
 
     /// Erase the spinner line.

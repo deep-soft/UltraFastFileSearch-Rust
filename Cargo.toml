@@ -1,3 +1,7 @@
+cargo-features = [
+  "panic-immediate-abort",
+] # ship profile only (needs -Z build-std)
+
 # =============================================================================
 # Cargo.toml - UFFS (Ultra Fast File Search) Workspace
 # =============================================================================
@@ -61,7 +65,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.6.24"
+version = "0.6.25"
 edition = "2024"
 # No `rust-version` claim: the workspace is structurally nightly-only.
 # `crates/uffs-polars` enables `polars/nightly` unconditionally, which
@@ -128,30 +132,30 @@ publish = false
 # proposed-plan output for 12 days because `release-plz update`
 # failed at `cargo package` with this very error.  See
 # `release-automation-baseline.md` §10 for the diagnostic trail.
-uffs-polars = { path = "crates/uffs-polars", version = "0.6.24" }
-uffs-security = { path = "crates/uffs-security", version = "0.6.24" }
-uffs-text = { path = "crates/uffs-text", version = "0.6.24" }
-uffs-time = { path = "crates/uffs-time", version = "0.6.24" }
-uffs-version = { path = "crates/uffs-version", version = "0.6.24" }
-uffs-statusfmt = { path = "crates/uffs-statusfmt", version = "0.6.24" }
-uffs-mft = { path = "crates/uffs-mft", version = "0.6.24" }
-uffs-format = { path = "crates/uffs-format", version = "0.6.24" }
-uffs-core = { path = "crates/uffs-core", version = "0.6.24" }
-uffs-client = { path = "crates/uffs-client", version = "0.6.24" }
+uffs-polars = { path = "crates/uffs-polars", version = "0.6.25" }
+uffs-security = { path = "crates/uffs-security", version = "0.6.25" }
+uffs-text = { path = "crates/uffs-text", version = "0.6.25" }
+uffs-time = { path = "crates/uffs-time", version = "0.6.25" }
+uffs-version = { path = "crates/uffs-version", version = "0.6.25" }
+uffs-statusfmt = { path = "crates/uffs-statusfmt", version = "0.6.25" }
+uffs-mft = { path = "crates/uffs-mft", version = "0.6.25" }
+uffs-format = { path = "crates/uffs-format", version = "0.6.25" }
+uffs-core = { path = "crates/uffs-core", version = "0.6.25" }
+uffs-client = { path = "crates/uffs-client", version = "0.6.25" }
 # `uffs-broker-protocol` carries the wire-protocol types shared between
 # `uffs-broker` (the elevated handle vendor, Windows-only binary) and
 # `uffs-daemon::broker_client` (the handle consumer).  Pure-logic
 # Layer-0 lib — cross-platform tests run on every CI lane.  Added in
 # F5 (issue #205) so neither side duplicates `BROKER_PIPE_NAME` /
 # wire-format byte literals.
-uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.24" }
+uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.25" }
 # `uffs-winsvc` — native Windows service control (SCM query/start/stop) +
 # the non-connecting broker-pipe readiness probe.  Layer-0 leaf: its only
 # dependency is the `windows` crate (windows-target), with non-Windows
 # stubs so cross-platform consumers (uffs-update, uffs-cli) compile.
 # Single source of truth for the `sc`/SCM mechanics previously duplicated
 # across uffs-broker, uffs-update, and uffs-cli.
-uffs-winsvc = { path = "crates/uffs-winsvc", version = "0.6.24" }
+uffs-winsvc = { path = "crates/uffs-winsvc", version = "0.6.25" }
 # NOTE: no `uffs-broker` workspace dependency alias on purpose —
 # `uffs-broker` is a binary-only crate (the only `[lib]` it carries is
 # this protocol module's now-extracted sibling); no other workspace
@@ -761,6 +765,34 @@ opt-level = 0
 # The workspace-level `release` profile keeps `opt-level = 3` for
 # daemon/mcp where steady-state perf dominates.
 [profile.release.package.uffs-cli]
+opt-level = "z"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ship profile — minimal panic (removes the field-useless backtrace machinery)
+# ─────────────────────────────────────────────────────────────────────────────
+# Field binaries are stripped, so a *symbolized* backtrace is dead weight — the
+# `gimli`/`addr2line` DWARF machinery inside std is ~10% of the CLI. This profile
+# rebuilds std with `panic = "immediate-abort"`, so a field panic is a bare,
+# process-local `abort()` (no message, no backtrace) — which matches the
+# workspace no-panic lint policy (panics are forbidden in prod anyway). Dev + CI
+# keep normal panics + full backtraces.
+#
+# Built ONLY with build-std (needs nightly + the `rust-src` component):
+#   cargo [xwin] build --profile ship -Z build-std=std,panic_abort --target <T>
+#
+# Measured (x86_64-pc-windows-msvc, uffs.exe): 1,292,800 → 1,167,872  (−9.7%).
+#
+# CAVEAT: `panic_immediate_abort` became a first-class panic strategy in recent
+# nightlies (it was a `-Z build-std-features` flag before), so this is unstable
+# and may need re-touching on a toolchain bump. Deliberately NOT wired into the
+# default release — opt in from the ship build when ready to own that.
+[profile.ship]
+inherits = "release"
+panic = "immediate-abort"
+
+# Per-package overrides do not inherit into a derived profile, so keep the CLI
+# size-first here too.
+[profile.ship.package.uffs-cli]
 opt-level = "z"
 
 # ─────────────────────────────────────────────────────────────────────────────
