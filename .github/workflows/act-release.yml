@@ -1,6 +1,6 @@
 # SPDX-FileCopyright (c) 2025-2026 SKY, LLC.
 # SPDX-License-Identifier: MPL-2.0
-# 2026-07-03 21:00 # Linux binary as static musl # https://github.com/skyllc-ai/UltraFastFileSearch/commit/630be95a5a0d75f67c6fedef399c0d07c1ede6c1
+# 2026-07-10 00:00 # Linux binary as static musl # https://github.com/skyllc-ai/UltraFastFileSearch/commit/630be95a5a0d75f67c6fedef399c0d07c1ede6c1
 #          - target: x86_64-apple-darwin
 #            os: macos-latest
 #            artifact-name: uffs-macos-x64
@@ -543,6 +543,26 @@ jobs:
           # → the native cargo build. Same flags/profile either way.
           if [[ "${{ matrix.target }}" == *musl* ]]; then
             cargo zigbuild --locked --release --target ${{ matrix.target }} --workspace --bins
+          elif [[ "${{ matrix.target }}" == *windows* ]]; then
+            # Windows-ONLY size strip: rebuild std with panic=immediate-abort +
+            # size-optimized std, so a field panic is a bare, process-local
+            # abort() with no backtrace. The gimli/addr2line DWARF machinery is
+            # ~10% of the CLI and useless on a stripped binary; a panic is a
+            # should-never-happen bug (the workspace lints forbid unwrap/panic
+            # in prod), so dropping the diagnostic is the right trade for ship.
+            # Needs nightly + rust-src (both from rust-toolchain.toml). Linux and
+            # macOS deliberately stay on the plain release profile. Measured:
+            # uffs.exe 1,292,800 -> 1,167,872 (-9.7%). See [profile.ship] in
+            # Cargo.toml.
+            cargo build --locked --profile ship \
+              -Z build-std=std,panic_abort \
+              -Z build-std-features=optimize_for_size \
+              --target ${{ matrix.target }} --workspace --bins
+            # The `ship` profile outputs to target/<triple>/ship/, but every
+            # packaging step below reads target/<triple>/release/ — mirror the
+            # built .exe files across so none of those paths need to change.
+            mkdir -p "target/${{ matrix.target }}/release"
+            cp "target/${{ matrix.target }}/ship/"*.exe "target/${{ matrix.target }}/release/"
           else
             cargo build --locked --release --target ${{ matrix.target }} --workspace --bins
           fi
@@ -1265,6 +1285,42 @@ jobs:
             --ref "${default_branch}" \
             -f "release-tag=${RELEASE_TAG}"
           echo "✅ winget-publish.yml dispatched for ${RELEASE_TAG} on ${default_branch} (runs independently; check the Actions tab)."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Publish crates.io — dispatch release-plz.yml's OIDC crates-io-publish job
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # The release tag is created by GITHUB_TOKEN, which (GitHub anti-loop policy)
+  # does NOT trigger release-plz.yml's `push: tags: v*` event — so the crates
+  # publish must be dispatched explicitly, exactly like submit-winget above.
+  # Dispatching against the default branch keeps the dispatch ref stable; the
+  # tag is passed as `publish_tag`, and release-plz.yml checks out that tag and
+  # publishes it via OIDC trusted publishing (registration: workflow
+  # release-plz.yml + environment crates.io-publish — unchanged by this job).
+  submit-crates:
+    name: 📦 Publish crates.io (OIDC)
+    runs-on: ubuntu-latest
+    needs: [release-preparation, create-github-release]
+    if: github.repository_owner == 'skyllc-ai'
+    continue-on-error: true
+    permissions:
+      actions: write # required to dispatch release-plz.yml via the API
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch release-plz crates-io-publish for the release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-preparation.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          default_branch="$(gh repo view "${GH_REPO}" --json defaultBranchRef -q .defaultBranchRef.name)"
+          echo "Dispatching release-plz.yml crates-io-publish for ${RELEASE_TAG}"
+          gh workflow run release-plz.yml \
+            --ref "${default_branch}" \
+            -f "publish_tag=${RELEASE_TAG}"
+          echo "✅ release-plz.yml dispatched for ${RELEASE_TAG} (crates publish runs independently; check the Actions tab)."
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Failure Notification — opens a GitHub Issue on release failure
