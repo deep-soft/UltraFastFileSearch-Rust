@@ -546,6 +546,17 @@ pub struct SearchParams {
     /// empty because the MFT path is a separate wire selector.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_drive_targets: Vec<uffs_mft::platform::DriveLetter>,
+
+    // ── Snapshot-diff (delete visibility) ──────────────────────────
+    /// When set, this is a **snapshot-diff search**: the daemon loads the
+    /// baseline MFT capture at this path, marks the records whose File
+    /// Reference vanished from the live index (the deletes), and runs this
+    /// search over the **baseline** restricted to those deleted rows. Every
+    /// other field (pattern, `ext`, `newer`/`older`, `min_size`, sort,
+    /// projection, output format) then filters/shapes the deleted set exactly
+    /// like a normal search. `None` = ordinary live search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_baseline: Option<String>,
 }
 
 /// Default-true helper for serde.
@@ -620,6 +631,7 @@ impl Default for SearchParams {
             output_tz_offset_hours: None,
             output_format: None,
             output_drive_targets: Vec::new(),
+            diff_baseline: None,
         }
     }
 }
