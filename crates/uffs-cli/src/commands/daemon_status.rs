@@ -22,6 +22,7 @@ use uffs_client::daemon_ctl::pid_file_path;
 use uffs_client::protocol::response::{
     DaemonStatus, DriveInfo, DriveMemoryInfo, ShardTier, StatsResponse, StatusResponse,
 };
+use uffs_mft::platform::{PhysicalDrive, physical_drives};
 use uffs_statusfmt::{Glyph, Palette, field, header, section, status_row};
 
 /// One mebibyte, for the `bytes → MB` display conversions.
@@ -133,6 +134,7 @@ fn render_human(
             print_performance_block(palette, counters);
         }
         print_drive_detail_block(palette, drives, &status.drive_memory);
+        print_physical_drives_block(palette, drives);
     }
 }
 
@@ -419,6 +421,64 @@ fn print_drive_line(palette: Palette, dr: &DriveInfo, memory: &[DriveMemoryInfo]
     }
 }
 
+/// Verbose `── Physical drives ──` section: the hardware behind each drive
+/// letter — kind (`NVMe` / SSD / HDD), capacity, used, and free — gathered
+/// locally via non-privileged Win32 calls (so it works even when the daemon
+/// runs non-elevated via the broker) and cross-referenced with what the
+/// daemon has indexed. Renders nothing on non-Windows or when no NTFS volume
+/// is present, so a drive letter in the status above always has a concrete
+/// physical drive to point at.
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn print_physical_drives_block(palette: Palette, loaded: &[DriveInfo]) {
+    let physical = physical_drives();
+    if physical.is_empty() {
+        return;
+    }
+    println!("{}", section(palette, "Physical drives"));
+    for drive in &physical {
+        print_physical_drive_line(palette, drive, loaded);
+    }
+}
+
+/// Render one physical-drive row: `<glyph> C:* NVMe  <size> · <used>% used ·
+/// <free> free  "label" · <index state>`. The glyph and trailing note reflect
+/// whether the daemon has this drive loaded (records) or not.
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn print_physical_drive_line(palette: Palette, drive: &PhysicalDrive, loaded: &[DriveInfo]) {
+    use uffs_client::format::{format_bytes, format_number_commas};
+
+    let boot = if drive.is_boot { "*" } else { "" };
+    let letter = palette.bold(&format!("{}:{boot}", drive.letter));
+    let (glyph, index_note) = loaded
+        .iter()
+        .find(|info| info.letter == drive.letter)
+        .map_or_else(
+            || (Glyph::Off, format!(" \u{b7} {}", palette.dim("not loaded"))),
+            |info| {
+                (
+                    Glyph::Up,
+                    format!(
+                        " \u{b7} indexed ({} records)",
+                        format_number_commas(info.records as u64)
+                    ),
+                )
+            },
+        );
+    let label = if drive.label.is_empty() {
+        String::new()
+    } else {
+        format!("  \u{201c}{}\u{201d}", drive.label)
+    };
+    println!(
+        "  {} {letter} {:<9} {:>9} \u{b7} {:>4.0}% used \u{b7} {:>9} free{label}{index_note}",
+        glyph.render(palette),
+        drive.type_label(),
+        format_bytes(drive.total_bytes),
+        drive.used_pct(),
+        format_bytes(drive.free_bytes),
+    );
+}
+
 /// Map a shard tier to the shared health glyph: Hot/Warm are up, Parked is
 /// transitional, Cold/Evicting/Unknown are down/off.
 const fn tier_glyph(tier: Option<ShardTier>) -> Glyph {
@@ -445,10 +505,20 @@ fn render_not_running(json: bool) -> Result<()> {
     );
     let pid_path = pid_file_path();
     if pid_path.exists() {
-        println!(
-            "  {}",
-            palette.dim(&format!("(stale PID file at {})", pid_path.display()))
-        );
+        // A PID file with no reachable daemon is usually stale — but not always.
+        // On Windows `is_pid_alive` confirms the PID is a live *uffsd* (a
+        // recycled PID owned by an unrelated process reads as not-alive), so a
+        // live result here means a real daemon holds the PID yet the IPC
+        // endpoint did not answer: it is still loading, or it is wedged. Say so
+        // rather than mislabeling a live daemon "stale".
+        let note = match uffs_client::daemon_ctl::parse_pid_file(&pid_path) {
+            Some((pid, ..)) if uffs_client::daemon_ctl::is_pid_alive(pid) => format!(
+                "(daemon process is alive at PID {pid} but not answering on IPC — it may \
+                 still be loading, or it is wedged; run `uffs --daemon restart` to clear it)"
+            ),
+            _ => format!("(stale PID file at {})", pid_path.display()),
+        };
+        println!("  {}", palette.dim(&note));
     }
     Ok(())
 }

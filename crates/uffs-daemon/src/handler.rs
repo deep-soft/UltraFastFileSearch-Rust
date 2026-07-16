@@ -39,6 +39,13 @@ mod blob;
 mod parse_search_params;
 use parse_search_params::ParseSearchParamsError;
 
+// `diff_search_response` (the snapshot-diff error mapping) lives in a sibling
+// file for the same 800-LOC policy reason as `handler_blob.rs`; `#[path]` keeps
+// it an `impl RequestHandler` method the dispatcher calls as
+// `self.diff_search_response(...)`.
+#[path = "handler_diff.rs"]
+mod diff_handler;
+
 /// Request handler holding shared daemon state.
 pub(crate) struct RequestHandler {
     /// Shared index manager.
@@ -111,7 +118,12 @@ impl RequestHandler {
             }
         }
 
-        let mut response = self.index.search(&search_params).await;
+        // A `--diff <baseline>` routes to the snapshot-diff path (which may
+        // early-return a JSON-RPC error); everything else is a live search.
+        let mut response = match self.search_or_diff(id, &search_params).await {
+            Ok(resp) => resp,
+            Err(error_json) => return error_json,
+        };
         // Row count captured up-front for logging and threshold
         // dispatch: both blob-packing and shmem-rows routing may
         // replace the payload variant in-place, at which point

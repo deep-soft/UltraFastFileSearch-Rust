@@ -26,6 +26,10 @@ pub(crate) enum Command {
     Stats,
     /// `--agg <preset>`.
     Agg,
+    /// `--deleted --mft-file <path>`.
+    Deleted,
+    /// `--snapshot --drive C --out <file>`.
+    Snapshot,
     /// `--daemon <action>`.
     Daemon,
     /// `--mcp <action>`.
@@ -46,6 +50,8 @@ impl Command {
             "--search" => Self::Search,
             "--stats" => Self::Stats,
             "--agg" | "--aggregate" => Self::Agg,
+            "--deleted" => Self::Deleted,
+            "--snapshot" => Self::Snapshot,
             "--daemon" => Self::Daemon,
             "--mcp" => Self::Mcp,
             // `--upgrade` is a HIDDEN alias for `--update` (winget/apt muscle
@@ -67,6 +73,8 @@ const COMMAND_TOKENS: &[&str] = &[
     "--stats",
     "--agg",
     "--aggregate",
+    "--deleted",
+    "--snapshot",
     "--daemon",
     "--mcp",
     "--update",
@@ -108,6 +116,8 @@ pub(crate) fn dispatch_command(command: Command, args: &[String]) -> Result<()> 
         Command::Search => crate::run_search(args),
         Command::Stats => crate::run_stats(args),
         Command::Agg => crate::run_aggregate(args),
+        Command::Deleted => commands::deleted::run_deleted(args),
+        Command::Snapshot => commands::snapshot::run_snapshot(args),
         Command::Daemon => crate::run_daemon(args),
         Command::Mcp => commands::mcp_mgmt::mcp_from_args(args),
         Command::Update => commands::update::run_update(args),

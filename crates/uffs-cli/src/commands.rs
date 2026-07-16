@@ -23,10 +23,15 @@ pub(crate) mod daemon_status;
 /// under the 800-LOC policy ceiling.  Forward-looking: 8-D `forget`
 /// and 8-E `status_drives` will land their shims here as well.
 pub(crate) mod daemon_tiering;
+/// `uffs --deleted --mft-file <PATH>` — forensic tombstone read (deleted
+/// files).
+pub(crate) mod deleted;
 /// Shared elevation gate for the mutating flows (uninstall / update): surface
 /// admin-only work up front and decide once (elevate / continue-without /
 /// abort) instead of failing mid-flow. Keeps both flows' elevation UX aligned.
 pub(crate) mod elevation;
+/// `uffs --snapshot --drive C --out FILE` — capture the live MFT to a baseline.
+pub(crate) mod snapshot;
 // Index and info subcommands were merged into other modules.
 /// MCP server management subcommands.
 pub(crate) mod mcp_mgmt;

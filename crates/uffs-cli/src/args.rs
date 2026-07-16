@@ -504,6 +504,8 @@ COMMANDS:
   --search <PATTERN>   Explicit search (same as the bare default)
   --stats [PATH]       Show filesystem statistics
   --agg <PRESET>       Run aggregate analytics
+  --deleted            Forensic tombstone read: recently-deleted files from an MFT
+  --snapshot           Capture the live MFT to a baseline file (Windows, for --diff)
   --daemon <ACTION>    Manage the UFFS daemon (start/stop/load/status)
   --mcp <ACTION>       Manage the UFFS MCP server
   --update [ACTION]    Self-update (snapshot/acquire/apply/doctor/recover)
@@ -527,6 +529,9 @@ COMMON OPTIONS:
   --columns <COLS>        Columns to output (default: all)
   --newer <SPEC>          Modified after date/duration
   --older <SPEC>          Modified before date/duration
+  --diff <BASELINE>       Search the DELETED set vs a baseline MFT capture
+                          (combine with any filter: --diff C_old.bin --drive C
+                          '*.txt' --newer 30d). Needs the drive loaded.
   --min-size <SIZE>       Minimum file size (e.g. 100KB, 10MB)
   --max-size <SIZE>       Maximum file size
   --profile               Show timing breakdown
@@ -619,6 +624,70 @@ OPTIONS:
 #[expect(clippy::print_stdout, reason = "intentional help output")]
 pub(crate) fn print_stats_help() {
     print!("{STATS_HELP}");
+}
+
+/// Help text for `uffs --snapshot`.
+const SNAPSHOT_HELP: &str = "\
+uffs --snapshot — Capture the live MFT to a baseline file
+
+Save the drive's current MFT so a later `uffs --diff <FILE> --drive C` can
+report what was deleted since. Reads the live NTFS MFT: Windows + Administrator.
+
+USAGE:  uffs --snapshot --drive <D> --out <FILE> [OPTIONS]
+
+OPTIONS:
+  -d, --drive <D>          Drive to capture (required, e.g. C).
+  -o, --out <FILE>         Output .bin path (required).
+  --no-compress            Store uncompressed (default: zstd-compressed).
+  --compression-level <N>  zstd level 1-22 (default 3).
+  --raw                    Headerless raw dump for other MFT tools; implies
+                           --no-compress and is NOT loadable by `uffs --diff`.
+
+EXAMPLE:
+  uffs --snapshot --drive C --out C_baseline.bin
+  uffs --diff C_baseline.bin --drive C '*.txt'   # later: what .txt was deleted
+";
+
+/// Print snapshot help.
+#[expect(clippy::print_stdout, reason = "intentional help output")]
+pub(crate) fn print_snapshot_help() {
+    print!("{SNAPSHOT_HELP}");
+}
+
+/// Help text for `uffs --deleted`.
+const DELETED_HELP: &str = "\
+uffs --deleted — Forensic tombstone read (recently-deleted files)
+
+When NTFS deletes a file it clears the in-use flag but leaves the record (name,
+parent, timestamps) intact until the MFT slot is reused. This surfaces those
+not-in-use records as recently-deleted tombstones and reconstructs each path
+from the surviving parent chain. No baseline needed.
+
+USAGE:  uffs --deleted (--mft-file <PATH> | --drive <D>) [OPTIONS]
+
+SOURCE (one required):
+  --mft-file <PATH>    Offline MFT capture to scan.
+  -d, --drive <D>      Live volume scan (Windows, elevated). With --mft-file,
+                       just labels reconstructed paths.
+
+OPTIONS:
+  -n, --limit <N>      Max tombstones to print (0 = all).
+  --json               Emit JSON instead of a table.
+
+LIMITS (best-effort by nature):
+  - Only deletes whose MFT slot has NOT been recycled are visible.
+  - The timestamp is the file's last-write time, NOT the deletion time.
+  - A path is unreliable if a parent directory's slot was itself reused
+    (such paths are prefixed with `…`).
+
+EXAMPLE:
+  uffs --deleted --mft-file C_mft.bin --drive C --limit 50
+";
+
+/// Print deleted help.
+#[expect(clippy::print_stdout, reason = "intentional help output")]
+pub(crate) fn print_deleted_help() {
+    print!("{DELETED_HELP}");
 }
 
 /// Help text for `uffs --agg`.

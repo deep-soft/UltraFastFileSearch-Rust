@@ -150,6 +150,15 @@ pub struct SearchFilters {
     /// UTF-8 and would match nothing).
     pub malformed: Option<bool>,
 
+    /// Filter on whether the record is a **deleted tombstone** — its
+    /// [`crate::diff::DELETED_TOMBSTONE_FLAG`] bit is set. `Some(true)` keeps
+    /// only deleted records; `Some(false)` only live ones; `None` = no filter.
+    ///
+    /// Populated by the snapshot-diff path, which marks the baseline rows that
+    /// vanished from the current index before running the normal search over
+    /// the baseline — so deleted files are filterable by every other criterion.
+    pub deleted: Option<bool>,
+
     /// Render ill-formed names with greppable `<BAD:HHHH>` markers instead of
     /// the default U+FFFD (`�`). A display-only option (not a filter): it
     /// selects [`crate::compact::MalformedRender`] for the resolved path + name
@@ -400,6 +409,9 @@ impl SearchFilters {
             // predicate compiler (it is not a legacy positional param), so the
             // param-based constructor leaves it disabled.
             malformed: None,
+            // Set by the snapshot-diff path (marks vanished baseline rows),
+            // not a legacy positional param; disabled for a normal search.
+            deleted: None,
             // Display-only; the daemon sets it from the request's
             // `normalize_malformed` flag, so it defaults off here.
             normalize_malformed: false,
@@ -634,6 +646,12 @@ impl SearchFilters {
         if self.attr_exclude != 0 && (rec.flags & self.attr_exclude) != 0 {
             return false;
         }
+        if let Some(want_deleted) = self.deleted {
+            let is_deleted = (rec.flags & DELETED_TOMBSTONE_FLAG) != 0;
+            if is_deleted != want_deleted {
+                return false;
+            }
+        }
         if let Some(min) = self.min_descendants
             && rec.descendants < min
         {
@@ -827,8 +845,13 @@ impl SearchFilters {
             // gate (`has_filters = !is_empty()`) skip `matches_record`, so the
             // filter silently no-ops on `uffs "*" --malformed`.
             && self.malformed.is_none()
+            // A deleted-tombstone toggle is a real filter — same match-all-gate
+            // reasoning as `malformed` above.
+            && self.deleted.is_none()
     }
 }
+
+use crate::diff::DELETED_TOMBSTONE_FLAG;
 
 #[cfg(test)]
 mod tests;
