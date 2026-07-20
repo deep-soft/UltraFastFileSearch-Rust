@@ -36,10 +36,11 @@ members = [
   "crates/uffs-format",          # 🧾 Shared CSV formatter (daemon + thin CLI)
   "crates/uffs-core",            # 🎯 Query engine + compact search engine
   # ── Daemon Architecture ──
-  "crates/uffs-daemon", # 🛡️ Background service process
-  "crates/uffs-client", # 📡 Thin client library
-  "crates/uffs-mcp",    # 🤖 MCP stdio adapter for AI agents
-  "crates/uffs-broker", # 🔑 Windows elevated handle broker (optional)
+  "crates/uffs-daemon",        # 🛡️ Background service process
+  "crates/uffs-client",        # 📡 Thin client library
+  "crates/uffs-mcp",           # 🤖 MCP stdio adapter for AI agents
+  "crates/uffs-broker",        # 🔑 Windows elevated handle broker (optional)
+  "crates/uffs-vss-requestor", # 🩹 Per-run native VSS snapshot helper, spawned by uffs-broker (optional)
   # ── Surfaces ──
   "crates/uffs-cli",    # 🖥️  Command-line interface
   "crates/uffs-update", # ⬆️  Self-update acquire helper (HTTP/TLS isolated from the CLI)
@@ -65,7 +66,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.6.27"
+version = "0.6.28"
 edition = "2024"
 # No `rust-version` claim: the workspace is structurally nightly-only.
 # `crates/uffs-polars` enables `polars/nightly` unconditionally, which
@@ -132,30 +133,30 @@ publish = false
 # proposed-plan output for 12 days because `release-plz update`
 # failed at `cargo package` with this very error.  See
 # `release-automation-baseline.md` §10 for the diagnostic trail.
-uffs-polars = { path = "crates/uffs-polars", version = "0.6.27" }
-uffs-security = { path = "crates/uffs-security", version = "0.6.27" }
-uffs-text = { path = "crates/uffs-text", version = "0.6.27" }
-uffs-time = { path = "crates/uffs-time", version = "0.6.27" }
-uffs-version = { path = "crates/uffs-version", version = "0.6.27" }
-uffs-statusfmt = { path = "crates/uffs-statusfmt", version = "0.6.27" }
-uffs-mft = { path = "crates/uffs-mft", version = "0.6.27" }
-uffs-format = { path = "crates/uffs-format", version = "0.6.27" }
-uffs-core = { path = "crates/uffs-core", version = "0.6.27" }
-uffs-client = { path = "crates/uffs-client", version = "0.6.27" }
+uffs-polars = { path = "crates/uffs-polars", version = "0.6.28" }
+uffs-security = { path = "crates/uffs-security", version = "0.6.28" }
+uffs-text = { path = "crates/uffs-text", version = "0.6.28" }
+uffs-time = { path = "crates/uffs-time", version = "0.6.28" }
+uffs-version = { path = "crates/uffs-version", version = "0.6.28" }
+uffs-statusfmt = { path = "crates/uffs-statusfmt", version = "0.6.28" }
+uffs-mft = { path = "crates/uffs-mft", version = "0.6.28" }
+uffs-format = { path = "crates/uffs-format", version = "0.6.28" }
+uffs-core = { path = "crates/uffs-core", version = "0.6.28" }
+uffs-client = { path = "crates/uffs-client", version = "0.6.28" }
 # `uffs-broker-protocol` carries the wire-protocol types shared between
 # `uffs-broker` (the elevated handle vendor, Windows-only binary) and
 # `uffs-daemon::broker_client` (the handle consumer).  Pure-logic
 # Layer-0 lib — cross-platform tests run on every CI lane.  Added in
 # F5 (issue #205) so neither side duplicates `BROKER_PIPE_NAME` /
 # wire-format byte literals.
-uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.27" }
+uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.28" }
 # `uffs-winsvc` — native Windows service control (SCM query/start/stop) +
 # the non-connecting broker-pipe readiness probe.  Layer-0 leaf: its only
 # dependency is the `windows` crate (windows-target), with non-Windows
 # stubs so cross-platform consumers (uffs-update, uffs-cli) compile.
 # Single source of truth for the `sc`/SCM mechanics previously duplicated
 # across uffs-broker, uffs-update, and uffs-cli.
-uffs-winsvc = { path = "crates/uffs-winsvc", version = "0.6.27" }
+uffs-winsvc = { path = "crates/uffs-winsvc", version = "0.6.28" }
 # NOTE: no `uffs-broker` workspace dependency alias on purpose —
 # `uffs-broker` is a binary-only crate (the only `[lib]` it carries is
 # this protocol module's now-extracted sibling); no other workspace
@@ -203,6 +204,10 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Console",
   "Win32_System_IO",
   "Win32_System_Ioctl",
+  # Job Object kill-on-close (`uffs-broker`'s Snapshot Manager spawns
+  # `uffs-vss-requestor` per lease, assigned to a Job Object so it's
+  # killed if the Broker dies — `broker/snapshot_manager/vss_helper.rs`).
+  "Win32_System_JobObjects",
   "Win32_System_Memory",
   "Win32_System_Pipes",
   "Win32_System_ProcessStatus",
@@ -218,10 +223,11 @@ windows = { version = "0.62.2", features = [
 
 # ───── Windows Build Tooling (build-dependency only) ─────
 # Embeds the UFFS icon + `app.manifest` (asInvoker, PerMonitorV2 DPI, long-path
-# aware) into the `uffs.exe` PE on MSVC targets.  Used exclusively in
-# `crates/uffs-cli/build.rs`; inert on non-Windows and on non-MSVC Windows
-# toolchains.  Kept at workspace scope for version consistency even though
-# only one crate currently imports it.
+# aware) into each binary's PE on MSVC targets; inert on non-Windows and on
+# non-MSVC Windows toolchains.  Used by every binary crate's `build.rs`
+# (uffs-cli, uffs-daemon, uffs-broker, uffs-mcp, uffs-update, uffs-vss-requestor,
+# uffs-bench, uffs-diag, uffs-mft) — kept at workspace scope for version
+# consistency across all of them.
 winresource = "0.1.31"
 
 # ───── Serialization ─────
