@@ -176,6 +176,30 @@ impl UffsClientSync {
             .map_err(|err| ClientError::ConnectionFailed(format!("No daemon is running: {err}")))
     }
 
+    /// Connect to a daemon at an explicit, caller-supplied `endpoint`
+    /// (a Unix socket path, or on Windows a named-pipe path) —
+    /// bypassing the well-known per-user socket/pipe resolution,
+    /// autostart, and PID-file identity verification entirely.
+    ///
+    /// For talking to an ephemeral, job-scoped `uffsd` instance the
+    /// caller spawned itself with `--ephemeral-id <id>` (and therefore
+    /// already trusts) — see [`crate::daemon_ctl::ephemeral_endpoint`]
+    /// for computing the matching `endpoint` string. Not for the
+    /// resident daemon: use [`Self::connect`] for that.
+    ///
+    /// # Errors
+    /// Returns `ConnectionFailed` if the endpoint can't be opened.
+    pub fn connect_at(endpoint: &str) -> Result<Self, ClientError> {
+        #[cfg(unix)]
+        {
+            Self::platform_connect_at(std::path::Path::new(endpoint))
+        }
+        #[cfg(windows)]
+        {
+            Self::platform_connect_at(endpoint)
+        }
+    }
+
     /// Connect to a running daemon, or auto-start one with extra CLI args.
     ///
     /// Auto-start uses the default
@@ -563,17 +587,35 @@ impl UffsClientSync {
     /// round-trip on the hot CLI path.  Falls back to the exponential
     /// poll loop when the cache is `None`, `Loading`, or `Refreshing`.
     ///
+    /// `timeout` is an **idle** budget, not a hard wall-clock cutoff: every
+    /// time the daemon reports forward progress (`DaemonStatus::Loading`'s
+    /// `drives_loaded` advancing), the deadline resets to `now + timeout`.
+    /// A big multi-drive load under heavy system load (contended disk I/O,
+    /// CPU pressure from other processes) that keeps visibly making
+    /// progress is never killed by an arbitrary fixed cutoff — only a
+    /// daemon that stops progressing for a full `timeout` window is. A
+    /// hard outer ceiling (`5 * timeout`) still bounds the total wait so a
+    /// daemon stuck oscillating on the same drive count can't hang the
+    /// caller forever.
+    ///
     /// # Errors
     ///
-    /// Returns `ClientError::Timeout` if not ready within `timeout`.
+    /// Returns `ClientError::Timeout` if not ready within the idle budget
+    /// (or the hard ceiling, whichever is hit first).
     pub fn await_ready(&mut self, timeout: core::time::Duration) -> Result<(), ClientError> {
         // Run 10 Part B short-circuit: skip the RPC on cached `Ready`.
         if matches!(self.cached_status, Some(DaemonStatus::Ready)) {
             return Ok(());
         }
 
-        let deadline = std::time::Instant::now() + timeout;
+        let start = std::time::Instant::now();
+        // Even under continuous progress, don't wait forever — 5x the
+        // caller's own idle budget scales with however patient it already
+        // asked to be, without introducing a load-independent magic number.
+        let hard_ceiling = start + timeout.saturating_mul(5);
+        let mut deadline = start + timeout;
         let mut poll_interval = core::time::Duration::from_millis(100);
+        let mut last_drives_loaded: Option<usize> = None;
 
         while std::time::Instant::now() < deadline {
             match self.status() {
@@ -582,15 +624,27 @@ impl UffsClientSync {
                     self.cached_status = Some(DaemonStatus::Ready);
                     return Ok(());
                 }
-                // Any non-Ready outcome (Loading status, I/O error,
-                // connection closed, RPC timeout, transient protocol
-                // error) keeps polling.  Mirrors the async sibling at
+                Ok(resp) => {
+                    if let DaemonStatus::Loading { drives_loaded, .. } = resp.status
+                        && last_drives_loaded != Some(drives_loaded)
+                    {
+                        last_drives_loaded = Some(drives_loaded);
+                        deadline = (std::time::Instant::now() + timeout).min(hard_ceiling);
+                    }
+                    // `Refreshing`, or `Loading` with an unchanged
+                    // `drives_loaded`, falls through to the sleep below
+                    // without touching the deadline — no progress, no
+                    // extension.
+                }
+                // Any error outcome (I/O error, connection closed, RPC
+                // timeout, transient protocol error) keeps polling without
+                // extending the deadline. Mirrors the async sibling at
                 // `connect.rs::await_ready` (`PollOutcome::OtherError`).
                 // Pinned by the
                 // `await_ready_retries_on_protocol_error_until_deadline`
                 // regression test — see its docstring for the
                 // 2026-05-07 Phase 7 soak background.
-                _ => {}
+                Err(_) => {}
             }
             std::thread::sleep(poll_interval);
             poll_interval = (poll_interval * 2).min(core::time::Duration::from_secs(2));

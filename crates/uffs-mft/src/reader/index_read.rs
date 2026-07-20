@@ -102,9 +102,23 @@ impl MftReader {
         let parse_workers = self.parse_workers;
         let forensic = self.forensic;
 
+        // Duplicate this reader's already-open handle — whatever it
+        // points at, a live `\\.\<letter>:` open or a VSS snapshot
+        // device from `open_device_path` — rather than opening
+        // `\\.\<letter>:` fresh inside `spawn_blocking` below. `HANDLE`
+        // isn't `Send`, so the duplicate crosses the boundary as a
+        // plain `u64` (`expose_provenance`), reconstructed on the other
+        // side by `VolumeHandle::from_duplicated_handle`. `is_live_letter`
+        // must be read off the *original* handle before duplicating —
+        // duplication preserves what it points at, not how it was opened.
+        let existing_handle = self.require_handle()?;
+        let is_live_letter = existing_handle.is_live_letter();
+        let handle_ptr =
+            u64::try_from(existing_handle.duplicate()?.0.expose_provenance()).unwrap_or(0);
+
         let result = tokio::task::spawn_blocking(move || {
             trace!(volume = %volume, "read_all_index: INSIDE spawn_blocking");
-            let handle = VolumeHandle::open(volume)?;
+            let handle = VolumeHandle::from_duplicated_handle(handle_ptr, volume, is_live_letter)?;
             let reader = Self {
                 volume,
                 source: super::MftSource::LiveVolume(Box::new(handle)),
@@ -244,9 +258,19 @@ impl MftReader {
         let parse_workers = self.parse_workers;
         let forensic = self.forensic;
 
+        // See `read_all_index_live`'s matching comment: duplicate this
+        // reader's already-open handle instead of opening
+        // `\\.\<letter>:` fresh in the blocking closure below, which
+        // used to silently bypass a VSS snapshot device and read the
+        // live volume instead.
+        let existing_handle = self.require_handle()?;
+        let is_live_letter = existing_handle.is_live_letter();
+        let handle_ptr =
+            u64::try_from(existing_handle.duplicate()?.0.expose_provenance()).unwrap_or(0);
+
         tokio::task::spawn_blocking(move || {
-            // Create a new reader in the blocking thread
-            let handle = VolumeHandle::open(volume)?;
+            // Reconstruct the duplicated handle in the blocking thread
+            let handle = VolumeHandle::from_duplicated_handle(handle_ptr, volume, is_live_letter)?;
             let reader = Self {
                 volume,
                 source: super::MftSource::LiveVolume(Box::new(handle)),

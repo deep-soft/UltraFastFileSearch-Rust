@@ -146,7 +146,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -157,7 +157,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -664,7 +664,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1084,7 +1084,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1607,7 +1607,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -2028,7 +2028,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3463,7 +3463,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3839,7 +3839,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3893,7 +3893,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4008,7 +4008,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4018,7 +4018,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4399,6 +4399,9 @@ name = "uffs-broker"
 version = "0.6.27"
 dependencies = [
  "anyhow",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
  "uffs-broker-protocol",
@@ -4475,6 +4478,65 @@ dependencies = [
  "uffs-mft",
  "uffs-security",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "uffs-content"
+version = "0.6.27"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "crossbeam-channel",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uffs-broker-protocol",
+ "uffs-client",
+ "uffs-content-protocol",
+ "uffs-content-reader-protocol",
+ "uffs-mft",
+ "uffs-security",
+ "uffs-version",
+ "uuid",
+ "winresource",
+]
+
+[[package]]
+name = "uffs-content-protocol"
+version = "0.6.27"
+dependencies = [
+ "bitflags",
+ "blake3",
+ "proptest",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "uffs-content-reader"
+version = "0.6.27"
+dependencies = [
+ "anyhow",
+ "proptest",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uffs-content-reader-protocol",
+ "uffs-security",
+ "uffs-version",
+ "windows 0.62.2",
+ "winresource",
+]
+
+[[package]]
+name = "uffs-content-reader-protocol"
+version = "0.6.27"
+dependencies = [
+ "proptest",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4728,6 +4790,18 @@ dependencies = [
 [[package]]
 name = "uffs-version"
 version = "0.6.27"
+
+[[package]]
+name = "uffs-vss-requestor"
+version = "0.6.27"
+dependencies = [
+ "anyhow",
+ "cc",
+ "serde",
+ "serde_json",
+ "uffs-version",
+ "windows 0.62.2",
+]
 
 [[package]]
 name = "uffs-winsvc"
@@ -5090,7 +5164,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

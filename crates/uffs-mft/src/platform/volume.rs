@@ -71,7 +71,7 @@ static BROKER_HANDLES: std::sync::OnceLock<std::sync::Mutex<std::collections::Ha
 /// (the registry copy stays in place) — the live MFT read opens the volume
 /// more than once (read pass + cache-write pass), so a take-once handle would
 /// leave the second open to fall back to `CreateFileW` and fail with
-/// access-denied.  The registry entry is freed by [`release_broker_handle`].
+/// access-denied.  The registry entry is freed by `release_broker_handle`.
 #[cfg(windows)]
 pub fn register_broker_handle(drive: super::DriveLetter, raw_handle: u64) {
     let map =
@@ -441,6 +441,34 @@ pub struct VolumeHandle {
     /// elevated, overlapped volume handle, so [`Self::open_overlapped_handle`]
     /// duplicates it instead of re-opening `\\.\X:` (which would need admin).
     broker_backed: bool,
+    /// `true` when `handle` corresponds to the *live* volume — opened via
+    /// `\\.\<letter>:` (directly, or adopted/duplicated from a broker
+    /// handle that itself points at the live volume) — as opposed to an
+    /// arbitrary device path (e.g. a VSS snapshot device from
+    /// [`Self::open_device_path`]).
+    ///
+    /// [`Self::get_mft_extents`] uses this to decide whether re-deriving
+    /// `"{volume}:\$MFT"` from the drive letter is even valid: for a live
+    /// handle it's the fast, elevated-only path; for a snapshot device
+    /// handle it would silently read the *live* `$MFT`'s layout instead
+    /// of the snapshot's, corrupting every offset computed from it.
+    is_live_letter: bool,
+    /// The exact NUL-terminated UTF-16 path this handle was opened
+    /// against via `CreateFileW` — `Some` for [`Self::open`]'s own
+    /// `CreateFileW` fallback and [`Self::open_device_path`], `None` for
+    /// a broker-adopted or duplicated handle (which never called
+    /// `CreateFileW` itself here).
+    ///
+    /// [`Self::open_unbuffered_handle`] needs this: re-opening a snapshot
+    /// device handle's write-protect fallback by reconstructing
+    /// `"\\.\{volume}:"` from the drive letter would silently switch to
+    /// the *live* volume instead of the snapshot, and `DuplicateHandle`
+    /// can't substitute for a real re-open here since it preserves the
+    /// original handle's flags rather than adding
+    /// `FILE_FLAG_NO_BUFFERING`. A `None` case is always safe to
+    /// re-derive as `"\\.\{volume}:"`, since a broker-adopted handle only
+    /// ever points at the live volume (see [`Self::is_live_letter`]).
+    opened_path: Option<Vec<u16>>,
 }
 
 #[expect(
@@ -541,7 +569,6 @@ impl VolumeHandle {
     /// path fails (typically `ERROR_ACCESS_DENIED` when the caller is not
     /// elevated), or if `FSCTL_GET_NTFS_VOLUME_DATA` cannot read the volume
     /// descriptor for the opened handle.
-    #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
     pub fn open(volume: super::DriveLetter) -> Result<Self> {
         // Access Broker fast-path: if the (elevated) broker has deposited a
         // pre-opened, duplicated volume handle for this drive, adopt a
@@ -550,7 +577,8 @@ impl VolumeHandle {
         // stays so later opens in the same load succeed (see
         // `try_adopt_broker_handle`).
         if let Some(handle) = try_adopt_broker_handle(volume)? {
-            return Self::from_adopted_handle(handle, volume);
+            // The broker vends a handle to the *live* volume for `volume`.
+            return Self::from_adopted_handle(handle, volume, true);
         }
 
         // `DriveLetter` is already validated (`A..=Z`), so no fallible
@@ -560,13 +588,57 @@ impl VolumeHandle {
             .encode_utf16()
             .chain(core::iter::once(0))
             .collect();
+        Self::open_raw_path(&volume_path, volume, true)
+    }
 
-        // SAFETY: `volume_path` is UTF-16 and NUL-terminated for the duration of
+    /// Opens an arbitrary device path for direct MFT reading — e.g. a VSS
+    /// snapshot device (`\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN`),
+    /// rather than a live drive letter's `\\.\<letter>:` path.
+    ///
+    /// `volume` is used only as a diagnostic label (mirroring
+    /// [`crate::MftReader::from_file`]'s existing precedent of associating
+    /// an arbitrary data source with a caller-supplied [`super::DriveLetter`]
+    /// for logging/error messages) — it does not need to correspond to how
+    /// `device_path` is actually opened; pass the drive letter of the
+    /// *original* live volume the snapshot was taken from.
+    ///
+    /// Unlike [`Self::open`], this has no Access Broker fast-path: a VSS
+    /// snapshot device is never broker-vended (the broker's handle registry
+    /// is keyed by drive letter, not by an arbitrary device path), so the
+    /// caller must already be running elevated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError::Io`] if `CreateFileW` on `device_path` fails
+    /// (typically `ERROR_ACCESS_DENIED` when the caller is not elevated), or
+    /// if `FSCTL_GET_NTFS_VOLUME_DATA` cannot read the volume descriptor for
+    /// the opened handle.
+    pub fn open_device_path(device_path: &str, volume: super::DriveLetter) -> Result<Self> {
+        let wide_path: Vec<u16> = device_path
+            .encode_utf16()
+            .chain(core::iter::once(0))
+            .collect();
+        Self::open_raw_path(&wide_path, volume, false)
+    }
+
+    /// `CreateFileW` + `FSCTL_GET_NTFS_VOLUME_DATA` against an already
+    /// NUL-terminated UTF-16 `path` — the shared body of [`Self::open`]
+    /// (after its Access Broker fast-path) and [`Self::open_device_path`].
+    /// `is_live_letter` records which of those two callers this is — see
+    /// the field's own doc comment on why [`Self::get_mft_extents`] needs
+    /// to know.
+    #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
+    fn open_raw_path(
+        path: &[u16],
+        volume: super::DriveLetter,
+        is_live_letter: bool,
+    ) -> Result<Self> {
+        // SAFETY: `path` is UTF-16 and NUL-terminated for the duration of
         // the call, optional pointers are passed as `None`, and on success the
         // returned handle is owned by this function.
         let create_result = unsafe {
             CreateFileW(
-                PCWSTR::from_raw(volume_path.as_ptr()),
+                PCWSTR::from_raw(path.as_ptr()),
                 FILE_READ_DATA | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 None,
@@ -601,6 +673,8 @@ impl VolumeHandle {
             volume,
             volume_data,
             broker_backed: false,
+            is_live_letter,
+            opened_path: Some(path.to_vec()),
         })
     }
 
@@ -624,17 +698,57 @@ impl VolumeHandle {
     #[cfg(windows)]
     pub fn from_broker_handle(volume: super::DriveLetter, raw_handle: u64) -> Result<Self> {
         let handle = duplicate_registered_handle(raw_handle, volume)?;
-        Self::from_adopted_handle(handle, volume)
+        // The broker only ever vends handles to the *live* volume.
+        Self::from_adopted_handle(handle, volume, true)
     }
 
-    /// Build a broker-backed `VolumeHandle` from an already-duplicated,
-    /// caller-owned volume `handle` (the output of
-    /// [`duplicate_registered_handle`] / [`try_adopt_broker_handle`]).
+    /// Reconstruct a `VolumeHandle` from a raw handle this process already
+    /// owns an independent duplicate of — the `u64` produced by
+    /// [`Self::duplicate`] on the calling thread, carried across a
+    /// `spawn_blocking` boundary (a `HANDLE` isn't `Send`; `expose_provenance`/
+    /// `with_exposed_provenance_mut` is this codebase's established way to
+    /// smuggle one across as a plain integer — see `persistence_capture.rs`).
+    ///
+    /// This is the fix for the async
+    /// `read_all_index`/`read_index_with_progress` entry points
+    /// (`reader/index_read.rs`), which used to call [`Self::open`] fresh
+    /// inside their `spawn_blocking` closure — silently re-opening the
+    /// *live* `\\.\<letter>:` volume even when the original reader was
+    /// constructed via [`Self::open_device_path`] against a VSS
+    /// snapshot device, defeating point-in-time consistency entirely.
+    ///
+    /// `is_live_letter` must be the *original* handle's own
+    /// [`Self::is_live_letter`] (read by the caller before duplicating) —
+    /// duplication preserves what the handle points at, not what it was
+    /// opened as, so this can't be re-derived here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError`] if the volume descriptor cannot be read from
+    /// the reconstructed handle.
+    #[cfg(windows)]
+    pub(crate) fn from_duplicated_handle(
+        raw_handle: u64,
+        volume: super::DriveLetter,
+        is_live_letter: bool,
+    ) -> Result<Self> {
+        let handle = HANDLE(core::ptr::with_exposed_provenance_mut::<core::ffi::c_void>(
+            usize::try_from(raw_handle).unwrap_or(0),
+        ));
+        Self::from_adopted_handle(handle, volume, is_live_letter)
+    }
+
+    /// Build a `VolumeHandle` from an already-duplicated, caller-owned
+    /// volume `handle` (the output of [`duplicate_registered_handle`] /
+    /// [`try_adopt_broker_handle`] / [`Self::from_duplicated_handle`]).
     ///
     /// Reads the volume descriptor from the handle and marks the result
     /// `broker_backed` so [`Self::open_overlapped_handle`] duplicates the
-    /// handle rather than re-opening `\\.\X:`.  Shared by [`Self::open`]'s
-    /// fast-path and [`Self::from_broker_handle`] so the descriptor read +
+    /// handle rather than re-opening `\\.\X:` — correct regardless of
+    /// whether the handle actually came from the broker or was duplicated
+    /// from this same process's own earlier `open`/`open_device_path`.
+    /// Shared by [`Self::open`]'s fast-path, [`Self::from_broker_handle`],
+    /// and [`Self::from_duplicated_handle`] so the descriptor read +
     /// `broker_backed` construction live in one place.
     ///
     /// # Errors
@@ -642,14 +756,20 @@ impl VolumeHandle {
     /// Returns [`MftError`] if the volume descriptor cannot be read from
     /// `handle`.
     #[cfg(windows)]
-    fn from_adopted_handle(handle: HANDLE, volume: super::DriveLetter) -> Result<Self> {
+    fn from_adopted_handle(
+        handle: HANDLE,
+        volume: super::DriveLetter,
+        is_live_letter: bool,
+    ) -> Result<Self> {
         let volume_data = Self::get_ntfs_volume_data(handle, volume)?;
-        tracing::info!(drive = %volume, "Adopted Access Broker volume handle for MFT read");
+        tracing::info!(drive = %volume, "Adopted an already-open volume handle for MFT read");
         Ok(Self {
             handle,
             volume,
             volume_data,
             broker_backed: true,
+            is_live_letter,
+            opened_path: None,
         })
     }
 
@@ -750,6 +870,18 @@ impl VolumeHandle {
         self.handle
     }
 
+    /// Whether this handle corresponds to the *live* volume, as opposed
+    /// to an arbitrary device path (e.g. a VSS snapshot device from
+    /// [`Self::open_device_path`]) — see the field's own doc comment.
+    /// Callers that need to carry this handle across a boundary that
+    /// loses the original open-site context (e.g.
+    /// `Self::from_duplicated_handle`'s caller in `spawn_blocking`)
+    /// must read this *before* duplicating.
+    #[must_use]
+    pub const fn is_live_letter(&self) -> bool {
+        self.is_live_letter
+    }
+
     /// Opens a new handle to the same volume with `FILE_FLAG_OVERLAPPED`.
     ///
     /// # Errors
@@ -759,11 +891,19 @@ impl VolumeHandle {
     pub fn open_overlapped_handle(&self) -> Result<HANDLE> {
         let volume = self.volume;
 
-        // Broker-backed: `\\.\X:` can't be re-opened here (non-elevated →
-        // access-denied).  The broker handle is already overlapped, so hand
-        // back an independent duplicate the caller can close on its own.
-        if self.broker_backed {
-            return self.duplicate_broker_handle();
+        // Duplicate instead of re-opening `\\.\<letter>:` whenever that
+        // would be wrong or unsafe to do:
+        // - `broker_backed`: this process isn't elevated enough to `CreateFileW` the
+        //   volume itself (non-elevated → access-denied); the broker/adopted handle is
+        //   already overlapped, so hand back an independent duplicate the caller can
+        //   close on its own.
+        // - `!is_live_letter`: this handle doesn't correspond to the live volume at all
+        //   (e.g. a VSS snapshot device from `open_device_path`) — re-deriving
+        //   `\\.\<letter>:` here would silently open the *live* volume instead, the
+        //   same class of bug already fixed in
+        //   `get_mft_extents`/`get_mft_bitmap_internal`.
+        if self.broker_backed || !self.is_live_letter {
+            return self.duplicate();
         }
 
         let volume_path: Vec<u16> = format!("\\\\.\\{volume}:")
@@ -792,16 +932,23 @@ impl VolumeHandle {
         })
     }
 
-    /// Duplicate the adopted broker handle into a fresh, independently-owned
-    /// overlapped handle for the bulk MFT read path.
+    /// Duplicate this handle into a fresh, independently-owned handle with
+    /// the same access rights and mode (`DUPLICATE_SAME_ACCESS`) —
+    /// `self.handle` stays intact (for the volume-data queries and for
+    /// `Drop`), and the caller owns the returned duplicate.
     ///
-    /// Same-process `DuplicateHandle` with `DUPLICATE_SAME_ACCESS` clones the
-    /// access rights and the `FILE_FLAG_OVERLAPPED` mode of the broker handle;
-    /// the caller closes the returned handle, leaving `self.handle` intact for
-    /// the volume-data queries and for `Drop`.
+    /// Used by [`Self::open_overlapped_handle`]'s broker-backed branch,
+    /// and by the async `read_all_index`/`read_index_with_progress`
+    /// entry points (`reader/index_read.rs`) to carry an already-open
+    /// handle — e.g. a VSS snapshot device handle from
+    /// [`Self::open_device_path`] — across a `spawn_blocking` boundary.
+    /// Re-opening `\\.\<letter>:` fresh inside that closure (the
+    /// previous approach) silently read the *live* volume even when
+    /// this reader was constructed from a snapshot device, defeating
+    /// the whole point of a point-in-time read.
     #[cfg(windows)]
     #[expect(unsafe_code, reason = "FFI: DuplicateHandle / GetCurrentProcess")]
-    fn duplicate_broker_handle(&self) -> Result<HANDLE> {
+    pub(crate) fn duplicate(&self) -> Result<HANDLE> {
         use windows::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle};
         use windows::Win32::System::Threading::GetCurrentProcess;
 
@@ -883,7 +1030,15 @@ impl VolumeHandle {
     /// `FILE_FLAG_NO_BUFFERING` bypasses the cache manager entirely and
     /// issues I/O directly to the device driver, which only requires
     /// sector-aligned buffers and offsets (already guaranteed by
-    /// [`AlignedBuffer`]).
+    /// [`crate::io::AlignedBuffer`]).
+    ///
+    /// Re-opens [`Self::opened_path`] when this handle was opened against
+    /// a real path (live volume or VSS snapshot device) — critically,
+    /// *not* re-derived as `"\\.\{volume}:"`, which would silently switch
+    /// a snapshot-device handle to the live volume instead (see
+    /// [`Self::opened_path`]'s own doc comment). Falls back to
+    /// `"\\.\{volume}:"` only when there is no stored path — i.e. a
+    /// broker-adopted/duplicated handle, which is always the live volume.
     ///
     /// The caller is responsible for closing the returned handle.
     ///
@@ -893,17 +1048,14 @@ impl VolumeHandle {
     #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
     pub(crate) fn open_unbuffered_handle(&self) -> Result<HANDLE> {
         let volume = self.volume;
-        let volume_path: Vec<u16> = format!("\\\\.\\{volume}:")
-            .encode_utf16()
-            .chain(core::iter::once(0))
-            .collect();
+        let path = Self::unbuffered_reopen_path(self.opened_path.as_deref(), volume);
 
-        // SAFETY: `volume_path` is UTF-16 and NUL-terminated for the duration
-        // of the call, optional pointers are passed as `None`, and the
+        // SAFETY: `path` is UTF-16 and NUL-terminated for the duration of
+        // the call, optional pointers are passed as `None`, and the
         // returned handle is transferred to the caller.
         let handle = unsafe {
             CreateFileW(
-                PCWSTR::from_raw(volume_path.as_ptr()),
+                PCWSTR::from_raw(path.as_ptr()),
                 FILE_READ_DATA | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 None,
@@ -917,6 +1069,25 @@ impl VolumeHandle {
             volume,
             source: hresult_to_io_error(&err),
         })
+    }
+
+    /// The exact NUL-terminated UTF-16 path [`Self::open_unbuffered_handle`]
+    /// re-opens: `opened_path` when present, else `"\\.\{volume}:"`
+    /// re-derived from the drive letter (only correct when there is no
+    /// stored path — i.e. a broker-adopted/duplicated handle, which is
+    /// always the live volume). Extracted from
+    /// [`Self::open_unbuffered_handle`] so this path-selection decision is
+    /// unit-testable without touching the filesystem.
+    fn unbuffered_reopen_path(opened_path: Option<&[u16]>, volume: super::DriveLetter) -> Vec<u16> {
+        opened_path.map_or_else(
+            || {
+                format!("\\\\.\\{volume}:")
+                    .encode_utf16()
+                    .chain(core::iter::once(0))
+                    .collect()
+            },
+            <[u16]>::to_vec,
+        )
     }
 
     /// Returns the byte offset of the MFT on the volume.
@@ -1001,36 +1172,56 @@ impl VolumeHandle {
         reason = "FFI: windows API (CreateFileW, DeviceIoControl, CloseHandle)"
     )]
     pub fn get_mft_extents(&self) -> Result<Vec<MftExtent>> {
-        let mft_path: Vec<u16> = format!("{}:\\$MFT", self.volume)
-            .encode_utf16()
-            .chain(core::iter::once(0))
-            .collect();
+        // The `"{volume}:\$MFT"` fast path below only makes sense when
+        // `self.handle` actually corresponds to the *live* volume: it
+        // re-derives a live drive-letter path from `self.volume` (a bare
+        // label) and asks the kernel for *that* $MFT's retrieval
+        // pointers, entirely independent of `self.handle`. For a VSS
+        // snapshot device handle (`is_live_letter == false`), an
+        // elevated caller (which every VSS-snapshot job is, by
+        // `open_device_path`'s own contract) would have this open
+        // succeed anyway — silently returning the *live* $MFT's extent
+        // layout to be used against the *snapshot's* on-disk bytes,
+        // corrupting every offset computed from it. Skip straight to
+        // the handle-based bootstrap in that case.
+        if self.is_live_letter {
+            let mft_path: Vec<u16> = format!("{}:\\$MFT", self.volume)
+                .encode_utf16()
+                .chain(core::iter::once(0))
+                .collect();
 
-        // Fast path (elevated): open $MFT and ask the kernel for its retrieval
-        // pointers.  A non-elevated daemon can't open $MFT at all, so this open
-        // fails and we bootstrap the real layout from FRS 0 below.
-        // SAFETY: `mft_path` is UTF-16 + NUL-terminated for the call; optional
-        // pointers are `None`; any returned handle is wrapped in `HandleGuard`.
-        if let Ok(mft_handle) = unsafe {
-            CreateFileW(
-                PCWSTR::from_raw(mft_path.as_ptr()),
-                0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                None,
-                OPEN_EXISTING,
-                FILE_FLAGS_AND_ATTRIBUTES(0),
-                None,
-            )
-        } {
-            let _guard = HandleGuard(mft_handle);
-            return get_retrieval_pointers(mft_handle);
+            // Fast path (elevated): open $MFT and ask the kernel for its
+            // retrieval pointers. A non-elevated daemon can't open $MFT at
+            // all, so this open fails and we bootstrap the real layout from
+            // FRS 0 below.
+            // SAFETY: `mft_path` is UTF-16 + NUL-terminated for the call;
+            // optional pointers are `None`; any returned handle is wrapped
+            // in `HandleGuard`.
+            if let Ok(mft_handle) = unsafe {
+                CreateFileW(
+                    PCWSTR::from_raw(mft_path.as_ptr()),
+                    0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAGS_AND_ATTRIBUTES(0),
+                    None,
+                )
+            } {
+                let _guard = HandleGuard(mft_handle);
+                return get_retrieval_pointers(mft_handle);
+            }
         }
 
-        // Non-elevated (broker-backed) path: `$MFT` can't be opened directly.
-        // The old fallback was a SINGLE assumed-contiguous extent — silently
-        // wrong on a fragmented MFT (it reads the wrong physical region past the
-        // first fragment, producing a partial index).  Bootstrap the REAL
-        // extents from FRS 0's `$DATA` runlist, read through our volume handle.
+        // Non-elevated (broker-backed) path, or any non-live-letter
+        // handle (VSS snapshot device): `$MFT` can't be opened directly
+        // by drive letter, or doing so wouldn't reflect this handle's
+        // actual volume. The old fallback was a SINGLE assumed-contiguous
+        // extent — silently wrong on a fragmented MFT (it reads the wrong
+        // physical region past the first fragment, producing a partial
+        // index). Bootstrap the REAL extents from FRS 0's `$DATA`
+        // runlist, read through our volume handle — correct regardless
+        // of what `self.handle` actually points at.
         Ok(self.mft_extents_from_frs0())
     }
 
@@ -1145,6 +1336,28 @@ impl VolumeHandle {
         use windows::Win32::Storage::FileSystem::{
             FILE_BEGIN, GetFileSizeEx, ReadFile, SYNCHRONIZE, SetFilePointerEx,
         };
+
+        // Same rationale as `get_mft_extents`: `"{volume}:\$MFT::$BITMAP"`
+        // re-derives a *live* drive-letter path from `self.volume` (a bare
+        // label), entirely independent of `self.handle` — for a VSS
+        // snapshot device handle this would silently query the *live*
+        // volume's current allocation bitmap instead of the snapshot's.
+        // The bitmap is advisory-only (chunk generation always reads full
+        // chunks regardless — see `chunking.rs`'s "reading full chunk for
+        // correctness" comments), so skipping straight to the safe
+        // all-valid fallback is exactly as correct as a genuine snapshot
+        // bitmap would be, without the live-volume query at all.
+        if !self.is_live_letter {
+            if verbose {
+                tracing::info!(
+                    volume = %self.volume,
+                    "Non-live-letter handle: skipping live $BITMAP query, using all-valid bitmap"
+                );
+            }
+            return Ok(MftBitmap::new_all_valid(frs_to_usize(
+                self.estimated_record_count(),
+            )));
+        }
 
         let bitmap_path_str = format!("{}:\\$MFT::$BITMAP", self.volume);
         let bitmap_path: Vec<u16> = bitmap_path_str
@@ -1649,6 +1862,47 @@ mod tests {
             io_err.raw_os_error(),
             Some(bits.cast_signed()),
             "non-WIN32 HRESULT must be forwarded verbatim",
+        );
+    }
+
+    // ── unbuffered_reopen_path regression tests ──────────────────────────
+    //
+    // Pins the write-protect-fallback fix: re-opening a snapshot-device
+    // handle for FILE_FLAG_NO_BUFFERING must re-open the *same* device
+    // path, never silently fall back to the live volume's "\\.\{letter}:"
+    // — that would defeat point-in-time consistency exactly like the bug
+    // `Self::from_duplicated_handle`'s own doc comment describes for the
+    // async re-open path.
+
+    fn wide_nul_terminated(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(core::iter::once(0)).collect()
+    }
+
+    #[test]
+    fn unbuffered_reopen_path_uses_the_stored_snapshot_device_path() {
+        let snapshot_path = wide_nul_terminated(r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7");
+        let volume = super::super::DriveLetter::parse('C').expect("valid drive letter");
+
+        let reopen_path = VolumeHandle::unbuffered_reopen_path(Some(&snapshot_path), volume);
+
+        assert_eq!(
+            reopen_path, snapshot_path,
+            "a handle opened against a real path (live or snapshot) must re-open that exact \
+             path, not re-derive the live-volume path from the drive letter"
+        );
+    }
+
+    #[test]
+    fn unbuffered_reopen_path_falls_back_to_the_live_volume_when_no_path_is_stored() {
+        let volume = super::super::DriveLetter::parse('D').expect("valid drive letter");
+
+        let reopen_path = VolumeHandle::unbuffered_reopen_path(None, volume);
+
+        assert_eq!(
+            reopen_path,
+            wide_nul_terminated(r"\\.\D:"),
+            "a broker-adopted/duplicated handle has no stored path, but is always the live \
+             volume, so re-deriving the live-volume path is correct here"
         );
     }
 }

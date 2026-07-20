@@ -63,6 +63,13 @@ mod pipe;
 #[cfg(windows)]
 use pipe::create_broker_pipe;
 
+// Snapshot Manager: the Coordinator-facing VSS-lease API (a separate pipe
+// from the daemon's MFT-handle channel above), spawned from
+// `serve_pipe_requests` so it runs under both `--run` (foreground) and the
+// SCM-dispatched service path. See `broker/snapshot_manager/mod.rs`.
+#[path = "broker/snapshot_manager/mod.rs"]
+mod snapshot_manager;
+
 /// Per-drive rate-limit state (`drive → last grant time`), shared across the
 /// FU-5 per-connection worker threads behind a `Mutex`.
 #[cfg(windows)]
@@ -109,6 +116,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == "--run") {
         return run_foreground();
     }
+    if let Some(test_dir) = self_test_vss_dir(&args) {
+        return self_test_vss(&test_dir);
+    }
 
     // No recognised flag: this is how the Service Control Manager launches the
     // service at boot.  Hand control to the dispatcher; when run interactively
@@ -133,7 +143,47 @@ fn print_usage() {
     eprintln!("  --start       Start the service (waits for RUNNING)");
     eprintln!("  --stop        Stop the service (waits for STOPPED)");
     eprintln!("  --run         Run in foreground (debugging)");
+    eprintln!("  --self-test-vss <dir>  Elevated smoke test: real VSS snapshot create/read/delete");
     eprintln!("  --version     Print version (also -V)");
+}
+
+/// Return the directory argument following `--self-test-vss`, if present.
+#[cfg(windows)]
+fn self_test_vss_dir(args: &[String]) -> Option<std::path::PathBuf> {
+    let flag_index = args.iter().position(|arg| arg == "--self-test-vss")?;
+    args.get(flag_index + 1).map(std::path::PathBuf::from)
+}
+
+/// Run `snapshot_manager::self_test_round_trip` standalone (no service,
+/// no pipe server) and print a PASS/FAIL result — a manual, elevated
+/// smoke test proving the real VSS snapshot pipeline (native shim →
+/// `uffs-vss-requestor` helper → Broker lease bookkeeping) works at
+/// runtime on this machine.
+///
+/// # Errors
+/// Returns an error (and prints `"FAIL: <cause>"`) if any stage of the
+/// round trip fails.
+#[cfg(windows)]
+#[expect(
+    clippy::print_stderr,
+    reason = "one-shot CLI diagnostic invoked before any tracing subscriber exists"
+)]
+fn self_test_vss(test_dir: &std::path::Path) -> anyhow::Result<()> {
+    init_tracing();
+    warn_if_not_elevated();
+    match snapshot_manager::self_test_round_trip(test_dir) {
+        Ok(()) => {
+            eprintln!(
+                "PASS: VSS create/read/delete round trip succeeded ({})",
+                test_dir.display()
+            );
+            Ok(())
+        }
+        Err(err) => {
+            eprintln!("FAIL: {err:#}");
+            Err(err)
+        }
+    }
 }
 
 /// Run the broker in foreground mode.
@@ -142,6 +192,7 @@ fn run_foreground() -> anyhow::Result<()> {
     init_tracing();
     tracing::info!(
         pid = std::process::id(),
+        version = %uffs_version::version_short!("uffs-broker"),
         "uffs-broker starting (foreground mode)"
     );
     warn_if_not_elevated();
@@ -191,6 +242,16 @@ fn serve_pipe_requests() -> anyhow::Result<()> {
         max_instances = MAX_PIPE_INSTANCES,
         "Listening for handle requests"
     );
+
+    // Snapshot Manager (Coordinator-facing VSS-lease API) runs on its own
+    // pipe, in its own accept loop, on a dedicated thread — independent of
+    // the MFT-handle serve loop below. A failure here is logged, not fatal
+    // to the daemon-facing handle service.
+    std::thread::spawn(|| {
+        if let Err(err) = snapshot_manager::run() {
+            tracing::error!(error = %err, "Snapshot Manager stopped unexpectedly");
+        }
+    });
 
     // S5.4: rate-limit state, shared across per-connection workers.
     let rate_limit: Arc<RateLimit> =
@@ -649,10 +710,20 @@ fn read_pipe(pipe: windows::Win32::Foundation::HANDLE, buf: &mut [u8]) -> anyhow
 }
 
 /// Write bytes to the pipe.
+///
+/// Flushes via `FlushFileBuffers` after a successful `WriteFile`, before
+/// returning — the caller (`serve_pipe_requests`) disconnects the pipe
+/// immediately once this returns, and `WriteFile` succeeding only means
+/// the bytes reached the pipe's kernel buffer, not that the client has
+/// read them. Without the flush, `DisconnectNamedPipe` can discard a
+/// buffered-but-unread response out from under the client. Same fix as
+/// `snapshot_manager::write_framed_message`, applied here for the same
+/// reason even though this pipe's fixed 9-byte response makes the race
+/// far narrower in practice.
 #[cfg(windows)]
-#[expect(unsafe_code, reason = "WriteFile is an FFI call")]
+#[expect(unsafe_code, reason = "WriteFile/FlushFileBuffers are FFI calls")]
 fn write_pipe(pipe: windows::Win32::Foundation::HANDLE, buf: &[u8]) -> anyhow::Result<()> {
-    use windows::Win32::Storage::FileSystem::WriteFile;
+    use windows::Win32::Storage::FileSystem::{FlushFileBuffers, WriteFile};
 
     let mut bytes_written = 0_u32;
 
@@ -662,6 +733,10 @@ fn write_pipe(pipe: windows::Win32::Foundation::HANDLE, buf: &[u8]) -> anyhow::R
 
     if let Err(win_err) = result {
         anyhow::bail!("WriteFile failed: {win_err}");
+    }
+    // SAFETY: `pipe` is the same valid, still-open pipe HANDLE written to above.
+    if let Err(win_err) = unsafe { FlushFileBuffers(pipe) } {
+        anyhow::bail!("FlushFileBuffers failed: {win_err}");
     }
     Ok(())
 }
