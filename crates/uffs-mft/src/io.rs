@@ -44,9 +44,9 @@ pub use merger::MftRecordMerger;
 )]
 pub use parser::parse_record_to_fragment;
 pub use parser::{
-    ExtensionAttributes, ParseResult, ParsedColumns, ParsedRecord,
+    ExtensionAttributes, ParseResult, ParsedColumns, ParsedRecord, StdInfoParse,
     add_missing_parent_placeholders_to_vec, create_placeholder_record, parse_record,
-    parse_record_full, parse_record_to_index, parse_record_zero_alloc, process_record,
+    parse_record_full, parse_record_zero_alloc, process_record,
 };
 #[cfg(windows)]
 pub(crate) use readers::{IoCompletionPort, MftRecordReader, OverlappedRead};
