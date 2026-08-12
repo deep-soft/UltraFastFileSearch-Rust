@@ -387,13 +387,26 @@ fn print_drive_line(palette: Palette, dr: &DriveInfo, memory: &[DriveMemoryInfo]
             match memory.iter().find(|dm| dm.drive == dr.letter) {
                 Some(dm) => {
                     let mb = |bytes: u64| bytes / MIB;
-                    // `{:>6}` on the heap MB keeps the `· NNNN MB` column
-                    // aligned across drives — an unpadded `{}` put `2 MB`
-                    // and `1669 MB` at different columns, so the sizes could
-                    // not be compared by eye down the list.
+                    // Every numeric column is width-padded so the whole
+                    // block reads as a table down the list.  Unpadded, a
+                    // one-digit `rec=1` and a three-digit `rec=608` started
+                    // in the same place and pushed every later field out of
+                    // line, which is exactly what you cannot scan by eye:
+                    //
+                    //   [rec=1 names=0 tri=0 ch=0 ext=0]
+                    //   [rec=608 names=439 tri=518 ch=55 ext=27]
+                    //
+                    // Widths: rec/names/tri hold four digits (a ~10 GB
+                    // component on a very large drive), ch/ext three.  The
+                    // source label is padded too — it is `live` today but
+                    // `cache` and friends exist, and an unpadded label would
+                    // shift the whole rest of the row.
+                    // Pad the whole `(source)` token, not the text inside
+                    // it — `(live )` with the space before the paren reads
+                    // as a typo.
+                    let source = format!("({})", dr.source);
                     println!(
-                        "  {glyph} {letter} {records:>12} records ({}) \u{b7} {:>6} MB  [rec={} names={} tri={} ch={} ext={}]",
-                        dr.source,
+                        "  {glyph} {letter} {records:>12} records {source:<7} \u{b7} {:>6} MB  [rec={:>4} names={:>4} tri={:>4} ch={:>3} ext={:>3}]",
                         mb(dm.heap_bytes),
                         mb(dm.records_bytes),
                         mb(dm.names_bytes),
