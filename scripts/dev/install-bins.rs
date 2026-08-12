@@ -39,6 +39,7 @@ fn main() {
     // install can put it back afterwards (see `restart_daemon`).  Probing
     // after `stop_running_services` would of course always say "no".
     let daemon_was_running = daemon_is_running();
+    let mcp_was_running = mcp_is_running();
 
     // Stop the running daemon + MCP first (best effort), mirroring the
     // previous [unix] bash recipe: the old binaries release their file
@@ -173,6 +174,9 @@ fn main() {
     // the machine daemon-less hurts most.
     if daemon_was_running {
         restart_daemon(&bin_dir);
+    }
+    if mcp_was_running {
+        restart_mcp(&bin_dir);
     }
     if skipped > 0 {
         std::process::exit(1);
@@ -315,6 +319,46 @@ fn restart_daemon(bin_dir: &std::path::Path) {
     }
 }
 
+/// Was the MCP HTTP gateway serving before the teardown?
+///
+/// `--mcp status` prints `MCP server:    running (PID …)` when up, and
+/// either `not running (no PID file)` or `not running (stale PID file…)`
+/// when not — so the same "contains `running` but not `not running`"
+/// read works here.
+fn mcp_is_running() -> bool {
+    Command::new("uffs")
+        .args(["--mcp", "status"])
+        .output()
+        .map(|out| {
+            let text = String::from_utf8_lossy(&out.stdout);
+            text.contains("running") && !text.contains("not running")
+        })
+        .unwrap_or(false)
+}
+
+/// Restart the MCP HTTP gateway we stopped, using the new binary.
+fn restart_mcp(bin_dir: &std::path::Path) {
+    let exe = bin_dir.join(if cfg!(windows) { "uffs.exe" } else { "uffs" });
+    if !exe.is_file() {
+        return;
+    }
+    eprintln!();
+    eprintln!("🔄 Restarting the MCP server (it was running before the install)...");
+    let ok = Command::new(&exe)
+        .args(["--mcp", "start"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if ok {
+        eprintln!("✅ MCP server restarted.");
+    } else {
+        eprintln!(
+            "⚠️  MCP server did NOT restart — run: {} --mcp start",
+            exe.display()
+        );
+    }
+}
+
 /// Best-effort shutdown of the resident daemon + MCP before installing.
 ///
 /// `uffs --daemon kill` is given 10 seconds (a wedged daemon must not
@@ -345,6 +389,17 @@ fn stop_running_services() {
             }
         }
     }
+    // Ask the MCP gateway to stop cleanly first.  The `taskkill /F`
+    // below is a `/F` by image name: it kills every `uffsmcp` process
+    // outright, so the gateway never removes its PID file and the next
+    // `--mcp status` reports `not running (stale PID file, PID …)`.
+    // A graceful stop leaves no such litter; the force-kill stays as the
+    // backstop for a wedged process.
+    let _ = Command::new("uffs")
+        .args(["--mcp", "stop"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     for name in ["uffsd", "uffsmcp"] {
         let status = if cfg!(windows) {
             Command::new("taskkill")
