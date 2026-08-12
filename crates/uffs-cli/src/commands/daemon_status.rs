@@ -28,6 +28,10 @@ use uffs_statusfmt::{Glyph, Palette, field, header, section, status_row};
 /// One mebibyte, for the `bytes → MB` display conversions.
 const MIB: u64 = 1024 * 1024;
 
+/// Width reserved for a quoted volume label in the physical-drive table,
+/// so the `· indexed (…)` column after it lines up across rows.
+const LABEL_COLUMN: usize = 12;
+
 /// `uffs --daemon status [-v] [--json]` — show daemon status, PID, drives, and
 /// (in long / JSON form) performance counters.
 ///
@@ -480,16 +484,31 @@ fn print_physical_drive_line(palette: Palette, drive: &PhysicalDrive, loaded: &[
                 (
                     Glyph::Up,
                     format!(
-                        " \u{b7} indexed ({} records)",
+                        " \u{b7} indexed ({:>11} records)",
                         format_number_commas(info.records as u64)
                     ),
                 )
             },
         );
+    // Pad the volume label so the `· indexed (…)` column that follows
+    // starts in the same place on every row.  Unpadded, a short label
+    // ("DATA") and a long one ("NTFS_16_GB") pushed the index note to
+    // different columns, which is the part you scan down the list.
+    //
+    // 12 columns fits the labels seen in practice (plus the quotes);
+    // NTFS permits up to 32, and a longer one simply pushes its own row
+    // rather than being truncated — losing information to preserve a
+    // column would be the wrong trade.
     let label = if drive.label.is_empty() {
-        String::new()
+        // Still occupy the column, so a drive with no label does not
+        // pull its index note left of everyone else's.
+        " ".repeat(LABEL_COLUMN + 2)
     } else {
-        format!("  \u{201c}{}\u{201d}", drive.label)
+        format!(
+            "  {:<width$}",
+            format!("\u{201c}{}\u{201d}", drive.label),
+            width = LABEL_COLUMN
+        )
     };
     println!(
         "  {} {letter} {:<9} {:>9} \u{b7} {:>4.0}% used \u{b7} {:>9} free{label}{index_note}",
