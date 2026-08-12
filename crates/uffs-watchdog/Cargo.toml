@@ -1,0 +1,70 @@
+# ============================================================================
+# uffs-watchdog: user-level supervisor for the resident UFFS services
+# ============================================================================
+# Keeps the services a user asked to be RESIDENT actually running: it polls
+# their liveness and respawns anything that vanished (crash, `taskkill`, an
+# installer that tore them down and did not put them back).
+#
+# WHY A SEPARATE BINARY
+# ---------------------
+# A supervisor cannot supervise its own death, so it must survive the
+# teardowns that kill the things it watches. `scripts/dev/install-bins.rs`
+# force-kills by image name (`uffsd`, `uffsmcp`), and the MCP stdio
+# supervisor was killed by exactly that — proving the point. This binary is
+# named differently, so those kills miss it. It is also its own binary
+# rather than a `uffs` subcommand because a long-running `uffs.exe` would
+# lock the most frequently replaced binary in the tree, reintroducing the
+# `os error 32` the install just learned to avoid. Its own code changes
+# rarely, so the installer's skip-if-identical path means it almost never
+# blocks an install.
+#
+# WHY IT IS NOT ELEVATED
+# ----------------------
+# Residency's whole promise is zero-UAC: a non-elevated daemon reads the MFT
+# through the Access Broker. The watchdog therefore runs as the user and
+# supervises only user-owned processes.
+#
+# WHAT IT DELIBERATELY DOES NOT SUPERVISE
+# ---------------------------------------
+# The Access Broker. It is a LocalSystem service registered `start= auto`,
+# so the SCM already restarts it at boot — and a non-elevated process cannot
+# call `StartService` on it anyway. The correct mechanism there is SCM
+# failure actions, configured once at `--install` time where admin is
+# already held. Supervising it from here would require elevation and would
+# undo the zero-UAC property above.
+# ============================================================================
+
+[package]
+name = "uffs-watchdog"
+description = "User-level supervisor that keeps the resident UFFS daemon and MCP server running"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# Internal tooling binary — never published.
+publish.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[bin]]
+name = "uffs-watchdog"
+path = "src/main.rs"
+
+[dependencies]
+# Resolves the per-user lifecycle directory that holds the PID file and
+# the stop-intent markers.  Deliberately NOT depending on `uffs-client`
+# for this: the watchdog needs one directory path, and pulling the whole
+# client (protocol, IPC, formatting) into a supervisor that only shells
+# out to `uffs` would be a heavy edge for a single helper.
+dirs-next.workspace = true
+
+anyhow.workspace = true
+
+[lints]
+workspace = true
