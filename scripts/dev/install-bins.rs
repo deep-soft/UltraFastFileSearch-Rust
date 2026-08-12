@@ -35,6 +35,11 @@ fn main() {
     eprintln!("📦 Build (release) + install UFFS binaries to ~/bin");
     eprintln!("========================================================");
 
+    // Note whether a daemon was serving BEFORE we tear it down, so the
+    // install can put it back afterwards (see `restart_daemon`).  Probing
+    // after `stop_running_services` would of course always say "no".
+    let daemon_was_running = daemon_is_running();
+
     // Stop the running daemon + MCP first (best effort), mirroring the
     // previous [unix] bash recipe: the old binaries release their file
     // locks (Windows can't overwrite a running .exe at all) and no stale
@@ -163,6 +168,12 @@ fn main() {
     if !on_path {
         eprintln!("⚠️  {} is not on PATH", bin_dir.display());
     }
+    // Put back what we took down.  Deliberately BEFORE the `skipped`
+    // exit: a partially-failed install is exactly the case where leaving
+    // the machine daemon-less hurts most.
+    if daemon_was_running {
+        restart_daemon(&bin_dir);
+    }
     if skipped > 0 {
         std::process::exit(1);
     }
@@ -248,6 +259,59 @@ impl BrokerGuard {
                 path.display()
             );
         }
+    }
+}
+
+/// Was a daemon serving before we tore everything down?
+///
+/// `--daemon status` prints `● running  PID …` when up and
+/// `○ Daemon  not running` when not, so "contains `running` but not
+/// `not running`" is an exact read of both shapes. Any failure to run
+/// the probe (no `uffs` on PATH yet on a first install) reads as "not
+/// running", which is the safe answer: we then leave things alone.
+fn daemon_is_running() -> bool {
+    Command::new("uffs")
+        .args(["--daemon", "status"])
+        .output()
+        .map(|out| {
+            let text = String::from_utf8_lossy(&out.stdout);
+            text.contains("running") && !text.contains("not running")
+        })
+        .unwrap_or(false)
+}
+
+/// Restart the daemon we deliberately stopped, using the freshly
+/// installed binary.
+///
+/// `use-local` kills the daemon + MCP so their images can be replaced,
+/// but until now never brought them back — so a routine dev install
+/// silently left the machine without a daemon, which is exactly the
+/// promise `uffs --daemon resident` makes and breaks. Restoring it here
+/// keeps the invariant "use-local leaves the machine as it found it".
+///
+/// The restart goes through the normal `--daemon start` path, so the
+/// resident marker (`resident.args`) is merged in by the client's
+/// auto-spawn — a daemon that was resident comes back resident, with
+/// `--no-retire`, rather than as a plain ephemeral one.
+fn restart_daemon(bin_dir: &std::path::Path) {
+    let exe = bin_dir.join(if cfg!(windows) { "uffs.exe" } else { "uffs" });
+    if !exe.is_file() {
+        return;
+    }
+    eprintln!();
+    eprintln!("🔄 Restarting the daemon (it was running before the install)...");
+    let ok = Command::new(&exe)
+        .args(["--daemon", "start"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if ok {
+        eprintln!("✅ Daemon restarted.");
+    } else {
+        eprintln!(
+            "⚠️  Daemon did NOT restart — run: {} --daemon start",
+            exe.display()
+        );
     }
 }
 
