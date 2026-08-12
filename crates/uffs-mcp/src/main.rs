@@ -567,7 +567,9 @@ fn mcp_stop() {
         println!("MCP server is not running.");
         return;
     };
-    // Deliberate stop: tell the watchdog not to undo it.
+    // Record intent BEFORE signalling, for the same reason the daemon
+    // does: between the process dying and the marker appearing, a
+    // watchdog tick would read an unexplained death and restart it.
     uffs_client::daemon_ctl::record_stop_intent(uffs_client::daemon_ctl::ServiceKind::Mcp);
     println!("Stopping MCP server (PID {pid})...");
     process::signal_pid(pid, cfg!(windows));
