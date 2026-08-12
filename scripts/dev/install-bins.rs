@@ -40,6 +40,7 @@ fn main() {
     // after `stop_running_services` would of course always say "no".
     let daemon_was_running = daemon_is_running();
     let mcp_was_running = mcp_is_running();
+    let watchdog_was_running = watchdog_is_running();
 
     // Stop the running daemon + MCP first (best effort), mirroring the
     // previous [unix] bash recipe: the old binaries release their file
@@ -177,6 +178,11 @@ fn main() {
     }
     if mcp_was_running {
         restart_mcp(&bin_dir);
+    }
+    // Restart the supervisor LAST: it must not respawn services while
+    // they are mid-restart above, or it races the install.
+    if watchdog_was_running {
+        restart_watchdog(&bin_dir);
     }
     if skipped > 0 {
         std::process::exit(1);
@@ -319,6 +325,42 @@ fn restart_daemon(bin_dir: &std::path::Path) {
     }
 }
 
+/// Is a watchdog supervising right now?
+fn watchdog_is_running() -> bool {
+    if cfg!(windows) {
+        Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq uffs-watchdog.exe", "/NH"])
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).contains("uffs-watchdog.exe"))
+            .unwrap_or(false)
+    } else {
+        Command::new("pgrep")
+            .args(["-x", "uffs-watchdog"])
+            .output()
+            .map(|out| !out.stdout.is_empty())
+            .unwrap_or(false)
+    }
+}
+
+/// Restart the supervisor we stopped, using the new binary.
+fn restart_watchdog(bin_dir: &std::path::Path) {
+    let exe = bin_dir.join(if cfg!(windows) { "uffs-watchdog.exe" } else { "uffs-watchdog" });
+    if !exe.is_file() {
+        return;
+    }
+    let spawned = Command::new(&exe)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok();
+    if spawned {
+        eprintln!("✅ Watchdog restarted.");
+    } else {
+        eprintln!("⚠️  Watchdog did NOT restart — run: {}", exe.display());
+    }
+}
+
 /// Was the MCP HTTP gateway serving before the teardown?
 ///
 /// `--mcp status` prints `MCP server:    running (PID …)` when up, and
@@ -400,6 +442,24 @@ fn stop_running_services() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+    // The watchdog is stopped FIRST: if it kept running while we tear
+    // the daemon down, it would dutifully restart it mid-install — the
+    // supervisor fighting the installer. It is restarted at the end.
+    for name in ["uffs-watchdog"] {
+        let _ = if cfg!(windows) {
+            Command::new("taskkill")
+                .args(["/IM", &format!("{name}.exe"), "/F"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+        } else {
+            Command::new("pkill")
+                .args(["-x", name])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+        };
+    }
     for name in ["uffsd", "uffsmcp"] {
         let status = if cfg!(windows) {
             Command::new("taskkill")

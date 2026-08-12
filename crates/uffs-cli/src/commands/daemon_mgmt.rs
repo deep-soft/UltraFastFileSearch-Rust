@@ -381,6 +381,9 @@ fn daemon_start(
         );
     }
 
+    // An explicit start revokes any earlier stop intent, so the
+    // watchdog resumes supervising this service.
+    uffs_client::daemon_ctl::clear_stop_intent(uffs_client::daemon_ctl::ServiceKind::Daemon);
     if !is_quiet() {
         println!("Starting daemon...");
     }
@@ -413,6 +416,8 @@ fn daemon_stop() -> Result<()> {
         client
             .shutdown()
             .with_context(|| "Shutdown RPC failed — try `uffs --daemon kill` instead")?;
+        // Deliberate stop: tell the watchdog not to undo it.
+        uffs_client::daemon_ctl::record_stop_intent(uffs_client::daemon_ctl::ServiceKind::Daemon);
         println!("Daemon shutdown requested.");
     } else {
         println!("Daemon is not running.");

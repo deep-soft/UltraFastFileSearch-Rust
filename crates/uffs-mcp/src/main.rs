@@ -345,6 +345,8 @@ async fn mcp_start(
         cmd.env("UFFS_LOG_FILE", &default_log);
     }
 
+    // An explicit start revokes any earlier stop intent.
+    uffs_client::daemon_ctl::clear_stop_intent(uffs_client::daemon_ctl::ServiceKind::Mcp);
     println!("Starting MCP HTTP server on {bind}:{port}...");
     let mut child = cmd.spawn().with_context(|| "Failed to spawn MCP server")?;
     let pid = child.id();
@@ -565,6 +567,8 @@ fn mcp_stop() {
         println!("MCP server is not running.");
         return;
     };
+    // Deliberate stop: tell the watchdog not to undo it.
+    uffs_client::daemon_ctl::record_stop_intent(uffs_client::daemon_ctl::ServiceKind::Mcp);
     println!("Stopping MCP server (PID {pid})...");
     process::signal_pid(pid, cfg!(windows));
     println!("MCP server stopped.");

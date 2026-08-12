@@ -89,6 +89,7 @@ fn resident_on(
     let argv = daemon_argv(mft_files, data_dir, drives);
     platform::turn_on(&exe, &argv)?;
     write_marker(&argv)?;
+    arm_watchdog();
     println!(
         "\nUFFS is now resident: uffsd starts at login with --no-retire\n\
          (never exits on idle; memory tiering still parks unused drives),\n\
@@ -96,6 +97,64 @@ fn resident_on(
          Undo with: uffs --daemon resident off"
     );
     Ok(())
+}
+
+/// Start the user-level watchdog that keeps the resident services up.
+///
+/// Windows only, and deliberately so: launchd (`KeepAlive`) and systemd
+/// (`Restart=on-failure`) already supervise the daemon on macOS and
+/// Linux, so a second supervisor there would be redundant machinery
+/// racing the OS. The Windows `Run` key fires once at login and never
+/// again, which is precisely the gap `uffs-watchdog` fills.
+///
+/// Best-effort: residency is still installed and useful without it.
+#[cfg(windows)]
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn arm_watchdog() {
+    let Some(exe) = watchdog_exe() else {
+        println!("(watchdog binary not found next to uffs — skipping supervision)");
+        return;
+    };
+    // Already supervising?  Starting a second one would double every
+    // respawn decision.
+    if watchdog_running() {
+        return;
+    }
+    let spawned = std::process::Command::new(&exe)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok();
+    if spawned {
+        println!("Watchdog armed: crashed services are restarted automatically.");
+    } else {
+        println!(
+            "(could not start the watchdog — run {} manually)",
+            exe.display()
+        );
+    }
+}
+
+/// Non-Windows: launchd / systemd already supervise the daemon.
+#[cfg(not(windows))]
+const fn arm_watchdog() {}
+
+/// Locate `uffs-watchdog` beside the running `uffs`.
+#[cfg(windows)]
+fn watchdog_exe() -> Option<PathBuf> {
+    let here = std::env::current_exe().ok()?;
+    let candidate = here.parent()?.join("uffs-watchdog.exe");
+    candidate.is_file().then_some(candidate)
+}
+
+/// Is a watchdog already running for this user?
+#[cfg(windows)]
+fn watchdog_running() -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq uffs-watchdog.exe", "/NH"])
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("uffs-watchdog.exe"))
 }
 
 /// Write the resident marker (`resident.args`) so implicit auto-spawns
