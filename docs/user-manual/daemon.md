@@ -157,6 +157,53 @@ importantly `--no-retire`.  Flags you pass explicitly always win over
 the marker.  `resident off` removes the marker along with the login
 item.
 
+### Memory tiers — and why you never see `Hot`
+
+Each drive's index sits in one of four tiers, visible in
+`uffs --daemon status_drives`:
+
+| Tier | What is in RAM | Reached by |
+|------|----------------|------------|
+| `Hot` | Body, **pre-faulted** into the working set | `uffs --daemon preload` **only** |
+| `Warm` | Body, fully searchable | initial load, and every promotion |
+| `Parked` | Bloom filter + path trie; body released | 30 min idle |
+| `Cold` | Nothing (encrypted on-disk cache only) | 24 h idle |
+
+**`Hot` is an operator mode, not something the daemon reaches on its
+own.**  Nothing promotes a drive to `Hot` because it is busy — there is
+exactly one code path that creates a `Hot` shard and it is `preload`.
+A freshly loaded drive starts `Warm`, and a query that promotes a
+`Parked` or `Cold` drive promotes it back to **`Warm`**, never past it.
+So on a daemon where `preload` has never run, every drive reads `warm`
+forever and the `Hot → Warm` idle threshold
+(`UFFS_HOT_TO_WARM_IDLE_SECS`, default 600 s) never fires — there is
+nothing `Hot` to demote.  The effective ladder is
+`Warm → Parked → Cold`.
+
+For serving queries the two active tiers are **identical**: dispatch
+treats `Warm` and `Hot` as one set, and a `Hot` drive is not searched
+faster.  What `preload` actually buys is:
+
+* **Pre-faulting** — it issues a `PrefetchVirtualMemory` hint, pulling
+  the mapped pages into the working set up front.  This is the real
+  win: it moves first-touch paging off the critical path of your next
+  query.  On a large index (say 5 GB across seven drives, several on
+  HDDs) that first query can otherwise take tens of seconds while the
+  pages fault in — everything after is memory-speed.
+* **A pin** — demotion is blocked until the pin expires (30 min by
+  default, `--pin-minutes` to change), plus one extra rung of runway
+  afterwards.
+
+```bash
+# Make the drives you actually search ready, and hold them there.
+uffs --daemon preload --drives C,D --pin-minutes 60
+```
+
+Note that residency and `Hot` are different promises: `--no-retire`
+keeps the **process** alive, while the tiering ladder still parks the
+drives underneath it.  A resident daemon left idle overnight still pays
+the page-in on the next first query unless it was preloaded.
+
 ---
 
 ## 5  Management Commands
