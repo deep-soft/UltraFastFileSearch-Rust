@@ -1,5 +1,6 @@
 # SPDX-FileCopyright (c) 2025-2026 SKY, LLC.
 # SPDX-License-Identifier: MPL-2.0
+# 2026-08-12 UFFS v0.6.31
 # 2026-07-10 00:00 # Linux binary as static musl # https://github.com/skyllc-ai/UltraFastFileSearch/commit/630be95a5a0d75f67c6fedef399c0d07c1ede6c1
 #          - target: x86_64-apple-darwin
 #            os: macos-latest
@@ -109,7 +110,7 @@ jobs:
       release-name: ${{ steps.validate.outputs.release-name }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
           fetch-depth: 0
@@ -390,7 +391,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
 
@@ -442,7 +443,7 @@ jobs:
           rustc --version
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # `shared-key:` (not `key:`) so the action's built-in fallback
           # restores partial matches when `Cargo.lock` shifts between
@@ -624,6 +625,47 @@ jobs:
               ls -lh "$bin"
             fi
           done
+
+      # Unsigned Rust binaries recurrently trip Defender's ML heuristic, which
+      # blocks the winget-pkgs PR (Validation-Defender-Error) hours after the
+      # release. Scan the freshly-built binaries here so the risk surfaces NOW,
+      # in the release summary, pointing at the remediation. EARLY WARNING ONLY:
+      # a clean result does NOT guarantee winget passes (its cloud/ML validation
+      # uses fresh defs this runner may lack), and a hit never fails the release.
+      - name: Defender false-positive early warning
+        if: contains(matrix.target, 'windows')
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $mp = (Get-ChildItem "$env:ProgramData\Microsoft\Windows Defender\Platform\*\MpCmdRun.exe" -ErrorAction SilentlyContinue |
+                 Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          if (-not $mp) { $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" }
+          if (-not (Test-Path $mp)) { "::notice::MpCmdRun not found; skipping Defender early-warning scan."; exit 0 }
+          $sig = (Get-MpComputerStatus -ErrorAction SilentlyContinue).AntivirusSignatureVersion
+          $dir = "target/${{ matrix.target }}/release"
+          $flagged = @()
+          Get-ChildItem "$dir/*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
+            & $mp -Scan -ScanType 3 -File $_.FullName -DisableRemediation *> $null
+            if ($LASTEXITCODE -eq 2) { $flagged += $_.Name }
+          }
+          $tag = "${{ needs.release-preparation.outputs.tag }}"
+          if ($flagged.Count -gt 0) {
+            $list = $flagged -join ", "
+            "::warning::Defender flagged $($flagged.Count) binary(ies) [$list] (defs $sig). This release will likely hit the winget Validation-Defender-Error. Remediate with: just winget-av-submit $tag"
+            @(
+              "### 🛡️ Defender false-positive early warning",
+              "",
+              "**$($flagged.Count) binary(ies) flagged** (signature defs ``$sig``): $list",
+              "",
+              "This release will very likely trip ``Validation-Defender-Error`` on the winget-pkgs PR. Prep the WDSI false-positive submission:",
+              '```',
+              "just winget-av-submit $tag",
+              '```'
+            ) | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          } else {
+            "::notice::Defender early-warning scan clean (defs $sig). Note: winget cloud/ML validation may still differ."
+            "### 🛡️ Defender early-warning scan: clean (defs ``$sig``)" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          }
 
       - name: Package binaries
         shell: bash
@@ -871,7 +913,7 @@ jobs:
       attestations: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
           fetch-depth: 0
@@ -1029,7 +1071,7 @@ jobs:
         # someone with `contents: write` silently swaps a binary, the
         # SHA256 in the attestation won't match and `gh attestation
         # verify` fails).
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: "final-release/*"
 
@@ -1204,7 +1246,7 @@ jobs:
         # No `target_commitish`: the tag was just created at the built
         # commit by the step above, so the release simply references the
         # existing tag — sidestepping the commit-SHA-target 403 entirely.
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: ${{ needs.release-preparation.outputs.tag }}
           name: ${{ needs.release-preparation.outputs.release-name }}
