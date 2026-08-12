@@ -32,6 +32,7 @@ members = [
   "crates/uffs-statusfmt",       # 🎨 Shared operator-status styling (color, glyphs, fields) (leaf)
   "crates/uffs-broker-protocol", # 📟 Cross-platform broker wire-protocol types (F5)
   "crates/uffs-winsvc",          # 🪟 Native Windows service control + broker-pipe probe (leaf)
+  "crates/uffs-fetch",           # 🌐 Hardened HTTP fetch + SHA-256 verify (public lib, leaf)
   "crates/uffs-mft",             # 📦 MFT reading → Polars DataFrame
   "crates/uffs-format",          # 🧾 Shared CSV formatter (daemon + thin CLI)
   "crates/uffs-core",            # 🎯 Query engine + compact search engine
@@ -66,7 +67,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.6.30"
+version = "0.6.31"
 edition = "2024"
 # No `rust-version` claim: the workspace is structurally nightly-only.
 # `crates/uffs-polars` enables `polars/nightly` unconditionally, which
@@ -133,30 +134,36 @@ publish = false
 # proposed-plan output for 12 days because `release-plz update`
 # failed at `cargo package` with this very error.  See
 # `release-automation-baseline.md` §10 for the diagnostic trail.
-uffs-polars = { path = "crates/uffs-polars", version = "0.6.30" }
-uffs-security = { path = "crates/uffs-security", version = "0.6.30" }
-uffs-text = { path = "crates/uffs-text", version = "0.6.30" }
-uffs-time = { path = "crates/uffs-time", version = "0.6.30" }
-uffs-version = { path = "crates/uffs-version", version = "0.6.30" }
-uffs-statusfmt = { path = "crates/uffs-statusfmt", version = "0.6.30" }
-uffs-mft = { path = "crates/uffs-mft", version = "0.6.30" }
-uffs-format = { path = "crates/uffs-format", version = "0.6.30" }
-uffs-core = { path = "crates/uffs-core", version = "0.6.30" }
-uffs-client = { path = "crates/uffs-client", version = "0.6.30" }
+uffs-polars = { path = "crates/uffs-polars", version = "0.6.31" }
+uffs-security = { path = "crates/uffs-security", version = "0.6.31" }
+uffs-text = { path = "crates/uffs-text", version = "0.6.31" }
+uffs-time = { path = "crates/uffs-time", version = "0.6.31" }
+uffs-version = { path = "crates/uffs-version", version = "0.6.31" }
+uffs-statusfmt = { path = "crates/uffs-statusfmt", version = "0.6.31" }
+uffs-mft = { path = "crates/uffs-mft", version = "0.6.31" }
+uffs-format = { path = "crates/uffs-format", version = "0.6.31" }
+uffs-core = { path = "crates/uffs-core", version = "0.6.31" }
+uffs-client = { path = "crates/uffs-client", version = "0.6.31" }
 # `uffs-broker-protocol` carries the wire-protocol types shared between
 # `uffs-broker` (the elevated handle vendor, Windows-only binary) and
 # `uffs-daemon::broker_client` (the handle consumer).  Pure-logic
 # Layer-0 lib — cross-platform tests run on every CI lane.  Added in
 # F5 (issue #205) so neither side duplicates `BROKER_PIPE_NAME` /
 # wire-format byte literals.
-uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.30" }
+uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.31" }
 # `uffs-winsvc` — native Windows service control (SCM query/start/stop) +
 # the non-connecting broker-pipe readiness probe.  Layer-0 leaf: its only
 # dependency is the `windows` crate (windows-target), with non-Windows
 # stubs so cross-platform consumers (uffs-update, uffs-cli) compile.
 # Single source of truth for the `sc`/SCM mechanics previously duplicated
 # across uffs-broker, uffs-update, and uffs-cli.
-uffs-winsvc = { path = "crates/uffs-winsvc", version = "0.6.30" }
+uffs-winsvc = { path = "crates/uffs-winsvc", version = "0.6.31" }
+# `uffs-fetch` — hardened release-asset transport (blocking reqwest +
+# rustls with retry/timeout/byte-cap, plus `SHA256SUMS` verification),
+# extracted from `uffs-update` as a small public lib so external products
+# can reuse it. Cross-platform pure-logic leaf; keeps the HTTP/TLS stack
+# out of the lean `uffs` CLI exactly as before.
+uffs-fetch = { path = "crates/uffs-fetch", version = "0.6.31" }
 # NOTE: no `uffs-broker` workspace dependency alias on purpose —
 # `uffs-broker` is a binary-only crate (the only `[lib]` it carries is
 # this protocol module's now-extracted sibling); no other workspace
@@ -189,7 +196,7 @@ tokio = { version = "1.53.1", default-features = false, features = [
 # Async combinators (`try_join_all`, `FutureExt`).  Used by the internal
 # `uffs-ci-pipeline` tool to fan out parallel cargo invocations; kept at
 # workspace scope so any future consumer tracks the same version.
-futures = "0.3.33"
+futures = "0.3.34"
 
 # ───── Windows APIs (Windows only) ─────
 windows = { version = "0.62.2", features = [
@@ -237,21 +244,21 @@ serde_json = "1.0.151"
 # tier overrides + adaptive-TTL knobs in `uffs-daemon::config`.
 # Pinned to v1.1.2 to match the supply-chain exemption already on
 # the transitive copy pulled by other deps; no new vet entry needed.
-toml = "1.1.3"
+toml = "1.1.4"
 
 # ───── Data Structures ─────
 bitflags = "2.13.1"
 bytemuck = { version = "1.25.2", features = ["derive"] }
-smallvec = "1.15.1"
-zerocopy = { version = "0.8", features = ["derive"] }
+smallvec = "1.15.2"
+zerocopy = { version = "0.8.56", features = ["derive"] }
 
 # ───── Error Handling ─────
-thiserror = "2.0.19"
+thiserror = "2.0.20"
 anyhow = "1.0.104"
 
 # ───── MCP (Model Context Protocol) ─────
-rmcp = { version = "2.2.0", features = ["server", "transport-io", "macros"] }
-schemars = "1.2.1"
+rmcp = { version = "3.1.2", features = ["server", "transport-io", "macros"] }
+schemars = "1.2.2"
 
 # ───── HTTP / Tower (for MCP Streamable HTTP gateway) ─────
 axum = "0.8.9"
@@ -267,14 +274,14 @@ tracing-subscriber = { version = "0.3.23", features = [
 tracing-appender = "0.2.5"
 
 # ───── CLI ─────
-clap = { version = "4.6.3", features = [
+clap = { version = "4.6.6", features = [
   "derive",
   "env",
   "unicode",
   "wrap_help",
 ] }
 indicatif = "0.18.6"
-devicons = "0.6.12"
+devicons = "0.6.13"
 # ANSI terminal colouring.  Used by the `uffs-ci-pipeline` tool; kept at
 # workspace scope so a future UI surface that wants colored output inherits
 # the same pin.  Audited and `cargo vet certify`'d at 3.1.1 — see
@@ -284,8 +291,8 @@ colored = "3.1.1"
 # ───── Pattern Matching ─────
 regex = "1.13.1"
 memchr = "2.8.3"
-aho-corasick = "1.1.4"
-globset = "0.4.19"
+aho-corasick = "1.1.5"
+globset = "0.4.20"
 
 # ───── Time ─────
 chrono = { version = "0.4.45", features = ["serde"] }
@@ -315,7 +322,17 @@ hex = "0.4.3"
 # ───── Network (self-update acquire helper only) ─────
 # Blocking HTTP with rustls + the system trust store. `rustls-tls-native-roots`
 # matches the existing transitive reqwest config, so no new crate enters the lock.
-# Version 0.13.4 cannot be used at this time ... missing "rustls-tls-native-roots"
+#
+# DELIBERATELY HELD AT 0.12 (re-evaluated 2026-08-12, everything else in this
+# workspace is at latest).  0.13 drops `rustls-tls-native-roots` and routes
+# system trust through `rustls-platform-verifier`, which pulls the Android JNI
+# stack — `jni`, `jni-macros`, `jni-sys`, `combine`, `simd_cesu8`, roughly 63k
+# lines.  None of it appears in the host or `x86_64-pc-windows-msvc` dependency
+# trees (verified with `cargo tree -i jni`): it is Android-only, a target UFFS
+# does not ship.  cargo-vet audits every target regardless, so 0.13 would cost
+# ~63k lines of supply-chain review for code that never enters a binary we
+# build, in exchange for no functional gain.  Revisit if reqwest ever offers
+# system trust without the Android dependency, or if we ever target Android.
 reqwest = { version = "0.12.28", default-features = false, features = [
   "blocking",
   "rustls-tls-native-roots",
@@ -331,7 +348,7 @@ mimalloc = "0.1.52"
 memmap2 = "0.9.11"
 
 # ───── System ─────
-libc = "0.2"
+libc = "0.2.189"
 hostname = "0.4.2"
 # CPU-core count detection.  `std::thread::available_parallelism` is the
 # modern alternative, but `num_cpus` handles cgroup / container quotas more

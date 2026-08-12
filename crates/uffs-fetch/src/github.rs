@@ -3,10 +3,15 @@
 
 //! GitHub Releases fetch + asset download (blocking `reqwest` + rustls).
 //!
-//! One-shot HTTP for the acquire step — a release lookup plus streaming
+//! One-shot HTTP for an acquire step — a release lookup plus streaming
 //! asset downloads. TLS is rustls with the system trust store; we never
 //! follow off-host redirects beyond what `reqwest` validates against the
 //! pinned `api.github.com` / release host.
+//!
+//! [`fetch_release`] is GitHub-specific; [`download_to`] streams **any**
+//! URL, so it also serves non-GitHub hosts (model registries, package
+//! feeds, …). The caller supplies the user-agent product string (GitHub
+//! requires one for API requests) and the per-download byte cap.
 
 use core::time::Duration;
 use std::io::{Read, Write};
@@ -14,9 +19,6 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
-
-/// User-agent GitHub requires for API requests.
-const USER_AGENT: &str = concat!("uffs-update/", env!("CARGO_PKG_VERSION"));
 
 /// Cap on how long we wait to establish a TCP/TLS connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -32,44 +34,40 @@ const MAX_ATTEMPTS: u32 = 4;
 /// Base back-off; the delay before attempt *n* is `BASE_BACKOFF * 2^(n-1)`.
 const BASE_BACKOFF: Duration = Duration::from_millis(500);
 
-/// Hard ceiling on a single downloaded asset, defending the disk against
-/// a truncated, malicious, or runaway response. Our largest binary is a
-/// few tens of MiB; 512 MiB is generous head-room.
-const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
-
 /// Streaming copy buffer size.
 const CHUNK_BYTES: usize = 64 * 1024;
 
 /// A GitHub release (only the fields we use).
 #[derive(Debug, Deserialize)]
-pub(crate) struct Release {
+pub struct Release {
     /// The release tag (e.g. `v0.6.2`).
-    pub(crate) tag_name: String,
+    pub tag_name: String,
     /// Downloadable assets attached to the release.
-    pub(crate) assets: Vec<Asset>,
+    pub assets: Vec<Asset>,
 }
 
 /// One downloadable release asset.
 #[derive(Debug, Deserialize)]
-pub(crate) struct Asset {
+pub struct Asset {
     /// Asset file name (e.g. `uffs-windows-x64.zip`).
-    pub(crate) name: String,
+    pub name: String,
     /// Direct download URL.
-    pub(crate) browser_download_url: String,
+    pub browser_download_url: String,
 }
 
 impl Release {
     /// Find an asset by exact file name.
-    pub(crate) fn asset(&self, name: &str) -> Option<&Asset> {
+    #[must_use]
+    pub fn asset(&self, name: &str) -> Option<&Asset> {
         self.assets.iter().find(|asset| asset.name == name)
     }
 }
 
-/// Build a blocking client with the required user agent and the connect
-/// + read timeouts (a hung socket can never wedge an update forever).
-fn client() -> Result<reqwest::blocking::Client> {
+/// Build a blocking client with the caller's user agent and the connect
+/// + read timeouts (a hung socket can never wedge a download forever).
+fn client(user_agent: &str) -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
+        .user_agent(user_agent)
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(READ_TIMEOUT)
         .build()
@@ -87,10 +85,17 @@ fn is_retryable(err: &reqwest::Error) -> bool {
         .is_some_and(|status| status.as_u16() == 429 || status.is_server_error())
 }
 
-/// Run `op` with bounded exponential back-off, retrying only transient
-/// failures (see [`is_retryable`]). `label` describes the operation for
-/// the final error context.
-fn with_retry<T, F>(label: &str, mut op: F) -> Result<T>
+/// Run `op` with bounded exponential back-off (4 attempts, 500ms base).
+///
+/// Only transient failures are retried: connect/read timeouts, HTTP 429,
+/// and 5xx statuses. `label` describes the operation for the final error
+/// context.
+///
+/// # Errors
+///
+/// Returns the last `op` error once attempts are exhausted, or the first
+/// non-retryable one, wrapped with `label` and the attempt count.
+pub fn with_retry<T, F>(label: &str, mut op: F) -> Result<T>
 where
     F: FnMut() -> reqwest::Result<T>,
 {
@@ -111,8 +116,14 @@ where
 }
 
 /// Stream `reader` into `writer`, aborting if the total exceeds `cap`.
-/// Returns the number of bytes written.
-fn copy_capped<R: Read, W: Write>(reader: &mut R, writer: &mut W, cap: u64) -> Result<u64> {
+/// Invokes `on_chunk` with the running byte total after every written
+/// chunk. Returns the number of bytes written.
+fn copy_capped<R, W, P>(reader: &mut R, writer: &mut W, cap: u64, mut on_chunk: P) -> Result<u64>
+where
+    R: Read,
+    W: Write,
+    P: FnMut(u64),
+{
     let mut buf = vec![0_u8; CHUNK_BYTES];
     let mut total: u64 = 0;
     loop {
@@ -126,6 +137,7 @@ fn copy_capped<R: Read, W: Write>(reader: &mut R, writer: &mut W, cap: u64) -> R
         }
         let chunk = buf.get(..read).context("response chunk out of range")?;
         writer.write_all(chunk).context("writing to disk")?;
+        on_chunk(total);
     }
     Ok(total)
 }
@@ -133,15 +145,18 @@ fn copy_capped<R: Read, W: Write>(reader: &mut R, writer: &mut W, cap: u64) -> R
 /// Fetch a release from `owner/repo`: the `latest` release, or the
 /// specific `tag` when given.
 ///
+/// `user_agent` is the product string sent with the request (e.g.
+/// `myproduct/1.2.3`) — GitHub rejects agent-less API calls.
+///
 /// # Errors
 ///
 /// Propagates HTTP, status, and JSON-decode failures.
-pub(crate) fn fetch_release(repo: &str, tag: Option<&str>) -> Result<Release> {
+pub fn fetch_release(user_agent: &str, repo: &str, tag: Option<&str>) -> Result<Release> {
     let url = tag.map_or_else(
         || format!("https://api.github.com/repos/{repo}/releases/latest"),
         |wanted| format!("https://api.github.com/repos/{repo}/releases/tags/{wanted}"),
     );
-    let client = client()?;
+    let client = client(user_agent)?;
     let response = with_retry(&format!("requesting {url}"), || {
         client
             .get(&url)
@@ -152,20 +167,51 @@ pub(crate) fn fetch_release(repo: &str, tag: Option<&str>) -> Result<Release> {
     response.json::<Release>().context("parsing release JSON")
 }
 
-/// Stream an asset URL to `dest`.
+/// Stream `url` (any host, not just GitHub) to `dest`, aborting once
+/// the body exceeds `max_bytes`.
+///
+/// The cap defends the disk against a truncated, malicious, or runaway
+/// response — size it to the largest asset the caller legitimately
+/// expects.
 ///
 /// # Errors
 ///
-/// Propagates HTTP, status, and file-write failures.
-pub(crate) fn download_to(url: &str, dest: &Path) -> Result<()> {
-    let client = client()?;
+/// Propagates HTTP, status, cap-exceeded, and file-write failures.
+pub fn download_to(user_agent: &str, url: &str, dest: &Path, max_bytes: u64) -> Result<()> {
+    download_to_with_progress(user_agent, url, dest, max_bytes, |_, _| {})
+}
+
+/// [`download_to`] with a progress hook: `on_chunk(bytes_so_far, total)`
+/// fires after every written chunk, where `total` is the response's
+/// `Content-Length` when the server sent one.
+///
+/// Multi-GiB downloads are otherwise indistinguishable from a hang — the
+/// hook gives callers a heartbeat to drive a progress bar or watchdog.
+///
+/// # Errors
+///
+/// Propagates HTTP, status, cap-exceeded, and file-write failures.
+pub fn download_to_with_progress<P>(
+    user_agent: &str,
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    mut on_chunk: P,
+) -> Result<()>
+where
+    P: FnMut(u64, Option<u64>),
+{
+    let client = client(user_agent)?;
     let mut response = with_retry(&format!("downloading {url}"), || {
         client.get(url).send()?.error_for_status()
     })?;
+    let total = response.content_length();
     let mut file =
         std::fs::File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
-    copy_capped(&mut response, &mut file, MAX_ASSET_BYTES)
-        .with_context(|| format!("writing {}", dest.display()))?;
+    copy_capped(&mut response, &mut file, max_bytes, |written| {
+        on_chunk(written, total);
+    })
+    .with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
 }
 
@@ -173,12 +219,16 @@ pub(crate) fn download_to(url: &str, dest: &Path) -> Result<()> {
 mod tests {
     use super::copy_capped;
 
+    /// Progress callback that records nothing — for tests not about progress.
+    fn no_progress(_total: u64) {}
+
     #[test]
     fn copy_capped_writes_all_under_cap() {
         let src = vec![7_u8; 200];
         let mut reader = src.as_slice();
         let mut sink: Vec<u8> = Vec::new();
-        let written = copy_capped(&mut reader, &mut sink, 1024).expect("under cap copies");
+        let written =
+            copy_capped(&mut reader, &mut sink, 1024, no_progress).expect("under cap copies");
         assert_eq!(written, 200);
         assert_eq!(sink, src);
     }
@@ -188,7 +238,8 @@ mod tests {
         let src = vec![0_u8; 4096];
         let mut reader = src.as_slice();
         let mut sink: Vec<u8> = Vec::new();
-        let err = copy_capped(&mut reader, &mut sink, 100).expect_err("over cap must abort");
+        let err =
+            copy_capped(&mut reader, &mut sink, 100, no_progress).expect_err("over cap must abort");
         assert!(err.to_string().contains("cap"), "unexpected: {err}");
     }
 
@@ -196,8 +247,30 @@ mod tests {
     fn copy_capped_handles_empty_body() {
         let mut reader: &[u8] = &[];
         let mut sink: Vec<u8> = Vec::new();
-        let written = copy_capped(&mut reader, &mut sink, 100).expect("empty copies");
+        let written = copy_capped(&mut reader, &mut sink, 100, no_progress).expect("empty copies");
         assert_eq!(written, 0);
-        assert!(sink.is_empty());
+        assert_eq!(sink, Vec::<u8>::new(), "sink must stay untouched");
+    }
+
+    #[test]
+    fn copy_capped_reports_monotonic_progress() {
+        // 3 chunks' worth of data → the hook must fire once per chunk with
+        // a strictly increasing running total ending at the full size.
+        let size = super::CHUNK_BYTES * 2 + 100;
+        let src = vec![1_u8; size];
+        let mut reader = src.as_slice();
+        let mut sink: Vec<u8> = Vec::new();
+        let mut seen: Vec<u64> = Vec::new();
+        let written = copy_capped(&mut reader, &mut sink, u64::MAX, |total| seen.push(total))
+            .expect("copies with progress");
+        assert_eq!(written, u64::try_from(size).expect("fits"));
+        assert!(seen.len() >= 3, "one callback per chunk: {seen:?}");
+        assert!(
+            seen.iter()
+                .zip(seen.iter().skip(1))
+                .all(|(prev, next)| prev < next),
+            "monotonic: {seen:?}"
+        );
+        assert_eq!(seen.last().copied(), Some(written));
     }
 }
