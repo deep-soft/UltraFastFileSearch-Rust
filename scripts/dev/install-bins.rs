@@ -86,6 +86,7 @@ fn main() {
 
     let mut installed = 0_u32;
     let mut skipped = 0_u32;
+    let mut unchanged = 0_u32;
     eprintln!();
     eprintln!("📦 Installing {} binaries to {}", executables.len(), bin_dir.display());
     for src in &executables {
@@ -99,6 +100,29 @@ fn main() {
             skipped += 1;
             continue;
         }
+        // Identical to what is already installed?  Don't touch it.
+        //
+        // This matters most for `uffs-broker.exe`: it runs as a LocalSystem
+        // Windows service, so its image is locked and the copy fails with
+        // `os error 32` — which used to fail the whole recipe even when the
+        // binary had not changed at all.  The broker's sources move rarely
+        // (byte-identical across v0.6.30..v0.6.31), so the common case is a
+        // needless copy of an unchanged file.
+        if files_identical(src, &dest) {
+            eprintln!("  ⏭️  {name:<28} unchanged");
+            unchanged += 1;
+            continue;
+        }
+        // Changed AND currently locked by the running service: stop it,
+        // copy, restart.  The broker exposes native SCM control for exactly
+        // this (`--stop` waits for STOPPED, `--start` waits for RUNNING and
+        // for the pipe to actually serve), which is the same quiesce/restore
+        // dance `uffs --update` performs.
+        let broker_guard = if is_broker(&name) {
+            BrokerGuard::stop_for_replace(&dest)
+        } else {
+            BrokerGuard::inactive()
+        };
         // Remove first so the copy gets a fresh inode — overwrites in place
         // share the inode, which lets macOS re-use a path-cached Launch
         // Services deny verdict against an earlier broken copy.
@@ -124,10 +148,15 @@ fn main() {
                 skipped += 1;
             }
         }
+        broker_guard.restart();
     }
 
     eprintln!();
-    eprintln!("✅ Installed {installed} binaries ({skipped} skipped)");
+    if unchanged > 0 {
+        eprintln!("✅ Installed {installed} binaries ({unchanged} unchanged, {skipped} skipped)");
+    } else {
+        eprintln!("✅ Installed {installed} binaries ({skipped} skipped)");
+    }
     let on_path = std::env::var("PATH")
         .map(|path| std::env::split_paths(&path).any(|entry| entry == bin_dir))
         .unwrap_or(false);
@@ -136,6 +165,89 @@ fn main() {
     }
     if skipped > 0 {
         std::process::exit(1);
+    }
+}
+
+/// True when `src` and `dest` are byte-identical, so the copy can be
+/// skipped entirely.  Compares length first (cheap, rejects almost every
+/// changed binary) and only then the contents.  A missing or unreadable
+/// `dest` is "not identical", so the normal copy path runs.
+fn files_identical(src: &std::path::Path, dest: &std::path::Path) -> bool {
+    let (Ok(src_meta), Ok(dest_meta)) = (src.metadata(), dest.metadata()) else {
+        return false;
+    };
+    if src_meta.len() != dest_meta.len() {
+        return false;
+    }
+    match (std::fs::read(src), std::fs::read(dest)) {
+        (Ok(lhs), Ok(rhs)) => lhs == rhs,
+        _ => false,
+    }
+}
+
+/// Is this the Access Broker binary (the one that runs as a service and
+/// therefore holds its own image open)?
+fn is_broker(name: &str) -> bool {
+    let stem = name.strip_suffix(".exe").unwrap_or(name);
+    stem == "uffs-broker"
+}
+
+/// Stops the broker service around a replace, and restarts it afterwards.
+///
+/// `stop_for_replace` is a no-op unless the service is actually running,
+/// so a developer box without the broker installed sees no behaviour
+/// change.  Restart is best-effort and never fails the install: leaving
+/// the new binary in place with the service down is recoverable
+/// (`uffs-broker --start`), and is reported loudly.
+struct BrokerGuard {
+    /// Path of the installed broker binary, when we stopped its service.
+    stopped: Option<std::path::PathBuf>,
+}
+
+impl BrokerGuard {
+    /// A guard that does nothing (non-broker binaries).
+    const fn inactive() -> Self {
+        Self { stopped: None }
+    }
+
+    /// Stop the broker service so its image can be overwritten.
+    fn stop_for_replace(installed: &std::path::Path) -> Self {
+        if !installed.is_file() {
+            return Self::inactive();
+        }
+        eprintln!("  ⏸️  uffs-broker                 stopping service to replace it");
+        let stopped = std::process::Command::new(installed)
+            .arg("--stop")
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if stopped {
+            Self { stopped: Some(installed.to_path_buf()) }
+        } else {
+            // Not installed as a service, already stopped, or not
+            // elevated — the copy below will report the real error.
+            Self::inactive()
+        }
+    }
+
+    /// Restart the service if this guard stopped it.
+    fn restart(self) {
+        let Some(path) = self.stopped else {
+            return;
+        };
+        let started = std::process::Command::new(&path)
+            .arg("--start")
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if started {
+            eprintln!("  ▶️  uffs-broker                 service restarted");
+        } else {
+            eprintln!(
+                "  ⚠️  uffs-broker                 service did NOT restart — run: {} --start",
+                path.display()
+            );
+        }
     }
 }
 
