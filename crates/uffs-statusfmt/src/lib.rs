@@ -153,7 +153,23 @@ pub fn field(palette: Palette, key: &str, value: &str, key_width: usize) -> Stri
     // Pad on the raw (uncolored) key+colon so alignment is escape-agnostic.
     let label = format!("{key}:");
     let pad = key_width.saturating_add(1).saturating_sub(label.len());
-    format!("  {}{} {value}", palette.dim(&label), " ".repeat(pad))
+    // Trim the value's LEADING whitespace so every value in a block starts
+    // at the same column.  Several value producers right-align internally
+    // (`format_duration` emits `{minutes:>3} m`, giving ` 12 m  35 s`), which
+    // otherwise pushes those rows one or two columns further right than
+    // their plain-text neighbours and makes a tidy block look ragged:
+    //
+    //     Version:     0.6.31
+    //     Uptime:       12 m   35 s     <- shifted by the duration's own pad
+    //
+    // Trailing whitespace goes too — it is invisible but shows up in
+    // golden-output diffs and when the line is copied out of a terminal.
+    format!(
+        "  {}{} {}",
+        palette.dim(&label),
+        " ".repeat(pad),
+        value.trim()
+    )
 }
 
 /// A one-line component summary: `<glyph> <name>  <detail>` — the short-view
@@ -191,6 +207,28 @@ mod tests {
             "  Status:     running"
         );
         assert_eq!(field(plain, "PID", "42", 10), "  PID:        42");
+    }
+
+    /// A value that right-aligns internally (as `format_duration` does,
+    /// emitting ` 12 m  35 s`) must still start in the same column as a
+    /// plain one — otherwise a `key: value` block reads ragged.
+    #[test]
+    fn field_values_share_one_column_despite_value_padding() {
+        let plain = Palette::plain();
+        let padded = field(plain, "Uptime", " 12 m  35 s", 10);
+        let unpadded = field(plain, "Version", "0.6.31", 10);
+
+        assert_eq!(padded, "  Uptime:     12 m  35 s");
+        assert_eq!(unpadded, "  Version:    0.6.31");
+
+        // The point of the two literals above: both values begin at the
+        // same index, which is what makes the block read as a column.
+        let col = |row: &str, value: &str| row.find(value).unwrap_or(usize::MAX);
+        assert_eq!(
+            col(&padded, "12 m"),
+            col(&unpadded, "0.6.31"),
+            "value columns must line up"
+        );
     }
 
     #[test]

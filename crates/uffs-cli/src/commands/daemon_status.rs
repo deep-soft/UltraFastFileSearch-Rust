@@ -387,8 +387,12 @@ fn print_drive_line(palette: Palette, dr: &DriveInfo, memory: &[DriveMemoryInfo]
             match memory.iter().find(|dm| dm.drive == dr.letter) {
                 Some(dm) => {
                     let mb = |bytes: u64| bytes / MIB;
+                    // `{:>6}` on the heap MB keeps the `· NNNN MB` column
+                    // aligned across drives — an unpadded `{}` put `2 MB`
+                    // and `1669 MB` at different columns, so the sizes could
+                    // not be compared by eye down the list.
                     println!(
-                        "  {glyph} {letter} {records:>12} records ({}) \u{b7} {} MB  [rec={} names={} tri={} ch={} ext={}]",
+                        "  {glyph} {letter} {records:>12} records ({}) \u{b7} {:>6} MB  [rec={} names={} tri={} ch={} ext={}]",
                         dr.source,
                         mb(dm.heap_bytes),
                         mb(dm.records_bytes),
@@ -448,7 +452,12 @@ fn print_physical_drive_line(palette: Palette, drive: &PhysicalDrive, loaded: &[
     use uffs_client::format::{format_bytes, format_number_commas};
 
     let boot = if drive.is_boot { "*" } else { "" };
-    let letter = palette.bold(&format!("{}:{boot}", drive.letter));
+    // Pad the RAW text before colouring — ANSI escapes would be counted by a
+    // width specifier applied afterwards and silently break the alignment
+    // (same rule as `uffs_statusfmt::field`).  The boot marker makes `C:*`
+    // one column wider than `D:`, which shifted every column on the boot
+    // drive's row relative to the others.
+    let letter = palette.bold(&format!("{:<3}", format!("{}:{boot}", drive.letter)));
     let (glyph, index_note) = loaded
         .iter()
         .find(|info| info.letter == drive.letter)
