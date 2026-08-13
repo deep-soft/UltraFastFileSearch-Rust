@@ -1010,6 +1010,7 @@ fn count_with_extension_absent_on_drive_is_zero() {
         &FinalizeOptions::default(),
         None,
         &present,
+        None,
     )
     .expect("count with present extension");
     assert!(
@@ -1032,6 +1033,7 @@ fn count_with_extension_absent_on_drive_is_zero() {
         &FinalizeOptions::default(),
         None,
         &absent,
+        None,
     )
     .expect("count with absent extension");
     assert!(
@@ -1041,5 +1043,108 @@ fn count_with_extension_absent_on_drive_is_zero() {
         ),
         "no .dll files exist — count must be 0, not the drive total; got {:?}",
         absent_output.response.results[0].data
+    );
+}
+
+// ── Full search-filter parity in the aggregation scan ────────────────
+//
+// Regression, 2026-08-13, found live: the aggregation scan honoured only
+// extensions / directory-flag / size, so `--newer 7d --count` counted
+// every file ever written and `--in-path <impossible> --count` still
+// returned 3.8 M.  Record-level filters now flow in as `SearchFilters`;
+// path-dependent queries aggregate over the row search's matched set
+// (`run_aggregate_over_records`).
+
+#[test]
+fn count_honours_search_filter_date_bounds() {
+    let drive = build_agg_test_drive();
+    let specs = vec![AggregateSpec::new(AggregateKind::Count)];
+
+    // Bound strictly between the fixture's timestamp clusters, computed
+    // FROM the fixture so the test cannot drift from the conversion the
+    // index build applies (NTFS ticks → Unix µs).
+    let mut stamps: Vec<i64> = drive.records.iter().map(|rec| rec.modified).collect();
+    stamps.sort_unstable();
+    stamps.dedup();
+    assert!(stamps.len() >= 2, "fixture must span several timestamps");
+    let bound = stamps[stamps.len() - 1];
+    let expected = drive
+        .records
+        .iter()
+        .filter(|rec| rec.modified >= bound)
+        .count();
+    assert!(
+        expected > 0 && expected < drive.records.len(),
+        "bound must genuinely split the fixture"
+    );
+
+    let filters = crate::search::filters::SearchFilters {
+        newer_us: Some(bound),
+        ..Default::default()
+    };
+    let output = run_aggregate_with_filters(
+        &[&drive],
+        &specs,
+        &FinalizeOptions::default(),
+        None,
+        &AggregateFilter::default(),
+        Some(&filters),
+    )
+    .expect("count with date bound");
+    let AggregateResultData::Count { value } = output.response.results[0].data else {
+        panic!("count result expected");
+    };
+    assert_eq!(
+        usize::try_from(value).unwrap_or(usize::MAX),
+        expected,
+        "aggregation must apply the same newer-bound the row search applies"
+    );
+}
+
+#[test]
+fn over_records_counts_exactly_the_handed_set() {
+    let drive = build_agg_test_drive();
+    let specs = vec![AggregateSpec::new(AggregateKind::Count)];
+
+    // Hand-pick two records by name — the shape of the row-fed path:
+    // the row search decides WHAT matched, aggregation only folds it.
+    let matched: Vec<(uffs_mft::platform::DriveLetter, u32)> = drive
+        .records
+        .iter()
+        .enumerate()
+        .filter(|(_, rec)| matches!(rec.name(&drive.names), "main.rs" | "data.bin"))
+        .map(|(idx, _)| (drive.letter, uffs_mft::len_to_u32(idx)))
+        .collect();
+    assert_eq!(matched.len(), 2, "fixture must contain both probe files");
+
+    let output =
+        run_aggregate_over_records(&[&drive], &specs, &FinalizeOptions::default(), &matched)
+            .expect("over-records count");
+    assert!(
+        matches!(
+            output.response.results[0].data,
+            AggregateResultData::Count { value: 2 }
+        ),
+        "count must equal the handed set, got {:?}",
+        output.response.results[0].data
+    );
+    assert_eq!(output.records_matched, 2);
+}
+
+#[test]
+fn over_records_empty_set_counts_zero() {
+    // The `--in-path <impossible directory>` shape: the row search
+    // matched nothing, so the count must be 0 — never the drive total.
+    let drive = build_agg_test_drive();
+    let specs = vec![AggregateSpec::new(AggregateKind::Count)];
+    let output = run_aggregate_over_records(&[&drive], &specs, &FinalizeOptions::default(), &[])
+        .expect("over-records with empty set");
+    assert!(
+        matches!(
+            output.response.results[0].data,
+            AggregateResultData::Count { value: 0 }
+        ),
+        "empty matched set must count 0, got {:?}",
+        output.response.results[0].data
     );
 }
