@@ -381,9 +381,17 @@ fn daemon_start(
         );
     }
 
-    // An explicit start revokes any earlier stop intent, so the
+    // An explicit OPERATOR start revokes any earlier stop intent, so the
     // watchdog resumes supervising this service.
-    uffs_client::daemon_ctl::clear_stop_intent(uffs_client::daemon_ctl::ServiceKind::Daemon);
+    //
+    // A supervisor-driven restart must NOT clear it: the watchdog
+    // respawns by invoking this very command, so clearing here would let
+    // it erase the marker it is supposed to obey — the intent survives
+    // exactly one tick and the service bounces back anyway. The watchdog
+    // sets `UFFS_SUPERVISED_RESTART` to say "this start is mine".
+    if std::env::var_os("UFFS_SUPERVISED_RESTART").is_none() {
+        uffs_client::daemon_ctl::clear_stop_intent(uffs_client::daemon_ctl::ServiceKind::Daemon);
+    }
     if !is_quiet() {
         println!("Starting daemon...");
     }

@@ -108,6 +108,35 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
+/// Append one line to the watchdog log, beside the lifecycle state.
+///
+/// `resident on` spawns the watchdog with its stdio discarded, so
+/// `eprintln!` alone leaves the supervisor's decisions invisible — which
+/// made a stop-intent bug undiagnosable from the outside and cost two
+/// wrong guesses before this existed. Every decision is now recorded
+/// with the inputs that produced it.
+fn log_line(message: &str) {
+    let path = lifecycle_dir().join("watchdog.log");
+    if let Some(parent) = path.parent() {
+        let _ensure = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write as _;
+        let _best_effort = writeln!(file, "{message}");
+    }
+}
+
+/// The per-user lifecycle directory holding the PID file and markers.
+fn lifecycle_dir() -> std::path::PathBuf {
+    dirs_next::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("uffs")
+}
+
 /// Evaluate and act on one service for this tick.
 #[expect(
     clippy::print_stderr,
@@ -127,7 +156,18 @@ fn tick(service: &mut Service) {
     }
     let now = std::time::Instant::now();
     let recent = service.ledger.recent(now);
-    match decide(alive, stop_intent(service.start_args[0]), recent) {
+    let intent = stop_intent(service.start_args[0]);
+    let action = decide(alive, intent, recent);
+    log_line(&format!(
+        "{} down: stop_intent={} (marker {}) recent_respawns={} -> {:?}",
+        service.name,
+        intent,
+        stop_intent_path(service.start_args[0])
+            .map_or_else(|| "?".to_owned(), |path| path.display().to_string()),
+        recent,
+        action,
+    ));
+    match action {
         // Running, or the operator asked for it to be down: both mean
         // "do nothing", but they are distinct decisions upstream.
         Action::Leave | Action::HonourStopIntent => {}
@@ -142,6 +182,9 @@ fn tick(service: &mut Service) {
             service.ledger.record(now);
             let started = std::process::Command::new(uffs_exe())
                 .args(service.start_args)
+                // Tell the CLI this start is the supervisor's, not the
+                // operator's, so it leaves any stop-intent marker alone.
+                .env("UFFS_SUPERVISED_RESTART", "1")
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
@@ -195,9 +238,7 @@ fn stop_intent_path(kind: &str) -> Option<std::path::PathBuf> {
     // Mirrors `uffs_client::daemon_ctl::pid_file_path`'s directory:
     // `<data-local>/uffs`.  Kept in sync by the test below rather than by
     // a dependency edge (see the manifest rationale).
-    let dir = dirs_next::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("uffs");
+    let dir = lifecycle_dir();
     let leaf = match kind {
         "--daemon" => "daemon.stopped",
         "--mcp" => "mcp.stopped",
