@@ -21,7 +21,7 @@ Four numbers the report establishes on a Ryzen 9 3900XT (cross-tool: 12.8 M reco
 3. **Full-scan export is a workload Everything cannot run** (`es.exe` ~2 GB IPC export ceiling): UFFS streams the complete **23.3 M-row** estate (all 7 volumes) to CSV in **12.0 s ≈ 1.95 M records/sec** — the April snapshot scale, 12% faster, +13% throughput.
 4. **180×–3 400× faster than the C++ reference on targeted queries** (daemon HOT vs per-invocation MFT re-read); **6.6×** on combined full-scan — and the combined-drive regex cell DNF'd the C++ tool entirely (> 120 s vs UFFS 43 ms).
 
-The report publishes **everything these numbers don't cover too** — the zero-match G-drive caveat, the C++ row-count divergences, and what this benchmark explicitly does *not* claim. The two v0.5.66-era known regressions (`*` top-100 and `--sort path` vs the v0.5.4 baseline) remain tracked in the [archived April report](archive/2026-04-v0.5.66-vs-everything-and-cpp.md#known-regressions); they were not re-measured in this snapshot.
+The report publishes **everything these numbers don't cover too** — the zero-match G-drive caveat, the C++ row-count divergences, and what this benchmark explicitly does *not* claim. The two v0.5.66-era known regressions (`*` top-100 and `--sort path` vs the v0.5.4 baseline) remain tracked in the [archived April report](archive/2026-04-v0.5.66-vs-everything-and-cpp.md#known-regressions-published-because-trust--hype); they were not re-measured in this snapshot.
 
 ---
 
@@ -35,7 +35,7 @@ reply to *"this comparison is rigged because..."*):
 
 - **Separate cold / warm / hot.** Cold build + warm restart + hot query are three different workloads. We measure and publish them separately instead of averaging them into one "startup time" lie.
 - **Separate interactive from bulk.** Targeted-query latency (`notepad.exe`, `*.dll`) and full-scan export (`*` → CSV for 23 M rows) are different workload classes. Different tools win each. We test both.
-- **Publish the failures.** When a workload regresses against our own prior baseline it gets named, measured, root-caused, and tracked (see §Known regressions in the [archived 2026-04 report](archive/2026-04-v0.5.66-vs-everything-and-cpp.md#known-regressions) for the two v0.5.66-era examples).
+- **Publish the failures.** When a workload regresses against our own prior baseline it gets named, measured, root-caused, and tracked (see §Known regressions in the [archived 2026-04 report](archive/2026-04-v0.5.66-vs-everything-and-cpp.md#known-regressions-published-because-trust--hype) for the two v0.5.66-era examples).
 - **Publish the raw data.** Every table above and in the canonical report cites the exact log file and line range. The **curated, verbatim raw captures** live in [`raw/`](raw/) (git-tracked, never edited after commit); all benchmark scripts under [`scripts/windows/`](../../scripts/windows/). Click any citation in the canonical report to land on the actual PowerShell log line that produced the number.
 
 ---
