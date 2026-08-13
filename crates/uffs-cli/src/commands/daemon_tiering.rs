@@ -344,17 +344,29 @@ fn format_bytes(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * KIB;
     const GIB: u64 = 1024 * MIB;
-    if bytes >= GIB {
+    // Fixed 10-column cell: a 6-wide RIGHT-aligned magnitude then a
+    // 3-wide left-aligned unit, so every row lines up on the decimal
+    // point rather than ragging left off the unit:
+    //
+    //     1.070 GiB
+    //       509 MiB
+    //         2 MiB
+    //
+    // Left-aligning the whole cell (the previous behaviour) put `2 MiB`
+    // and `1.07 GiB` at the same start column, which reads as noise in
+    // a column you scan vertically to compare sizes.
+    let (magnitude, unit) = if bytes >= GIB {
         let whole = bytes / GIB;
-        let hundredths = (bytes % GIB).saturating_mul(100) / GIB;
-        format!("{whole}.{hundredths:02} GiB")
+        let thousandths = (bytes % GIB).saturating_mul(1000) / GIB;
+        (format!("{whole}.{thousandths:03}"), "GiB")
     } else if bytes >= MIB {
-        format!("{} MiB", bytes / MIB)
+        ((bytes / MIB).to_string(), "MiB")
     } else if bytes >= KIB {
-        format!("{} KiB", bytes / KIB)
+        ((bytes / KIB).to_string(), "KiB")
     } else {
-        format!("{bytes} B")
-    }
+        (bytes.to_string(), "B")
+    };
+    format!("{magnitude:>6} {unit:<3}")
 }
 
 /// Format a Unix-millisecond timestamp as a human-readable elapsed string

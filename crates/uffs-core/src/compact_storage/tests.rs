@@ -64,12 +64,12 @@ fn deref_mut_lets_call_sites_mutate_in_place() {
 }
 
 #[test]
-fn as_mut_vec_supports_vec_specific_methods() {
+fn vec_for_append_supports_vec_specific_methods() {
     let mut column: ColumnStorage<u8> = ColumnStorage::default();
-    column.as_mut_vec().push(7);
-    column.as_mut_vec().extend_from_slice(&[8, 9, 10]);
+    column.vec_for_append(1).push(7);
+    column.vec_for_append(3).extend_from_slice(&[8, 9, 10]);
     assert_eq!(column.as_slice(), &[7, 8, 9, 10]);
-    column.as_mut_vec().shrink_to_fit();
+    column.vec_for_append(0).shrink_to_fit();
     // shrink_to_fit may match capacity to len; either way, len stays.
     assert_eq!(column.len(), 4);
 }
@@ -86,13 +86,72 @@ fn capacity_tracks_underlying_vec() {
     assert_eq!(column.len(), 1);
 }
 
+/// Appending to an exactly-sized column must not double it.
+///
+/// Regression: the compact index is shrunk to an exact fit after build
+/// (`shrink_compact_vecs`, ~500 MB reclaimed across seven drives),
+/// leaving `capacity == len`.  `Vec`'s amortised growth then doubled
+/// the whole column on the next append, so a single file created on a
+/// live drive took the record column from 276 MB to 552 MB and the
+/// name arena from 95 MB to 190 MB — permanently, for one new file.
+#[test]
+fn appending_to_an_exact_fit_column_grows_by_a_bounded_slack() {
+    const LEN: usize = 100_000;
+    let mut buf: Vec<u32> = (0..LEN).map(|i| u32::try_from(i).unwrap_or(0)).collect();
+    buf.shrink_to_fit();
+    let exact = buf.capacity();
+    assert_eq!(
+        exact, LEN,
+        "precondition: the column starts at an exact fit"
+    );
+
+    let mut column = ColumnStorage::from_vec(buf);
+    column.vec_for_append(1).push(7);
+
+    let grown = column.capacity();
+    assert!(grown > LEN, "must have room for the appended element");
+    assert!(
+        grown < LEN * 2,
+        "doubling is the bug: capacity went {LEN} -> {grown}"
+    );
+    // 12.5 % headroom plus the one element we asked for.
+    assert!(
+        grown <= LEN + LEN / 8 + 1,
+        "slack must stay bounded: capacity went {LEN} -> {grown}"
+    );
+}
+
+/// Small columns get the floor, so a handful of entries does not mean
+/// a reallocation per USN event.
+#[test]
+fn small_columns_reserve_at_least_the_minimum_slack() {
+    let mut column = ColumnStorage::from_vec(vec![1_u8, 2, 3]);
+    column.vec_for_append(1).push(4);
+    assert!(
+        column.capacity() >= 1024,
+        "expected the minimum slack floor, got {}",
+        column.capacity()
+    );
+}
+
+/// A column with room to spare is not reallocated at all.
+#[test]
+fn append_with_spare_capacity_does_not_reallocate() {
+    let mut buf: Vec<u32> = Vec::with_capacity(64);
+    buf.push(1);
+    let mut column = ColumnStorage::from_vec(buf);
+    let before = column.capacity();
+    column.vec_for_append(1).push(2);
+    assert_eq!(column.capacity(), before, "spare capacity must be reused");
+}
+
 #[test]
 fn clone_always_produces_a_vec_variant() {
     let original = ColumnStorage::from(vec![1_u32, 2, 3]);
     let mut copy = original.clone();
     assert_eq!(copy.as_slice(), original.as_slice());
     // Mutate the clone — original must remain unchanged.
-    copy.as_mut_vec().push(4);
+    copy.vec_for_append(1).push(4);
     assert_eq!(original.as_slice(), &[1_u32, 2, 3]);
     assert_eq!(copy.as_slice(), &[1_u32, 2, 3, 4]);
 }
@@ -160,7 +219,7 @@ fn mmap_variant_deref_lets_call_sites_use_slice_methods() {
 }
 
 #[test]
-fn as_mut_vec_promotes_mmap_to_heap() {
+fn vec_for_append_promotes_mmap_to_heap() {
     let original = vec![100_u32, 200, 300];
     let bytes = bytemuck::cast_slice::<u32, u8>(&original);
     let mmap = make_mmap_for_test(bytes);
@@ -169,7 +228,7 @@ fn as_mut_vec_promotes_mmap_to_heap() {
             .expect("valid region");
     assert!(matches!(column, ColumnStorage::Mmap { .. }));
     // First mutation triggers the promotion.
-    column.as_mut_vec().push(400);
+    column.vec_for_append(1).push(400);
     assert!(matches!(column, ColumnStorage::Vec(_)));
     assert_eq!(column.as_slice(), &[100_u32, 200, 300, 400]);
     // The mmap is still alive (we hold an external reference) and

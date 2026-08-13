@@ -288,6 +288,55 @@ pub fn pid_file_path() -> PathBuf {
     base.join("uffs").join("daemon.pid")
 }
 
+/// Which resident service a stop-intent marker refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceKind {
+    /// The search daemon (`uffsd`).
+    Daemon,
+    /// The MCP HTTP gateway (`uffsmcp`).
+    Mcp,
+}
+
+impl ServiceKind {
+    /// Marker file name for this service.
+    const fn marker(self) -> &'static str {
+        match self {
+            Self::Daemon => "daemon.stopped",
+            Self::Mcp => "mcp.stopped",
+        }
+    }
+}
+
+/// Path of a service's stop-intent marker, sibling of the PID file.
+///
+/// Written when the operator stops a service ON PURPOSE and cleared
+/// when they start it again. `uffs-watchdog` reads it to tell "this
+/// crashed, put it back" apart from "the operator wanted it down" —
+/// launchd's `KeepAlive.SuccessfulExit = false` semantics. Without it a
+/// watchdog fights every deliberate stop.
+#[must_use]
+pub fn stop_intent_path(kind: ServiceKind) -> PathBuf {
+    let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join("uffs").join(kind.marker())
+}
+
+/// Record that the operator deliberately stopped `kind`.
+///
+/// Best-effort: a watchdog that respawns a service because the marker
+/// could not be written is a nuisance, not a correctness failure.
+pub fn record_stop_intent(kind: ServiceKind) {
+    let path = stop_intent_path(kind);
+    if let Some(parent) = path.parent() {
+        let _ensure = std::fs::create_dir_all(parent);
+    }
+    let _best_effort = std::fs::write(&path, b"stopped by operator\n");
+}
+
+/// Clear any stop intent for `kind` — the operator started it again.
+pub fn clear_stop_intent(kind: ServiceKind) {
+    let _absent_is_fine = std::fs::remove_file(stop_intent_path(kind));
+}
+
 /// Path of the resident-marker file (`resident.args`), sibling of the
 /// PID file.
 ///

@@ -69,7 +69,7 @@ pub struct DriveCompactIndex {
     /// swap the heap-resident `Vec` for a memory-mapped runtime
     /// tempfile.  Read-side call sites use [`Deref<[T]>`]; mutating
     /// callers (Windows USN-patch path) go through
-    /// `ColumnStorage::as_mut_vec` (internal helper).
+    /// `ColumnStorage::vec_for_append` (internal helper).
     pub records: ColumnStorage<CompactRecord>,
     /// All filenames concatenated (UTF-8 bytes, original case).
     ///

@@ -103,7 +103,7 @@ Measured 2026-06-11 on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2 — cr
 | **HOT (`*` top-100)** | Full-scan across all drives with `--limit 100` | **1 112 ms** e2e¹ | 27 ms |
 | **HOT (targeted)** | `notepad.exe` / `win*` / `*.dll` / `config` etc. | **29–32 ms** CLI e2e | 9–10 ms |
 
-¹ The `*` top-100 path regressed from the v0.5.4 163 ms figure after the Phase 2 sort rewrite ([raw log](docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt), n=30, StdDev 21 ms); daemon-side is 1 081 ms — the CLI tax is negligible here. Tracked in the [archived April report](docs/benchmarks/archive/2026-04-v0.5.66-vs-everything-and-cpp.md#known-regressions).
+¹ The `*` top-100 path regressed from the v0.5.4 163 ms figure after the Phase 2 sort rewrite ([raw log](docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt), n=30, StdDev 21 ms); daemon-side is 1 081 ms — the CLI tax is negligible here. Tracked in the [archived April report](docs/benchmarks/archive/2026-04-v0.5.66-vs-everything-and-cpp.md#known-regressions-published-because-trust--hype).
 
 **Scale ceiling:** **100.4 M records** tested with offline MFT clones (v0.5.4 capture, not re-verified since) — targeted queries stayed at 11–13 ms e2e.
 

@@ -248,8 +248,19 @@ impl IndexManager {
             max_size: filters.max_size,
         };
 
+        // ── Aggregation routing (decided BEFORE `filters` is moved) ──
+        // Rationale lives on `aggregation_needs_row_set`.
+        let agg_requested = !effective_params.aggregations.is_empty();
+        let agg_over_rows = aggregation_needs_row_set(&effective_params, &filters);
+        // The full record-level filter set for the scan path, cloned
+        // before `filters` moves into the search closure.
+        let agg_search_filters = filters.clone();
+
         let search_limit = resolve_search_limit(
-            requires_post_filter,
+            // Aggregating over the row set needs EVERY matching row, not
+            // the display limit's worth — a truncated set would silently
+            // undercount.
+            requires_post_filter || agg_over_rows,
             filters.needs_display_row_filter(),
             filters.malformed == Some(true),
             effective_params.limit,
@@ -342,6 +353,17 @@ impl IndexManager {
         }
 
         let mut total_count = filtered_rows.len() as u64;
+        // Snapshot the matched set for row-fed aggregation BEFORE the
+        // display truncation below — the display limit bounds what the
+        // user sees, never what an aggregation counts.
+        let agg_row_set: Vec<(uffs_mft::platform::DriveLetter, u32)> = if agg_over_rows {
+            filtered_rows
+                .iter()
+                .map(|row| (row.drive, row.record_index))
+                .collect()
+        } else {
+            Vec::new()
+        };
         if let Some(limit) = effective_params.limit {
             filtered_rows.truncate(limit as usize);
         }
@@ -537,7 +559,19 @@ impl IndexManager {
         });
 
         // ── Aggregation (if requested) ─────────────────────────────
-        let (agg_results, agg_matched) = if !effective_params.aggregations.is_empty() {
+        let (agg_results, agg_matched) = if agg_over_rows {
+            // Path-dependent query: fold the row search's matched set —
+            // the rows already carry every filter and the true path
+            // semantics, applied once by the engine that owns them.
+            Self::run_aggregations_over_rows(
+                &agg_snapshot,
+                &effective_params.aggregations,
+                &agg_row_set,
+                build_query_predicates(&effective_params),
+                effective_params.agg_cursor.as_deref(),
+                effective_params.agg_page_size,
+            )
+        } else if agg_requested {
             let predicates = build_query_predicates(&effective_params);
 
             // Pass the pattern if it's non-trivial (not just `*`).
@@ -559,6 +593,7 @@ impl IndexManager {
                     pattern: agg_pattern,
                     drives_filter: &effective_params.drives,
                     record_filter: agg_record_filter,
+                    search_filters: Some(agg_search_filters),
                 },
             )
         } else {
@@ -742,7 +777,7 @@ pub(crate) use output_config::build_output_config;
 // `pub(super)` — not re-exported beyond the `search` module.
 #[path = "search_predicates.rs"]
 mod predicates;
-use predicates::build_query_predicates;
+use predicates::{aggregation_needs_row_set, build_query_predicates};
 
 // The `--out=<path>` file-export writer lives in a sibling file to keep
 // `search.rs` under the 800-line policy ceiling.  It was a `Self`-less

@@ -28,6 +28,10 @@ use uffs_statusfmt::{Glyph, Palette, field, header, section, status_row};
 /// One mebibyte, for the `bytes → MB` display conversions.
 const MIB: u64 = 1024 * 1024;
 
+/// Width reserved for a quoted volume label in the physical-drive table,
+/// so the `· indexed (…)` column after it lines up across rows.
+const LABEL_COLUMN: usize = 12;
+
 /// `uffs --daemon status [-v] [--json]` — show daemon status, PID, drives, and
 /// (in long / JSON form) performance counters.
 ///
@@ -387,9 +391,26 @@ fn print_drive_line(palette: Palette, dr: &DriveInfo, memory: &[DriveMemoryInfo]
             match memory.iter().find(|dm| dm.drive == dr.letter) {
                 Some(dm) => {
                     let mb = |bytes: u64| bytes / MIB;
+                    // Every numeric column is width-padded so the whole
+                    // block reads as a table down the list.  Unpadded, a
+                    // one-digit `rec=1` and a three-digit `rec=608` started
+                    // in the same place and pushed every later field out of
+                    // line, which is exactly what you cannot scan by eye:
+                    //
+                    //   [rec=1 names=0 tri=0 ch=0 ext=0]
+                    //   [rec=608 names=439 tri=518 ch=55 ext=27]
+                    //
+                    // Widths: rec/names/tri hold four digits (a ~10 GB
+                    // component on a very large drive), ch/ext three.  The
+                    // source label is padded too — it is `live` today but
+                    // `cache` and friends exist, and an unpadded label would
+                    // shift the whole rest of the row.
+                    // Pad the whole `(source)` token, not the text inside
+                    // it — `(live )` with the space before the paren reads
+                    // as a typo.
+                    let source = format!("({})", dr.source);
                     println!(
-                        "  {glyph} {letter} {records:>12} records ({}) \u{b7} {} MB  [rec={} names={} tri={} ch={} ext={}]",
-                        dr.source,
+                        "  {glyph} {letter} {records:>12} records {source:<7} \u{b7} {:>6} MB  [rec={:>4} names={:>4} tri={:>4} ch={:>3} ext={:>3}]",
                         mb(dm.heap_bytes),
                         mb(dm.records_bytes),
                         mb(dm.names_bytes),
@@ -448,7 +469,12 @@ fn print_physical_drive_line(palette: Palette, drive: &PhysicalDrive, loaded: &[
     use uffs_client::format::{format_bytes, format_number_commas};
 
     let boot = if drive.is_boot { "*" } else { "" };
-    let letter = palette.bold(&format!("{}:{boot}", drive.letter));
+    // Pad the RAW text before colouring — ANSI escapes would be counted by a
+    // width specifier applied afterwards and silently break the alignment
+    // (same rule as `uffs_statusfmt::field`).  The boot marker makes `C:*`
+    // one column wider than `D:`, which shifted every column on the boot
+    // drive's row relative to the others.
+    let letter = palette.bold(&format!("{:<3}", format!("{}:{boot}", drive.letter)));
     let (glyph, index_note) = loaded
         .iter()
         .find(|info| info.letter == drive.letter)
@@ -458,16 +484,31 @@ fn print_physical_drive_line(palette: Palette, drive: &PhysicalDrive, loaded: &[
                 (
                     Glyph::Up,
                     format!(
-                        " \u{b7} indexed ({} records)",
+                        " \u{b7} indexed ({:>11} records)",
                         format_number_commas(info.records as u64)
                     ),
                 )
             },
         );
+    // Pad the volume label so the `· indexed (…)` column that follows
+    // starts in the same place on every row.  Unpadded, a short label
+    // ("DATA") and a long one ("NTFS_16_GB") pushed the index note to
+    // different columns, which is the part you scan down the list.
+    //
+    // 12 columns fits the labels seen in practice (plus the quotes);
+    // NTFS permits up to 32, and a longer one simply pushes its own row
+    // rather than being truncated — losing information to preserve a
+    // column would be the wrong trade.
     let label = if drive.label.is_empty() {
-        String::new()
+        // Still occupy the column, so a drive with no label does not
+        // pull its index note left of everyone else's.
+        " ".repeat(LABEL_COLUMN + 2)
     } else {
-        format!("  \u{201c}{}\u{201d}", drive.label)
+        format!(
+            "  {:<width$}",
+            format!("\u{201c}{}\u{201d}", drive.label),
+            width = LABEL_COLUMN
+        )
     };
     println!(
         "  {} {letter} {:<9} {:>9} \u{b7} {:>4.0}% used \u{b7} {:>9} free{label}{index_note}",

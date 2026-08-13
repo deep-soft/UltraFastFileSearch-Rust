@@ -89,6 +89,7 @@ fn resident_on(
     let argv = daemon_argv(mft_files, data_dir, drives);
     platform::turn_on(&exe, &argv)?;
     write_marker(&argv)?;
+    arm_watchdog();
     println!(
         "\nUFFS is now resident: uffsd starts at login with --no-retire\n\
          (never exits on idle; memory tiering still parks unused drives),\n\
@@ -96,6 +97,95 @@ fn resident_on(
          Undo with: uffs --daemon resident off"
     );
     Ok(())
+}
+
+/// Start the user-level watchdog that keeps the resident services up.
+///
+/// Windows only, and deliberately so: launchd (`KeepAlive`) and systemd
+/// (`Restart=on-failure`) already supervise the daemon on macOS and
+/// Linux, so a second supervisor there would be redundant machinery
+/// racing the OS. The Windows `Run` key fires once at login and never
+/// again, which is precisely the gap `uffs-watchdog` fills.
+///
+/// Best-effort: residency is still installed and useful without it.
+#[cfg(windows)]
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn arm_watchdog() {
+    let Some(exe) = watchdog_exe() else {
+        println!("(watchdog binary not found next to uffs — skipping supervision)");
+        return;
+    };
+    // Already supervising?  Starting a second one would double every
+    // respawn decision.
+    if watchdog_running() {
+        return;
+    }
+    let spawned = std::process::Command::new(&exe)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok();
+    if spawned {
+        println!("Watchdog armed: crashed services are restarted automatically.");
+    } else {
+        println!(
+            "(could not start the watchdog — run {} manually)",
+            exe.display()
+        );
+    }
+}
+
+/// Non-Windows: launchd / systemd already supervise the daemon.
+#[cfg(not(windows))]
+const fn arm_watchdog() {}
+
+/// Stop the watchdog that [`arm_watchdog`] started.
+///
+/// `resident on` arms supervision, so `resident off` must disarm it:
+/// leaving a supervisor running after residency is switched off means
+/// the very next `uffs --daemon stop` gets second-guessed by a process
+/// the user believes they just removed. The daemon itself is left
+/// alone (as `resident off` already reports) — this only withdraws the
+/// supervision, not the service.
+#[cfg(windows)]
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn disarm_watchdog() {
+    if !watchdog_running() {
+        return;
+    }
+    let stopped = std::process::Command::new("taskkill")
+        .args(["/IM", "uffs-watchdog.exe", "/F"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if stopped {
+        println!("Watchdog disarmed: services are no longer restarted automatically.");
+    } else {
+        println!("(could not stop the watchdog — end uffs-watchdog.exe manually)");
+    }
+}
+
+/// Non-Windows: nothing was armed, so nothing to disarm.
+#[cfg(not(windows))]
+const fn disarm_watchdog() {}
+
+/// Locate `uffs-watchdog` beside the running `uffs`.
+#[cfg(windows)]
+fn watchdog_exe() -> Option<PathBuf> {
+    let here = std::env::current_exe().ok()?;
+    let candidate = here.parent()?.join("uffs-watchdog.exe");
+    candidate.is_file().then_some(candidate)
+}
+
+/// Is a watchdog already running for this user?
+#[cfg(windows)]
+fn watchdog_running() -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq uffs-watchdog.exe", "/NH"])
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("uffs-watchdog.exe"))
 }
 
 /// Write the resident marker (`resident.args`) so implicit auto-spawns
@@ -195,6 +285,7 @@ fn resident_off() -> Result<()> {
     platform::turn_off()?;
     // Auto-spawns fall back to the default idle-retire lifetime.
     let _absent = std::fs::remove_file(uffs_client::daemon_ctl::resident_args_path());
+    disarm_watchdog();
     if daemon_running() {
         println!(
             "A daemon is still running; it is unaffected.\n\
@@ -218,12 +309,32 @@ fn resident_status() {
     } else {
         println!("Auto-spawn:  default (idle retire)");
     }
+    print_watchdog_state();
     if daemon_running() {
         println!("Daemon:      running (details: uffs --daemon status)");
     } else {
         println!("Daemon:      not running");
     }
 }
+
+/// Report whether supervision is currently armed.
+///
+/// Without this line the watchdog is invisible: `resident status` would
+/// claim residency is off while a supervisor kept restarting services.
+#[cfg(windows)]
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn print_watchdog_state() {
+    if watchdog_running() {
+        println!("Watchdog:    supervising (crashed services are restarted)");
+    } else {
+        println!("Watchdog:    not running");
+    }
+}
+
+/// Non-Windows: launchd / systemd supervise, so there is no watchdog to
+/// report on.
+#[cfg(not(windows))]
+const fn print_watchdog_state() {}
 
 // ── shared plumbing ─────────────────────────────────────────────────
 
