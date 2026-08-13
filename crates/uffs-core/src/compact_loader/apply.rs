@@ -37,10 +37,11 @@ struct StagedCreate {
 fn stage_create(drive: &mut DriveCompactIndex, change: &uffs_mft::usn::FileChange) -> StagedCreate {
     let extension_id = drive.intern_extension(&change.filename);
     let name_start = drive.names.len();
+    let name_bytes = change.filename.as_bytes();
     drive
         .names
-        .as_mut_vec()
-        .extend_from_slice(change.filename.as_bytes());
+        .vec_for_append(name_bytes.len())
+        .extend_from_slice(name_bytes);
     let parent_frs_usize = uffs_mft::frs_to_usize(change.parent_frs.raw());
     let parent_idx = drive
         .frs_to_compact
@@ -154,11 +155,15 @@ pub(super) fn apply_create(
             _pad: [0; 1],
         };
         let new_compact_idx = uffs_mft::len_to_u32(drive.records.len());
-        drive.records.as_mut_vec().push(new_rec);
+        drive.records.vec_for_append(1).push(new_rec);
         if frs_usize >= drive.frs_to_compact.len() {
-            drive
-                .frs_to_compact
-                .resize(frs_usize.saturating_add(1), u32::MAX);
+            // Bounded growth for the same reason the columns use it: a
+            // new FRS past the current high-water mark would otherwise
+            // let `resize` double the whole map.
+            let needed = frs_usize.saturating_add(1);
+            let extra = needed.saturating_sub(drive.frs_to_compact.len());
+            crate::compact_storage::reserve_bounded(&mut drive.frs_to_compact, extra);
+            drive.frs_to_compact.resize(needed, u32::MAX);
         }
         if let Some(slot) = drive.frs_to_compact.get_mut(frs_usize) {
             *slot = new_compact_idx;
@@ -207,10 +212,11 @@ pub(super) fn apply_rename(
     }
     let extension_id = drive.intern_extension(&change.filename);
     let name_start = drive.names.len();
+    let name_bytes = change.filename.as_bytes();
     drive
         .names
-        .as_mut_vec()
-        .extend_from_slice(change.filename.as_bytes());
+        .vec_for_append(name_bytes.len())
+        .extend_from_slice(name_bytes);
     let new_parent_frs = uffs_mft::frs_to_usize(change.parent_frs.raw());
     let new_parent_compact = drive
         .frs_to_compact
