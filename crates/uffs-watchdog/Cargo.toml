@@ -64,6 +64,12 @@ path = "src/main.rs"
 # out to `uffs` would be a heavy edge for a single helper.
 dirs-next.workspace = true
 
+# Liveness is read from `uffs --status --json`, which reports every
+# service under its own key.  Parsing that properly is what keeps one
+# service's state from being mistaken for another's — the substring
+# scan it replaced read a stopped daemon as a stopped MCP gateway.
+serde_json.workspace = true
+
 anyhow.workspace = true
 
 [lints]

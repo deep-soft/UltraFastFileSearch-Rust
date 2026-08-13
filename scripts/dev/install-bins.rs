@@ -272,22 +272,37 @@ impl BrokerGuard {
     }
 }
 
-/// Was a daemon serving before we tore everything down?
+/// Is the service reported under `key` running right now?
 ///
-/// `--daemon status` prints `● running  PID …` when up and
-/// `○ Daemon  not running` when not, so "contains `running` but not
-/// `not running`" is an exact read of both shapes. Any failure to run
-/// the probe (no `uffs` on PATH yet on a first install) reads as "not
-/// running", which is the safe answer: we then leave things alone.
-fn daemon_is_running() -> bool {
-    Command::new("uffs")
-        .args(["--daemon", "status"])
-        .output()
-        .map(|out| {
-            let text = String::from_utf8_lossy(&out.stdout);
-            text.contains("running") && !text.contains("not running")
-        })
+/// Read from `uffs --status --json`, which reports every service under
+/// its own key (`daemon`, `mcp_http`, …). Scanning the *human* status
+/// text instead is a trap this script fell into twice: `--mcp status`
+/// also prints a `Daemon:  not running` line, so a stopped daemon made
+/// a healthy gateway read as stopped, and `◐ loading (3/7 drives)`
+/// contains neither `running` nor `not running`, so a daemon busy
+/// reading the MFT read as absent and was never restarted.
+///
+/// Any failure to run the probe (no `uffs` on PATH yet on a first
+/// install) reads as "not running", which is the safe answer: we then
+/// leave things alone rather than start something the user never had.
+fn service_running(key: &str) -> bool {
+    let Ok(out) = Command::new("uffs").args(["--status", "--json"]).output() else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Sections are emitted in sorted key order and each carries its own
+    // `running` flag, so the first flag *after* the key we asked for is
+    // that key's own — no JSON parser needed in a rust-script.
+    text.split(&format!("\"{key}\":"))
+        .nth(1)
+        .and_then(|section| section.split("\"running\":").nth(1))
+        .map(|flag| flag.trim_start().starts_with("true"))
         .unwrap_or(false)
+}
+
+/// Was a daemon serving before we tore everything down?
+fn daemon_is_running() -> bool {
+    service_running("daemon")
 }
 
 /// Restart the daemon we deliberately stopped, using the freshly
@@ -362,20 +377,8 @@ fn restart_watchdog(bin_dir: &std::path::Path) {
 }
 
 /// Was the MCP HTTP gateway serving before the teardown?
-///
-/// `--mcp status` prints `MCP server:    running (PID …)` when up, and
-/// either `not running (no PID file)` or `not running (stale PID file…)`
-/// when not — so the same "contains `running` but not `not running`"
-/// read works here.
 fn mcp_is_running() -> bool {
-    Command::new("uffs")
-        .args(["--mcp", "status"])
-        .output()
-        .map(|out| {
-            let text = String::from_utf8_lossy(&out.stdout);
-            text.contains("running") && !text.contains("not running")
-        })
-        .unwrap_or(false)
+    service_running("mcp_http")
 }
 
 /// Restart the MCP HTTP gateway we stopped, using the new binary.

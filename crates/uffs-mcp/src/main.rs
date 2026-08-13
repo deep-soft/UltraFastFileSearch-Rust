@@ -431,6 +431,22 @@ async fn preflight_reclaim_or_reuse(
         return Ok(true);
     }
 
+    // A *supervised* restart must not undo a deliberate `uffs --daemon
+    // stop`. Interactively, "you asked for the gateway, the gateway
+    // needs a daemon" is the helpful reading and still applies. But the
+    // watchdog is not the operator: when it revives a gateway it must
+    // not silently drag a daemon the operator stopped on purpose back
+    // up with it — which is exactly how a deliberate stop was observed
+    // to bounce straight back.
+    if std::env::var_os("UFFS_SUPERVISED_RESTART").is_some()
+        && uffs_client::daemon_ctl::stop_intent_path(uffs_client::daemon_ctl::ServiceKind::Daemon)
+            .exists()
+    {
+        println!("  Gateway on port {port} is alive; daemon is stopped on purpose — leaving it.");
+        process::reload_stale_stdio_sessions();
+        return Ok(true);
+    }
+
     println!("  Gateway on port {port} is alive but daemon is unreachable.");
     println!("  Restarting daemon...");
     let mut client = uffs_client::connect::UffsClient::connect_with_args(daemon_args)

@@ -31,6 +31,29 @@
 //! honours it until the next explicit start ([`supervise::Action`]).
 //! Without that it would fight the operator on every intentional stop.
 //!
+//! # Liveness is read from JSON, never from prose
+//!
+//! Probing used to be `uffs --<service> status` scanned for the
+//! substring `running` minus `not running`. That is wrong twice over,
+//! and both bugs were observed in the field:
+//!
+//! * `uffs --mcp status` reports the daemon too, so a *stopped daemon* put
+//!   `Daemon:  not running` in the *MCP* report and the watchdog concluded the
+//!   healthy gateway had died. It then ran `uffs --mcp start`, whose preflight
+//!   sees "gateway up, daemon down" and helpfully restarts the daemon —
+//!   resurrecting the very daemon the operator had just stopped on purpose. The
+//!   watchdog's own log showed `HonourStopIntent` throughout, because it never
+//!   touched the daemon: it defeated the stop through the MCP.
+//! * `◐ loading (3/7 drives)` contains neither string, so a daemon still
+//!   reading the MFT read as dead and was liable to be respawned on top of
+//!   itself.
+//!
+//! Liveness now comes from `uffs --status --json`, which reports every
+//! service under its own key, so one service's state can never be
+//! mistaken for another's. An unreadable probe means *unknown*, and
+//! unknown is always left alone — a supervisor that restarts things
+//! because it could not see them is worse than none.
+//!
 //! # Why a separate binary
 //!
 //! A supervisor cannot supervise its own death, so it must outlive the
@@ -50,7 +73,8 @@ use supervise::{Action, RespawnLedger, decide};
 ///
 /// Seconds-scale: a respawn that lands within a few seconds of a crash
 /// is indistinguishable from "never went away" for an interactive
-/// search, and the probe is two cheap process checks.
+/// search, and the probe is one cheap status call covering every
+/// supervised service.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Environment override for [`POLL_INTERVAL`], in seconds (tests, and
@@ -61,6 +85,10 @@ const POLL_ENV: &str = "UFFS_WATCHDOG_POLL_SECS";
 struct Service {
     /// Display name used in log lines.
     name: &'static str,
+    /// Key under which `uffs --status --json` reports this service.
+    /// Reading a named field is what keeps one service's state from
+    /// being mistaken for another's (see the module docs).
+    status_key: &'static str,
     /// `uffs` subcommand pair that starts it (e.g. `--daemon start`).
     start_args: [&'static str; 2],
     /// Sliding-window respawn ledger.
@@ -87,12 +115,14 @@ fn main() -> anyhow::Result<()> {
     let mut services = [
         Service {
             name: "daemon",
+            status_key: "daemon",
             start_args: ["--daemon", "start"],
             ledger: RespawnLedger::default(),
             seen_running: false,
         },
         Service {
             name: "mcp",
+            status_key: "mcp_http",
             start_args: ["--mcp", "start"],
             ledger: RespawnLedger::default(),
             seen_running: false,
@@ -101,11 +131,44 @@ fn main() -> anyhow::Result<()> {
 
     eprintln!("uffs-watchdog armed (poll {}s)", poll.as_secs());
     loop {
+        // One snapshot per tick, shared by every service: the probe is a
+        // single subprocess rather than one per service, and every
+        // decision in a tick is taken against the same instant.
+        let snapshot = status_snapshot();
         for service in &mut services {
-            tick(service);
+            tick(service, snapshot.as_deref());
         }
         std::thread::sleep(poll);
     }
+}
+
+/// Take one machine-readable snapshot of every service's liveness.
+///
+/// `uffs --status --json` connects with `connect_raw`, which never
+/// auto-spawns anything, so probing has no side effects — an important
+/// property for something that runs every few seconds forever.
+fn status_snapshot() -> Option<String> {
+    let out = std::process::Command::new(uffs_exe())
+        .args(["--status", "--json"])
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Is the service reported under `key` running, per a `--status --json`
+/// document?
+///
+/// `None` means *unknown* — malformed JSON, a missing key, or a `uffs`
+/// too old to report that service. Callers must treat unknown as "leave
+/// it alone": absence of evidence is not evidence of death, and a
+/// supervisor that respawns on a failed probe manufactures the outage
+/// it exists to prevent.
+fn running(doc: &str, key: &str) -> Option<bool> {
+    serde_json::from_str::<serde_json::Value>(doc)
+        .ok()?
+        .get(key)?
+        .get("running")?
+        .as_bool()
 }
 
 /// Append one line to the watchdog log, beside the lifecycle state.
@@ -142,8 +205,12 @@ fn lifecycle_dir() -> std::path::PathBuf {
     clippy::print_stderr,
     reason = "a supervisor's log IS its user interface; it has no other channel"
 )]
-fn tick(service: &mut Service) {
-    let alive = is_running(service.start_args[0]);
+fn tick(service: &mut Service, snapshot: Option<&str>) {
+    // Unknown liveness is not death: leave the service exactly as it is
+    // and try again next tick.
+    let Some(alive) = snapshot.and_then(|doc| running(doc, service.status_key)) else {
+        return;
+    };
     if alive {
         service.seen_running = true;
         return;
@@ -208,21 +275,6 @@ fn uffs_exe() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(name))
 }
 
-/// Liveness probe: ask the CLI, whose status output is the single source
-/// of truth for "is it up" on both transports.
-///
-/// `--daemon status` prints `● running  PID …` when up and
-/// `○ Daemon  not running` when not; `--mcp status` mirrors the shape.
-fn is_running(kind: &str) -> bool {
-    std::process::Command::new(uffs_exe())
-        .args([kind, "status"])
-        .output()
-        .is_ok_and(|out| {
-            let text = String::from_utf8_lossy(&out.stdout);
-            text.contains("running") && !text.contains("not running")
-        })
-}
-
 /// Did the user deliberately stop this service?
 ///
 /// Recorded as a marker file beside the lifecycle state, written by the
@@ -249,7 +301,55 @@ fn stop_intent_path(kind: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::stop_intent_path;
+    use super::{running, stop_intent_path};
+
+    /// A `uffs --status --json` document shaped like the real one: a
+    /// live gateway while the daemon is deliberately stopped.
+    const GATEWAY_UP_DAEMON_DOWN: &str = r#"{
+        "daemon": { "running": false },
+        "broker": { "running": true },
+        "mcp_http": { "running": true, "pid": 2912, "endpoint": "http://127.0.0.1:8080/mcp" },
+        "mcp_stdio": { "sessions": [] }
+    }"#;
+
+    /// Each service is read from its own key, so a stopped daemon can
+    /// never be mistaken for a stopped gateway.
+    ///
+    /// Regression: the old probe scanned `uffs --mcp status` prose for
+    /// `running` minus `not running`. That report names the daemon too,
+    /// so stopping the daemon made the healthy gateway read as dead;
+    /// the watchdog "restarted" the gateway, and the gateway's own
+    /// preflight restarted the daemon — silently undoing a deliberate
+    /// `uffs --daemon stop`.
+    #[test]
+    fn services_are_read_from_their_own_key() {
+        assert_eq!(running(GATEWAY_UP_DAEMON_DOWN, "daemon"), Some(false));
+        assert_eq!(running(GATEWAY_UP_DAEMON_DOWN, "mcp_http"), Some(true));
+    }
+
+    /// A daemon still loading its drives is alive: `--status --json`
+    /// reports `running: true` from the moment it answers RPCs, so the
+    /// watchdog cannot respawn a daemon on top of a starting one.
+    #[test]
+    fn a_loading_daemon_counts_as_running() {
+        let loading = r#"{ "daemon": { "running": true,
+            "status": { "status": { "Loading": { "loaded": 3, "total": 7 } } } } }"#;
+        assert_eq!(running(loading, "daemon"), Some(true));
+    }
+
+    /// Anything unreadable is *unknown*, never "down" — the caller
+    /// leaves unknown services alone rather than respawning them.
+    #[test]
+    fn unreadable_probes_are_unknown_not_dead() {
+        assert_eq!(running("not json at all", "daemon"), None);
+        assert_eq!(running("{}", "daemon"), None, "missing key");
+        assert_eq!(running(r#"{"daemon":{}}"#, "daemon"), None, "missing field");
+        assert_eq!(
+            running(r#"{"daemon":{"running":"yes"}}"#, "daemon"),
+            None,
+            "non-boolean"
+        );
+    }
 
     /// Each supervised kind maps to its own marker; unknown kinds map to
     /// none, so a typo can never silently suppress supervision.
