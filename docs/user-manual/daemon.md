@@ -139,6 +139,12 @@ uffs --daemon resident status
 uffs --daemon resident off
 ```
 
+`resident status` reports all three moving parts — the login item, the
+auto-spawn marker, and (on Windows) whether the watchdog is
+supervising.  `resident off` removes all three.  It deliberately leaves
+a **running** daemon running, and says so; stop it explicitly if that
+is what you want.
+
 `resident on` registers a per-user login item (Windows: `HKCU` Run
 key; macOS: launchd LaunchAgent; Linux: systemd user unit) that
 starts `uffsd --no-retire` at login, and starts the daemon
@@ -156,6 +162,76 @@ implicitly (the next search, an MCP tool call) inherits it — most
 importantly `--no-retire`.  Flags you pass explicitly always win over
 the marker.  `resident off` removes the marker along with the login
 item.
+
+### The watchdog — surviving crashes and installers
+
+The login item delivers residency at boot, and the auto-spawn marker
+revives a dead daemon on the next search.  Neither notices a service
+that vanishes **mid-session while nobody is searching**.  On macOS and
+Linux launchd and systemd close that gap; on Windows the `Run` key
+fires once at login and never again.  So `resident on` also arms
+**`uffs-watchdog`**, a small user-level supervisor.
+
+| | |
+|---|---|
+| Supervises | `uffsd` (daemon) and `uffsmcp` (MCP HTTP gateway) |
+| Does **not** supervise | the Access Broker — see below |
+| Privileges | none; it runs as you, like everything else residency touches |
+| Poll interval | 5 s (`UFFS_WATCHDOG_POLL_SECS=<secs>` to change) |
+| Crash budget | 3 respawns per 60 s, then it gives up and says so |
+| Log | `watchdog.log`, beside the PID file |
+
+It is a **separate binary** on purpose.  A supervisor cannot supervise
+its own death, so it has to outlive the teardowns that kill what it
+watches — `just use-local` force-kills `uffsd` and `uffsmcp` by image
+name, and a different image name survives that.  It is also not a
+`uffs` subcommand, because a long-running `uffs.exe` would lock the
+most frequently replaced binary in the tree.
+
+**A deliberate stop always wins.**  `uffs --daemon stop`, `--daemon
+kill`, and `uffs --mcp stop` record *stop intent* next to the PID file
+(`daemon.stopped` / `mcp.stopped`); the watchdog honours it until you
+explicitly start that service again, which clears the marker.  This is
+launchd's `KeepAlive.SuccessfulExit = false` contract — without it the
+supervisor fights you every time you stop something on purpose.
+
+**It never introduces a service you never ran.**  Each service is
+supervised only after it has been seen running at least once, so a
+machine that has never started the MCP gateway does not acquire one
+because a watchdog is present.
+
+**The Access Broker is deliberately excluded.**  It is a `LocalSystem`
+service registered `start= auto`, so the Service Control Manager
+already restarts it at boot — and a non-elevated process cannot
+`StartService` it anyway.  Supervising it from here would require
+elevation and break the zero-UAC property residency exists to protect.
+The right mechanism there is SCM failure actions, configured once at
+`uffs-broker --install` time.
+
+#### Reading the watchdog log
+
+`resident on` starts the watchdog with its output discarded, so every
+decision is also appended to `watchdog.log` in the lifecycle directory
+(`%LOCALAPPDATA%\uffs\` on Windows, `~/Library/Application Support/uffs/`
+on macOS, `~/.local/share/uffs/` on Linux):
+
+```
+daemon down: stop_intent=false (marker …\daemon.stopped) recent_respawns=0 -> Respawn
+daemon down: stop_intent=true  (marker …\daemon.stopped) recent_respawns=1 -> HonourStopIntent
+```
+
+Each line records the decision **and the inputs that produced it**, so
+"why did my daemon come back?" is answerable from the file rather than
+by guesswork.  The four decisions are `Respawn` (gone, and you did not
+ask for that), `HonourStopIntent` (gone because you stopped it),
+`GaveUp` (respawned too often inside the window — something is broken
+in a way restarting cannot fix), and `Leave`.
+
+Liveness is read from `uffs --status --json`, which reports every
+service under its own key, so one service's state can never be
+mistaken for another's.  An unreadable probe means *unknown*, and
+unknown is always left alone — a supervisor that restarts things it
+cannot see manufactures the outage it exists to prevent.
 
 ### Memory tiers — and why you never see `Hot`
 
@@ -212,11 +288,20 @@ the page-in on the next first query unless it was preloaded.
 |---------|-------------|
 | `uffs --daemon start` | Start the daemon (with data sources) |
 | `uffs --daemon status` | Show PID, uptime, loaded drives, record counts |
-| `uffs --daemon status -v` | Long view: build, elevation / broker mode, live-update, memory, paths, and performance counters |
+| `uffs --daemon status -v` | Long view: build, elevation / broker mode, live-update, memory, paths, performance counters, and the physical-drive inventory |
 | `uffs --daemon status --json` | Machine-readable status + drives + stats |
-| `uffs --daemon stop` | Graceful shutdown via RPC |
-| `uffs --daemon kill` | Hard kill + remove PID/socket files |
+| `uffs --daemon status_drives` | Per-drive tier + telemetry table (resident bytes, query rate, pins) |
+| `uffs --daemon stop` | Graceful shutdown via RPC (records stop intent) |
+| `uffs --daemon kill` | Hard kill + remove PID/socket files (records stop intent) |
 | `uffs --daemon restart` | Stop → re-start with same data sources |
+| `uffs --daemon resident on\|off\|status` | Login autostart + no idle retire; arms the watchdog |
+| `uffs --daemon preload` | Promote drive(s) to `Hot` and pin the tier |
+| `uffs --daemon hibernate` | Demote drive(s) to `Cold` (frees RAM, cache stays) |
+| `uffs --daemon load` | Hot-load additional MFT file(s) into a running daemon |
+| `uffs --daemon forget` | Evict drive(s) and delete their on-disk caches |
+
+`stop` and `kill` record *stop intent* so the [watchdog](#the-watchdog--surviving-crashes-and-installers)
+does not undo them; the next explicit `start` clears it.
 
 ### `uffs --daemon status`
 
@@ -245,45 +330,85 @@ in here):
 ```
 $ uffs --daemon status -v
 ═══ UFFS Daemon ═══
-● running  PID 72558
-  Version:  0.6.24
-  Uptime:   9m 51s
-  Drives:   7 loaded · 25,846,853 records
-  Queries:  2 (avg 1.19ms, 0.0/s)
+● running  PID 52044
+  Version:     0.6.31
+  Uptime:      10 m   20 s
+  Drives:      7 loaded · 24,897,476 records
+  Queries:     0
 ── Build ──
-  Commit:   a1b2c3d
-  Elevated: no (reading via Access Broker, zero-UAC)
+  Commit:    96f165b96
+  Elevated:  yes (direct elevated reads)
 ── Live update ──
-  Journal:  7 journal loop(s) running
+  Journal:   7 journal loop(s) running
 ── Memory ──
-  Index heap: 512 MB
-  RSS:        640 MB
+  Index heap:  5021 MB
+  Mimalloc:    4316 MB committed
+  RSS:         3743 MB
 ── Paths ──
-  Data:     C:\Users\you\AppData\Local\uffs
-  Socket:   \\.\pipe\uffs-daemon
-  Logs:     C:\Users\you\AppData\Local\uffs\logs
+  Data:     C:\Users\you\AppData\Local\uffs\cache
+  Socket:   C:\Users\you\AppData\Local\uffs\daemon.sock
 ── Performance ──
-  Startup duration:  10.9 s
-  Total records:     25,846,853
-  Queries served:    2
-  Avg query time:    1.19 ms
-  Total query time:  2.38 ms
+  Startup duration:  9 s  278 ms
+  Total records:     24,897,476
+  Queries served:    0
   Queries/second:    0.00
   Agg cache:         0 hits / 0 misses (0.0% hit-rate, 0 entries)
 ── Drives ──
-  ● C: 3,428,455 records (file) · 128 MB  [rec=64 names=48 tri=12 ch=3 ext=1]
-  ...
+  ● G:       15,384 records (live)  ·      2 MB  [rec=   1 names=   0 tri=   0 ch=  0 ext=  0]
+  ● F:    1,203,779 records (live)  ·    297 MB  [rec= 101 names=  37 tri= 124 ch=  9 ext=  4]
+  ● C:    3,289,117 records (live)  ·    757 MB  [rec= 276 names=  95 tri= 327 ch= 25 ext= 12]
+── Physical drives ──
+  ● C:* NVMe         1.53 TB ·   91% used ·  144.19 GB free  “BOOT 990”   · indexed (  3,289,117 records)
+  ● D:  HDD          7.28 TB ·   65% used ·    2.52 TB free  “DATA”       · indexed (  7,253,055 records)
+  · E:  HDD        931.51 GB ·  100% used ·    2.29 GB free  “Software”   · not loaded
+  ● G:  Removable   14.72 GB ·   84% used ·    2.35 GB free  “NTFS_16_GB” · indexed (     15,384 records)
 ```
 
-Each drive is labelled by its **letter** — live Windows volumes by their real
-letter, and offline `.bin`/`.mft` captures by the letter derived from the file,
-tagged **`(file)`** so a capture is distinguishable from a live volume. (The
-source filename itself is not shown.) The trailing
-`[rec=… names=… tri=… ch=… ext=…]` is the per-drive memory-tier breakdown — the
-record, name-arena, trigram, child-map, and extension shard sizes. Note the
-**short** view collapses this to a single count/records line; use `-v` for the
-per-drive list or `--json` for the structured `{"letter","records","tier"}`
-array.
+Every column in both drive blocks is padded to a fixed width, so the
+sections read as tables even though each row is rendered
+independently — sizes right-align on their units, and the
+`[rec=… names=…]` breakdown lines up across rows.
+
+**`── Drives ──`** lists what the daemon has **loaded**.  Each is
+labelled by its **letter** — live Windows volumes by their real letter,
+and offline `.bin`/`.mft` captures by the letter derived from the file,
+tagged **`(file)`** so a capture is distinguishable from a live volume
+(the source filename itself is not shown).  The trailing
+`[rec=… names=… tri=… ch=… ext=…]` is the per-drive memory breakdown —
+record, name-arena, trigram, child-map, and extension shard sizes in MB.
+
+**`── Physical drives ──`** is the inventory of what *exists* on the
+machine, whether or not UFFS has indexed it — bus type, capacity, usage,
+free space, volume label, and either `indexed (N records)` or
+`not loaded`.  The `*` marks the boot volume.  This is the section to
+check when a search comes back empty: a drive listed here as
+`not loaded` is one the daemon never read.
+
+> The **short** view collapses all of this to a single count/records
+> line; use `-v` for the per-drive lists or `--json` for the structured
+> `{"letter","records","tier"}` array.
+
+### `uffs --daemon status_drives`
+
+The tier table shows what each drive is costing you in RAM right now,
+and why it is in the tier it is in:
+
+```
+$ uffs --daemon status_drives
+DRIVE  TIER    RESIDENT   QPM     LAST QUERY        PIN UNTIL        PROMOTIONS
+C      warm       757 MiB 0.00    10m ago           -                         0
+D      warm     1.630 GiB 0.00    10m ago           -                         0
+G      warm         2 MiB 0.00    10m ago           -                         0
+```
+
+| Column | Meaning |
+|--------|---------|
+| `TIER` | `hot` / `warm` / `parked` / `cold` — see [Memory tiers](#memory-tiers--and-why-you-never-see-hot) |
+| `RESIDENT` | Bytes held in RAM for that drive, scaled to `MiB` / `GiB` |
+| `QPM` | Queries per minute against that drive (drives the tiering decisions) |
+| `LAST QUERY` | How long since it was last searched |
+| `PIN UNTIL` | Demotion is blocked until this time — set by `preload --pin-minutes` |
+| `PROMOTIONS` | How often this drive has been promoted back up the ladder; a high count on an idle machine means the thresholds are too aggressive for your workload |
 
 > **`uffs --daemon stats` has been folded into `uffs --daemon status -v`.**
 > The old command now prints a one-line redirect.
@@ -304,6 +429,27 @@ $ uffs --daemon status --json
   "stats":  { "total_queries": 2, "queries_per_second": 0.0, ... }
 }
 ```
+
+For **multi-service** scripting, prefer `uffs --status --json`, which
+reports the daemon, the Access Broker, and both MCP transports under
+their own top-level keys:
+
+```
+$ uffs --status --json
+{
+  "broker":    { "installed": true, "running": true, "pipe_serving": true, ... },
+  "daemon":    { "running": true, "status": { ... }, "drives": [ ... ] },
+  "mcp_http":  { "running": true, "pid": 2912, "endpoint": "http://127.0.0.1:8080/mcp" },
+  "mcp_stdio": { "sessions": [ ... ] }
+}
+```
+
+Each service carries its own `running` flag.  Read that flag rather
+than scanning the human output for the word "running": the text views
+mention *other* services by design — `uffs --mcp status` reports the
+daemon too — so a substring scan will attribute one service's state to
+another.  The watchdog learned this the hard way, and now reads this
+document.
 
 ---
 
