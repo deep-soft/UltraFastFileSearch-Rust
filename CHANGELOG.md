@@ -14,6 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.32] - 2026-08-13
+
+### Added
+
+- watchdog: user-level supervisor for the resident daemon + MCP
+- watchdog: wire supervision into the service lifecycle
+
+### Fixed
+
+- cli: align the daemon status tables
+- dev: use-local skips unchanged binaries and cycles the broker service
+- dev: use-local restarts the daemon it stopped
+- dev: use-local stops the MCP cleanly and restarts it
+- cli: align the per-drive component breakdown
+- cli: align the physical-drive table past the free-space column
+- watchdog: record stop intent BEFORE the shutdown, not after
+- watchdog: stop supervisor restarts erasing stop intent; add a log
+- watchdog: read liveness per service so a stopped daemon stays stopped
+- core: bound column growth so one new file cannot double the index
+- aggregation: honour every search filter, not four of them
+
 ## [0.6.31] - 2026-08-11
 
 ### Added
@@ -2740,7 +2761,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.31...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.32...HEAD
+[0.6.32]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.31...v0.6.32
 [0.6.31]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.30...v0.6.31
 [0.6.30]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.29...v0.6.30
 [0.6.29]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.28...v0.6.29
