@@ -44,8 +44,11 @@ pub(super) fn print_mcp_stdio_section(palette: Palette) {
     if any_stale {
         println!(
             "  {}",
-            palette
-                .dim("Older binary; the AI host that launched them refreshes on its next start.")
+            palette.dim(
+                "Serving a superseded binary (renamed aside by an installer, or older \
+                 than the one on disk). Still functional; the AI host that launched \
+                 them picks up the new one on its next start."
+            )
         );
     }
 }
@@ -129,6 +132,65 @@ fn capture_with_timeout(
 /// The `ps` calls run under [`PS_TIMEOUT`] (see [`capture_with_timeout`]), so a
 /// process with a huge argument vector can never hang `--status`. Returns
 /// `None` when the scan could not complete (spawn failed or timed out).
+#[cfg(windows)]
+fn find_mcp_stdio_processes() -> Option<Vec<StdioSession>> {
+    // Windows has no `ps`, so the Unix path below returned nothing and the
+    // section rendered "(none)" — indistinguishable from "no sessions" on
+    // the one platform UFFS actually ships to.  It reported "(none)" on a
+    // box that was demonstrably serving a session.
+    //
+    // `Get-CimInstance Win32_Process` is the supported enumeration; CSV
+    // keeps parsing trivial.  Matching on the image name rather than the
+    // command line matters twice over: AI hosts spawn the supervisor as a
+    // bare `uffsmcp` with no arguments (so a `--mcp run` cmdline match
+    // finds nothing), and after an installer rename-swap a surviving
+    // supervisor runs as `uffsmcp.old0` — still serving, and still worth
+    // showing.
+    let script = "Get-CimInstance Win32_Process -Filter \"Name LIKE 'uffsmcp%'\" | \
+         ForEach-Object { \
+           $s = $_.CreationDate; \
+           $age = if ($s) { [int]((Get-Date) - $s).TotalSeconds } else { 0 }; \
+           \"$($_.ProcessId),$($_.ParentProcessId),$age,$($_.Name)\" }";
+    let stdout = capture_with_timeout(
+        "powershell",
+        &["-NoProfile", "-NonInteractive", "-Command", script],
+        PS_TIMEOUT,
+    )?;
+    let text = String::from_utf8_lossy(&stdout);
+    let my_pid = std::process::id();
+    let mut sessions = Vec::new();
+    for line in text.lines() {
+        let mut fields = line.trim().split(',');
+        let Some(pid) = fields.next().and_then(|val| val.trim().parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == my_pid {
+            continue;
+        }
+        let parent_pid: u32 = fields
+            .next()
+            .and_then(|val| val.trim().parse().ok())
+            .unwrap_or(0);
+        let age_secs: u64 = fields
+            .next()
+            .and_then(|val| val.trim().parse().ok())
+            .unwrap_or(0);
+        let image = fields.next().unwrap_or("").trim().to_owned();
+        // A supervisor whose image was renamed aside by an installer is
+        // running code that is no longer at the canonical path.
+        let is_stale = !image.eq_ignore_ascii_case("uffsmcp.exe");
+        sessions.push(StdioSession {
+            pid,
+            uptime: core::time::Duration::from_secs(age_secs),
+            parent_name: resolve_parent_name(parent_pid),
+            is_stale,
+        });
+    }
+    Some(sessions)
+}
+
+/// Unix: enumerate via `ps`, matching the `uffs --mcp run` command line.
+#[cfg(not(windows))]
 fn find_mcp_stdio_processes() -> Option<Vec<StdioSession>> {
     let stdout = capture_with_timeout("ps", &["-eo", "pid,ppid,etime,args"], PS_TIMEOUT)?;
 
@@ -152,6 +214,7 @@ fn find_mcp_stdio_processes() -> Option<Vec<StdioSession>> {
 }
 
 /// Parse one `ps` line into a [`StdioSession`] if it is an MCP stdio process.
+#[cfg(not(windows))]
 fn parse_stdio_line(
     line: &str,
     my_pid: u32,
@@ -190,6 +253,7 @@ fn parse_stdio_line(
 }
 
 /// Parse `ps` elapsed time format: `[[dd-]hh:]mm:ss`.
+#[cfg(not(windows))]
 fn parse_ps_etime(etime: &str) -> core::time::Duration {
     let mut total_secs: u64 = 0;
     let (days_part, time_part) = if let Some((days, rest)) = etime.split_once('-') {
@@ -217,6 +281,20 @@ fn resolve_parent_name(ppid: u32) -> Option<String> {
         return None;
     }
     let ppid_str = ppid.to_string();
+    // Windows: `ps` does not exist, so this silently returned `None` and
+    // every session rendered without the "(parent: …)" tag that tells you
+    // WHICH host owns it — the most useful field in the list.
+    #[cfg(windows)]
+    let stdout = {
+        let script =
+            format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {ppid_str}').Name");
+        capture_with_timeout(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+            PS_TIMEOUT,
+        )?
+    };
+    #[cfg(not(windows))]
     let stdout = capture_with_timeout("ps", &["-p", &ppid_str, "-o", "comm="], PS_TIMEOUT)?;
     // Strict decode: this process name is returned and used for a
     // comparison/targeting decision, so invalid UTF-8 fails closed (None)
