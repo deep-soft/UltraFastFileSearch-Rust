@@ -61,6 +61,17 @@ fn default_pattern() -> String {
     "*".to_owned()
 }
 
+/// Parse the tool's drive-name strings (`"C"`, `"C:"`, …) into typed
+/// letters, silently dropping anything unparseable — a bad drive arg
+/// scopes to nothing rather than failing the whole aggregation.
+fn parse_drive_letters(drives: &[String]) -> Vec<uffs_mft::platform::DriveLetter> {
+    drives
+        .iter()
+        .filter_map(|drv| drv.chars().next())
+        .filter_map(|ch| uffs_mft::platform::DriveLetter::parse(ch).ok())
+        .collect()
+}
+
 /// Execute the aggregate tool.
 ///
 /// # Errors
@@ -100,12 +111,7 @@ pub(crate) async fn run(
         });
     }
 
-    let drives: Vec<uffs_mft::platform::DriveLetter> = args
-        .drives
-        .iter()
-        .filter_map(|drv| drv.chars().next())
-        .filter_map(|ch| uffs_mft::platform::DriveLetter::parse(ch).ok())
-        .collect();
+    let drives = parse_drive_letters(&args.drives);
 
     let mut params = SearchParams {
         pattern: args.pattern,
@@ -127,6 +133,10 @@ pub(crate) async fn run(
 
     // Apply roots-based scoping (drive + path prefix) when no explicit drives.
     roots::apply_roots_scope(roots_state, &mut params);
+
+    // Cold-index contract: return a retryable "warming" error instead of
+    // blocking silently for the length of a re-warm (see `tools::warm`).
+    super::warm::warm_gate(client, &params.drives).await?;
 
     // Log the exact RPC payload for debugging parity with API validation.
     tracing::info!(

@@ -215,6 +215,29 @@ The MCP server exposes six read-only tools.  All are annotated as
 | `uffs_drives` | — | List all indexed drives with record counts |
 | `uffs_status` | — | Daemon health, uptime, memory, loading progress |
 
+### Cold-index behaviour — the warming contract
+
+Drives tier down when idle ([Parked after 30 min, Cold after
+24 h](daemon.md#memory-tiers--and-why-you-never-see-hot)), and the
+re-warm on next touch can take 30–120 s on HDD-heavy systems.  A query
+tool never blocks for that.  When a query would touch a drive that is
+not `Warm`/`Hot`, the tool:
+
+1. **starts the re-warm immediately** in a detached request that
+   survives whatever the host does to the tool call, and
+2. **returns an error right away**: *"⏳ Index warming — drive(s) D, S
+   were parked/cold … Poll `uffs_status` until every drive reports
+   'warm', then retry this exact query."*
+
+So an agent's loop is: query → warming error → poll `uffs_status`
+(never gated) → retry → millisecond answer.  Repeat triggers are free —
+the daemon's single-flight per-drive dedup joins the in-flight load
+instead of starting another.  Queries scoped to warm drives are never
+gated by some *other* drive being cold.
+
+This mirrors the startup gate (`⏳ Daemon is starting up — X/Y drives
+loaded`), which covers initial load the same way.
+
 ### `uffs_search`
 
 The primary query tool.  Accepts a `pattern` and any combination of filters

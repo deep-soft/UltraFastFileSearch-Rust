@@ -364,6 +364,10 @@ pub(crate) async fn run(
     // Apply roots-based scoping (drive + path prefix) when no explicit drives.
     roots::apply_roots_scope(roots_state, &mut search_params);
 
+    // Cold-index contract: return a retryable "warming" error instead of
+    // blocking silently for the length of a re-warm (see `tools::warm`).
+    super::warm::warm_gate(client, &search_params.drives).await?;
+
     tracing::debug!(
         params_json = %serde_json::to_string(&search_params).unwrap_or_default(),
         "uffs_search: sending search request to daemon"
