@@ -172,15 +172,24 @@ pub fn emit_build_env() {
     // the tree is edited, which is precisely the false reassurance the
     // suffix exists to prevent.
     //
-    // `.git/index` is rewritten by `add`, `commit`, `checkout`, and by the
-    // stat-refresh a plain `git status` performs, so it fires on
-    // essentially every real clean↔dirty transition. It is not airtight:
-    // editing a tracked file and building without any git command in
-    // between leaves the index untouched. No cargo trigger can be airtight
-    // here — "working tree cleanliness" is not a file — and the honest
-    // alternatives are worse: forcing a re-run every build recompiles this
-    // crate and everything downstream of it, and dropping the suffix loses
-    // the signal entirely.
+    // `.git/index` is rewritten by `add`, `commit`, `checkout` and `reset`,
+    // so it fires on those transitions.
+    //
+    // It does NOT cover a bare unstaged edit, which is the common case.
+    // Measured, not assumed: appending to a tracked file and running
+    // `git status` left `.git/index`'s mtime unchanged, so the trigger
+    // never fired and the build kept the previous stamp — `git status`
+    // only rewrites the index when it refreshes racily-clean stat
+    // entries, not when it merely observes a modified file.
+    //
+    // So the suffix is best-effort and skewed safe-ish: it goes stale in
+    // the "says clean while edited" direction until some git command
+    // touches the index. No cargo trigger can be airtight — "working
+    // tree cleanliness" is not a file — and the alternatives trade worse:
+    // forcing a re-run on every build spends two `git` subprocesses per
+    // cargo invocation, and dropping the suffix loses the signal
+    // entirely. Treat `-dirty` as informative when present, not as proof
+    // of cleanliness when absent.
     println!("cargo:rerun-if-changed=../../.git/index");
     println!("cargo:rerun-if-env-changed=RUSTC");
 }
