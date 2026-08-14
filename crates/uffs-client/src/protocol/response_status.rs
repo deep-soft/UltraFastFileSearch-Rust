@@ -74,6 +74,18 @@ pub struct DriveInfo {
     /// as "no tier marker available" and renders accordingly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<ShardTier>,
+    /// Records this drive held the last time it was warm — the
+    /// denominator for re-warm progress.
+    ///
+    /// `records` above is `0` for a demoted shard, so on its own it
+    /// cannot say how far a re-warm has to go.  Drive-count progress
+    /// is not a substitute: four of seven drives warm was only 24 % of
+    /// the records, because the three still cold were the large ones.
+    /// `0` (or absent, from an older daemon) means this drive has not
+    /// been warm in the current daemon's lifetime, so no denominator
+    /// exists yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records_when_warm: Option<u64>,
 }
 
 /// Response for the `status` method.

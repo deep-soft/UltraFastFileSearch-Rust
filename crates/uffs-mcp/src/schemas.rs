@@ -152,6 +152,17 @@ pub(crate) struct StatusOutput {
     /// several GB when warm.  `null` from a daemon that does not
     /// report it.
     pub index_heap_mb: Option<u64>,
+    /// Records expected once every drive is warm — the denominator for
+    /// `total_records`.  `null` when no drive has been warm yet, so
+    /// there is genuinely nothing to measure against.
+    pub records_when_warm: Option<u64>,
+    /// Re-warm progress, 0–100, as `total_records / records_when_warm`.
+    /// `null` when the denominator is unknown.
+    ///
+    /// Measured in **records, not drives**: drive-count progress
+    /// misleads badly, since drives differ in size by three orders of
+    /// magnitude (four of seven warm was only 24 % of records).
+    pub warming_progress_pct: Option<u8>,
     /// Daemon uptime in seconds.
     pub uptime_secs: u64,
     /// Number of active connections.

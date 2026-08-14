@@ -12,7 +12,7 @@ use crate::schemas::StatusOutput;
 
 /// Thousands-separate a count so `0` versus `24,988,343` is legible at
 /// a glance — the difference between a parked and a warm index.
-fn commas(value: usize) -> String {
+fn commas(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (idx, ch) in digits.chars().enumerate() {
@@ -84,6 +84,26 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
     let total_records = client.stats().await.map_or(0, |stats| stats.total_records);
     let index_heap_mb = response.index_heap_bytes.map(|bytes| bytes / (1024 * 1024));
 
+    // Re-warm progress against a real denominator: the records each
+    // drive held when last resident, summed.  Deliberately record-based
+    // — drive-count progress reads 57 % when only 24 % of the records
+    // are in, because the drives still cold are the big ones.
+    let records_when_warm: Option<u64> = drives.as_ref().and_then(|list| {
+        let expected: u64 = list
+            .iter()
+            .map(|drv| drv.records_when_warm.unwrap_or(0))
+            .sum();
+        (expected > 0).then_some(expected)
+    });
+    let warming_progress_pct = records_when_warm.map(|expected| {
+        let loaded = u64::try_from(total_records).unwrap_or(u64::MAX);
+        let pct = loaded
+            .saturating_mul(100)
+            .checked_div(expected)
+            .unwrap_or(0);
+        u8::try_from(pct.min(100)).unwrap_or(100)
+    });
+
     let tier_line = if tiers.is_empty() {
         "Drives: (tier state unavailable)".to_owned()
     } else {
@@ -102,12 +122,20 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
     };
 
     let heap_str = index_heap_mb.map_or_else(|| "n/a".to_owned(), |mb| format!("{mb} MB"));
+    // Only show progress mid-warm: at 100 % it is noise, and with no
+    // denominator a bare percentage would be a guess.
+    let progress_str = match (warming_progress_pct, records_when_warm) {
+        (Some(pct), Some(expected)) if pct < 100 => {
+            format!(" of {} expected ({pct}% warmed)", commas(expected))
+        }
+        _ => String::new(),
+    };
     let text = format!(
         "Daemon Status: {status_str}\n{readiness_line}\n{tier_line}\n\
-         Resident: {} records, index heap {heap_str}\n\
+         Resident: {} records{progress_str}, index heap {heap_str}\n\
          Uptime: {}s (process uptime — NOT how long the index has been warm)\n\
          Connections: {}\nPID: {}\nUFFS server version: {server_version}\n",
-        commas(total_records),
+        commas(u64::try_from(total_records).unwrap_or(u64::MAX)),
         response.uptime_secs,
         response.connections,
         response.pid
@@ -119,6 +147,8 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
         drives: tiers,
         total_records,
         index_heap_mb,
+        records_when_warm,
+        warming_progress_pct,
         uptime_secs: response.uptime_secs,
         connections: response.connections,
         pid: response.pid,
@@ -158,7 +188,7 @@ mod tests {
     /// readable at a glance in the text block.
     #[test]
     fn record_counts_are_thousands_separated() {
-        assert_eq!(commas(0), "0");
+        assert_eq!(commas(0_u64), "0");
         assert_eq!(commas(999), "999");
         assert_eq!(commas(1_000), "1,000");
         assert_eq!(commas(24_988_343), "24,988,343");

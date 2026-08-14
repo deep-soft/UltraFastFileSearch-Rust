@@ -108,11 +108,18 @@ impl IndexManager {
                         || (0_usize, tier_source_label(tier).to_owned()),
                         |body| (body.records.len(), describe_index_source(&body.source)),
                     );
+                    // While the body is resident, park the count in the
+                    // Arc-preserved stats so a later re-warm has a real
+                    // denominator to report progress against.
+                    if records > 0 {
+                        shard.stats.set_last_known_records(records as u64);
+                    }
                     DriveInfo {
                         letter: shard.drive,
                         records,
                         source,
                         tier: Some(tier),
+                        records_when_warm: Some(shard.stats.last_known_records()),
                     }
                 })
                 .collect()
