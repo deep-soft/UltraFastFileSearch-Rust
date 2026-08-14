@@ -161,6 +161,27 @@ pub fn emit_build_env() {
     // movement, so it is the reliable trigger.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/logs/HEAD");
+    // …and `.git/index` for the `-dirty` half, which the two above do not
+    // cover at all: cleanliness is not a property of HEAD.
+    //
+    // Observed: a build made while the tree was dirty kept reporting
+    // `<sha>-dirty` long after the tree was clean, because HEAD had not
+    // moved since, so this script never re-ran. It took an empty commit
+    // to shake the stamp loose. The same staleness runs the other way and
+    // is worse — a build from a clean tree goes on claiming clean after
+    // the tree is edited, which is precisely the false reassurance the
+    // suffix exists to prevent.
+    //
+    // `.git/index` is rewritten by `add`, `commit`, `checkout`, and by the
+    // stat-refresh a plain `git status` performs, so it fires on
+    // essentially every real clean↔dirty transition. It is not airtight:
+    // editing a tracked file and building without any git command in
+    // between leaves the index untouched. No cargo trigger can be airtight
+    // here — "working tree cleanliness" is not a file — and the honest
+    // alternatives are worse: forcing a re-run every build recompiles this
+    // crate and everything downstream of it, and dropping the suffix loses
+    // the signal entirely.
+    println!("cargo:rerun-if-changed=../../.git/index");
     println!("cargo:rerun-if-env-changed=RUSTC");
 }
 
