@@ -175,11 +175,38 @@ fn print_drive_headline(palette: Palette, drives: &[DriveInfo], width: usize) {
         return;
     }
     let records: usize = drives.iter().map(|dr| dr.records).sum();
-    let value = format!(
-        "{} loaded \u{b7} {} records",
-        drives.len(),
-        uffs_client::format::format_number_commas(records as u64)
-    );
+    // Resident vs expected.  "7 loaded · 0 records" is true and unreadable:
+    // it looks like an empty index rather than a demoted one, and gives no
+    // way to watch a re-warm progress.  When some drives are demoted, say
+    // how far along the load is against the count they held when warm.
+    let expected: u64 = drives
+        .iter()
+        .map(|dr| dr.records_when_warm.unwrap_or(dr.records as u64))
+        .sum();
+    let demoted = drives.iter().any(|dr| {
+        matches!(
+            dr.tier,
+            Some(ShardTier::Parked | ShardTier::Cold | ShardTier::Evicting)
+        )
+    });
+    let value = if demoted && expected > 0 {
+        let pct = (records as u64)
+            .saturating_mul(100)
+            .checked_div(expected)
+            .unwrap_or(0);
+        format!(
+            "{} loaded \u{b7} {} of {} records resident ({pct}% warmed)",
+            drives.len(),
+            uffs_client::format::format_number_commas(records as u64),
+            uffs_client::format::format_number_commas(expected),
+        )
+    } else {
+        format!(
+            "{} loaded \u{b7} {} records",
+            drives.len(),
+            uffs_client::format::format_number_commas(records as u64)
+        )
+    };
     println!("{}", field(palette, "Drives", &value, width));
 }
 
