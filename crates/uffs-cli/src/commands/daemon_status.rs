@@ -490,9 +490,17 @@ fn print_physical_drive_line(palette: Palette, drive: &PhysicalDrive, loaded: &[
                     Some(ShardTier::Parked | ShardTier::Cold | ShardTier::Evicting)
                 );
                 let note = if parked {
+                    // Name the actual tier: a hibernated drive is `cold`,
+                    // not `parked`, and calling both "parked" hides which
+                    // rung of the ladder a drive is actually on.
+                    let label = match info.tier {
+                        Some(ShardTier::Cold) => "cold",
+                        Some(ShardTier::Evicting) => "evicting",
+                        _ => "parked",
+                    };
                     format!(
                         " \u{b7} {}",
-                        palette.dim("parked  (re-warms on next query)")
+                        palette.dim(&format!("{label:<8} (re-warms on next query)"))
                     )
                 } else {
                     format!(
