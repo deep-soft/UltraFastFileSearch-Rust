@@ -112,10 +112,17 @@ pub(crate) struct DriveOutput {
     /// `char`-typed schema.  JSON schema is `char` (see [`SearchRowOutput`]).
     #[schemars(with = "char")]
     pub letter: uffs_mft::platform::DriveLetter,
-    /// Number of records in the compact index.
+    /// Number of records in the compact index.  **`0` for a `parked` or
+    /// `cold` drive** — the body is released, not empty; the count
+    /// returns when the drive re-warms.  Read `tier` before concluding
+    /// a drive holds nothing.
     pub records: usize,
     /// Data source (`"cache"`, `"live"`, `"mft_file"`).
     pub source: String,
+    /// Memory tier: `"hot"` / `"warm"` (searchable now) or
+    /// `"parked"` / `"cold"` (body released — a query re-warms it,
+    /// taking 30–120 s).  `null` from a pre-tiering daemon.
+    pub tier: Option<String>,
 }
 
 // ── uffs_status ─────────────────────────────────────────────────────
@@ -123,8 +130,20 @@ pub(crate) struct DriveOutput {
 /// Structured output for `uffs_status`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub(crate) struct StatusOutput {
-    /// Current daemon status object.
+    /// Current daemon **process** status (`Ready` / `Loading` /
+    /// `Refreshing`).  This is the daemon's lifecycle, **not** whether
+    /// the index is searchable: a `Ready` daemon can have every drive
+    /// parked.  Read `index_ready` / `drives` for that.
     pub status: serde_json::Value,
+    /// `true` when every loaded drive is `hot`/`warm`, i.e. a query
+    /// answers immediately.  `false` means at least one drive is
+    /// parked/cold and a query against it triggers a 30–120 s re-warm.
+    /// This is the field to poll while waiting out a warm.
+    pub index_ready: bool,
+    /// Per-drive tier, `"C"` → `"warm"`.  The authoritative answer to
+    /// "is the index actually ready", which the lifecycle `status`
+    /// field above does not give.
+    pub drives: alloc::collections::BTreeMap<String, String>,
     /// Daemon uptime in seconds.
     pub uptime_secs: u64,
     /// Number of active connections.

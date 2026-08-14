@@ -31,6 +31,7 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
                 letter: drv.letter,
                 records: drv.records,
                 source: drv.source.clone(),
+                tier: Some(super::status::tier_name(drv.tier).to_owned()),
             })
             .collect(),
     };
@@ -38,10 +39,18 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
     let mut output = String::new();
     _ = write!(output, "Loaded {} drive(s):\n\n", response.drives.len());
     for drive in &response.drives {
+        // A parked/cold drive reports 0 records because its body is
+        // released — say so inline, or the listing reads as an empty
+        // index and an agent concludes there is nothing to search.
+        let tier = super::status::tier_name(drive.tier);
+        let note = match tier {
+            "parked" | "cold" => "  ← body released; a query re-warms it (30-120 s)",
+            _ => "",
+        };
         _ = writeln!(
             output,
-            "  {}:  {:>10} records  ({})",
-            drive.letter, drive.records, drive.source
+            "  {}:  {:>10} records  ({}, {}){}",
+            drive.letter, drive.records, drive.source, tier, note
         );
     }
 

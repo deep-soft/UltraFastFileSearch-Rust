@@ -126,8 +126,10 @@ pub(crate) async fn warm_gate(
     Err(BridgeError::Daemon(format!(
         "⏳ Index warming — drive(s) {} were parked/cold and are being re-warmed now \
          (typically 30–120 s; HDDs are the slow end). This call returned early instead \
-         of blocking. Poll uffs_status until every drive reports 'warm', then retry \
-         this exact query — it will answer in milliseconds.",
+         of blocking; nothing is wrong with your query. Poll uffs_status until its \
+         `index_ready` field is true — NOT the `status` field, which reads \"Ready\" \
+         for the daemon process even while every drive is parked — then retry this \
+         exact query unchanged; it will answer in milliseconds.",
         list.join(", ")
     )))
 }

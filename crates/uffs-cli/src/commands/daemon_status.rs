@@ -481,12 +481,32 @@ fn print_physical_drive_line(palette: Palette, drive: &PhysicalDrive, loaded: &[
         .map_or_else(
             || (Glyph::Off, format!(" \u{b7} {}", palette.dim("not loaded"))),
             |info| {
-                (
-                    Glyph::Up,
+                // A parked/cold shard reports 0 records because its body
+                // is released, not because the drive is empty.  Rendering
+                // that as "indexed (0 records)" reads as a broken index —
+                // say "parked" and the count returns on the next query.
+                let parked = matches!(
+                    info.tier,
+                    Some(ShardTier::Parked | ShardTier::Cold | ShardTier::Evicting)
+                );
+                let note = if parked {
+                    format!(
+                        " \u{b7} {}",
+                        palette.dim("parked  (re-warms on next query)")
+                    )
+                } else {
                     format!(
                         " \u{b7} indexed ({:>11} records)",
                         format_number_commas(info.records as u64)
-                    ),
+                    )
+                };
+                (
+                    if parked {
+                        tier_glyph(info.tier)
+                    } else {
+                        Glyph::Up
+                    },
+                    note,
                 )
             },
         );
