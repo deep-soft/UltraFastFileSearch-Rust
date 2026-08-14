@@ -95,6 +95,10 @@ fn main() {
     let mut skipped = 0_u32;
     let mut unchanged = 0_u32;
     eprintln!();
+    // Clear sidecars left by earlier rename-swaps whose old process has
+    // since exited.  Ones still held stay put and are swept next time.
+    sweep_sidecars(&bin_dir);
+
     eprintln!("📦 Installing {} binaries to {}", executables.len(), bin_dir.display());
     for src in &executables {
         let Some(file_name) = src.file_name() else {
@@ -136,7 +140,18 @@ fn main() {
         if dest.is_dir() {
             let _ = std::fs::remove_dir_all(&dest);
         }
-        let _ = std::fs::remove_file(&dest);
+        // A running image cannot be deleted on Windows — but it can be
+        // renamed, which frees the path without touching the live
+        // process. That is how a binary gets replaced under a running
+        // stdio supervisor: it notices its image changed and hot-swaps
+        // its worker, so the AI host's session never drops.
+        if dest.exists() && std::fs::remove_file(&dest).is_err() {
+            if rename_aside(&dest).is_none() {
+                eprintln!("  ❌ {name:<28} in use and could not be moved aside");
+                skipped += 1;
+                continue;
+            }
+        }
         match std::fs::copy(src, &dest) {
             Ok(bytes) => {
                 #[cfg(unix)]
@@ -187,6 +202,104 @@ fn main() {
     if skipped > 0 {
         std::process::exit(1);
     }
+}
+
+/// Move a locked binary aside so a fresh one can take its canonical
+/// path, returning where it went.
+///
+/// Windows refuses to delete or overwrite a running image but happily
+/// **renames** it: the running process keeps its handle to the old
+/// inode while the path is freed. That is the whole mechanism behind
+/// the zero-downtime upgrade the MCP stdio supervisor implements — it
+/// watches its own image path and hot-swaps its worker when the bytes
+/// there change, so a rename-swap upgrades a live agent session
+/// without dropping the host's connection.
+///
+/// Before this existed the installer took the blunt route and
+/// force-killed every `uffsmcp.exe` by image name to unlock the file,
+/// which killed the stdio supervisors belonging to interactive agent
+/// sessions — the exact failure the supervisor was written to prevent,
+/// and a plausible source of "the MCP call was accepted and then
+/// vanished" reports.
+///
+/// Returns `None` when even the rename fails, which means the caller
+/// must skip that binary rather than corrupt the install.
+fn rename_aside(dest: &std::path::Path) -> Option<std::path::PathBuf> {
+    for attempt in 0..64_u32 {
+        let sidecar = dest.with_extension(format!("old{attempt}"));
+        if sidecar.exists() {
+            // A previous run's sidecar still held by a live process.
+            continue;
+        }
+        if std::fs::rename(dest, &sidecar).is_ok() {
+            return Some(sidecar);
+        }
+    }
+    None
+}
+
+/// Delete leftover `*.oldN` sidecars from previous rename-swaps.
+///
+/// A sidecar stays on disk while the old process still has it open;
+/// once that process exits the file is deletable, so every later
+/// install sweeps them. Failures are ignored — a sidecar still in use
+/// simply waits for the next run.
+fn sweep_sidecars(bin_dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(bin_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_sidecar = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.starts_with("old") && ext[3..].chars().all(|c| c.is_ascii_digit()));
+        if is_sidecar {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// PID of a service reported by `uffs --status --json`, if it is running.
+///
+/// Used to scope teardown kills to the process we actually mean.
+/// Killing `uffsmcp.exe` by image name also kills every stdio
+/// supervisor an AI host has spawned; those are other people's
+/// sessions, not ours to end.
+fn service_pid(key: &str) -> Option<u32> {
+    let out = Command::new("uffs")
+        .args(["--status", "--json"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let section = text.split(&format!("\"{key}\":")).nth(1)?;
+    // Sections are small objects; the first `"pid":` after the key is
+    // that service's own.
+    let after = section.split("\"pid\":").nth(1)?;
+    after
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+/// Force-kill one PID (last-resort backstop after a graceful stop).
+fn kill_pid(pid: u32) {
+    let _ = if cfg!(windows) {
+        Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+    } else {
+        Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+    };
 }
 
 /// True when `src` and `dest` are byte-identical, so the copy can be
@@ -414,6 +527,9 @@ fn restart_mcp(bin_dir: &std::path::Path) {
 fn stop_running_services() {
     eprintln!();
     eprintln!("🔪 Stopping daemon + MCP (best effort)...");
+    // Capture PIDs before the graceful stops clear the PID files, so the
+    // force-kill backstops below can target exactly these processes.
+    let daemon_pid = service_pid("daemon");
     if let Ok(mut child) = Command::new("uffs")
         .args(["--daemon", "kill"])
         .stdout(Stdio::null())
@@ -434,17 +550,29 @@ fn stop_running_services() {
             }
         }
     }
-    // Ask the MCP gateway to stop cleanly first.  The `taskkill /F`
-    // below is a `/F` by image name: it kills every `uffsmcp` process
-    // outright, so the gateway never removes its PID file and the next
-    // `--mcp status` reports `not running (stale PID file, PID …)`.
-    // A graceful stop leaves no such litter; the force-kill stays as the
-    // backstop for a wedged process.
+    // Ask the MCP gateway to stop cleanly.  Capture its PID first: if it
+    // ignores the request we force-kill THAT process and nothing else.
+    //
+    // This used to be `taskkill /IM uffsmcp.exe /F`, which killed every
+    // `uffsmcp` on the box — including the stdio supervisors that AI
+    // hosts spawn for interactive agent sessions.  Those belong to
+    // other people's sessions; ending them mid-request produces exactly
+    // the "call accepted, then silently lost, never returns" signature
+    // that got reported against the MCP bridge.  Binary replacement no
+    // longer needs the kill either: `rename_aside` frees the path
+    // without touching the running process, which is the zero-downtime
+    // upgrade path the supervisor already implements.
+    let gateway_pid = service_pid("mcp_http");
     let _ = Command::new("uffs")
         .args(["--mcp", "stop"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+    if let Some(pid) = gateway_pid
+        && mcp_is_running()
+    {
+        kill_pid(pid);
+    }
     // The watchdog is stopped FIRST: if it kept running while we tear
     // the daemon down, it would dutifully restart it mid-install — the
     // supervisor fighting the installer. It is restarted at the end.
@@ -463,21 +591,19 @@ fn stop_running_services() {
                 .status()
         };
     }
-    for name in ["uffsd", "uffsmcp"] {
-        let status = if cfg!(windows) {
-            Command::new("taskkill")
-                .args(["/IM", &format!("{name}.exe"), "/F"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-        } else {
-            Command::new("pkill")
-                .args(["-x", name])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-        };
-        let _ = status;
+    // The daemon: `uffs --daemon kill` above already targets the PID in
+    // the PID file and cleans up after itself.  This is the backstop for
+    // the case where that failed, still scoped to the one PID the daemon
+    // reports rather than every `uffsd` image on the box.
+    //
+    // `uffsmcp` is deliberately absent from any image-name kill: see the
+    // gateway block above.  Stdio supervisors owned by AI hosts survive
+    // an install now, and `rename_aside` replaces their binary underneath
+    // them so they hot-swap instead of dying.
+    if let Some(pid) = daemon_pid
+        && daemon_is_running()
+    {
+        kill_pid(pid);
     }
 }
 

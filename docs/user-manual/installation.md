@@ -262,6 +262,16 @@ them:
 * **The watchdog is stopped first and restarted last.**  If it kept
   running during the install it would dutifully restart the daemon
   mid-teardown — the supervisor fighting the installer.
+* **AI-host MCP sessions survive.**  Teardown force-kills only the
+  daemon and the HTTP gateway *by PID*, never `uffsmcp` by image name —
+  that would also kill the stdio supervisors your AI hosts spawned, and
+  a session killed mid-request looks exactly like a hung tool call.  A
+  binary that is locked by a running process is **renamed aside** rather
+  than deleted, so the new one lands at the canonical path and the
+  [stdio supervisor](mcp.md#zero-downtime-upgrades-stdio-supervisor)
+  hot-swaps its worker without dropping the host's connection.  The
+  renamed `*.oldN` sidecars are swept by the next install, once the old
+  process has exited.
 * **The daemon and MCP server are restarted only if they were running
   before**, and the daemon comes back through the normal start path, so
   a resident daemon returns resident (`--no-retire`).
