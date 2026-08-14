@@ -21,8 +21,14 @@ pub(crate) struct SearchOutput {
     pub total_count: u64,
     /// Total records scanned across all drives.
     pub records_scanned: usize,
-    /// Query execution time in milliseconds.
+    /// Scan time in milliseconds — excludes index warm-up, which is
+    /// reported separately as `promotion_ms`.
     pub duration_ms: u64,
+    /// Milliseconds spent paging parked/cold drives back in before the
+    /// scan could run; `0` on a warm index.  Without this a query that
+    /// warmed for 21 s and scanned for 1 ms reports `duration_ms: 1`,
+    /// hiding the expensive case entirely.
+    pub promotion_ms: u64,
     /// Whether more results exist beyond this page.
     pub truncated: bool,
     /// Opaque cursor for fetching the next page (null when no more pages).
