@@ -129,9 +129,10 @@ pub(crate) fn dispatch_command(command: Command, args: &[String]) -> Result<()> 
     }
 }
 
-/// `--status [-v] [--json]` — combined daemon + broker + MCP status (never
-/// fails). `-v`/`--verbose` expands every section; `--json` emits the
-/// machine-readable superset.
+/// `--status [-v] [--json] [--brief]` — combined daemon + broker + MCP
+/// status (never fails). `-v`/`--verbose` expands every section;
+/// `--json` emits the machine-readable superset; `--brief` trims it to
+/// the liveness booleans a supervisor needs.
 fn run_status(args: &[String]) {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         crate::args::print_status_help();
@@ -139,7 +140,8 @@ fn run_status(args: &[String]) {
     }
     let verbose = args.iter().any(|arg| arg == "-v" || arg == "--verbose");
     let json = args.iter().any(|arg| arg == "--json");
-    commands::system_status::system_status(verbose, json);
+    let brief = args.iter().any(|arg| arg == "--brief");
+    commands::system_status::system_status(verbose, json, brief);
 }
 
 #[cfg(test)]

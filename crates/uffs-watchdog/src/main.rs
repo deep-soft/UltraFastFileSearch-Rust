@@ -48,11 +48,30 @@
 //!   reading the MFT read as dead and was liable to be respawned on top of
 //!   itself.
 //!
-//! Liveness now comes from `uffs --status --json`, which reports every
-//! service under its own key, so one service's state can never be
-//! mistaken for another's. An unreadable probe means *unknown*, and
-//! unknown is always left alone — a supervisor that restarts things
-//! because it could not see them is worse than none.
+//! Liveness now comes from `uffs --status --json --brief`, which
+//! reports every service under its own key, so one service's state can
+//! never be mistaken for another's. An unreadable probe means
+//! *unknown*, and unknown is always left alone — a supervisor that
+//! restarts things because it could not see them is worse than none.
+//!
+//! # Cost, and why the interval breathes
+//!
+//! A supervisor spends almost all of its life confirming that two
+//! healthy processes are still healthy. Two things keep that from
+//! being wasteful:
+//!
+//! * `--brief` trims the probe to a socket connect and a PID-file read. The
+//!   full `--status --json` also does an SCM query, a named-pipe probe with a
+//!   timeout, and a process enumeration that spawns a shell (plus one per
+//!   session found) — about four shell launches per call on Windows, which at a
+//!   fixed 5 s poll is ~69 000 a day to answer two booleans.
+//! * The interval backs off from 5 s toward 60 s once nothing has changed for a
+//!   while, and snaps back the moment anything does.
+//!
+//! Both matter for correctness, not just tidiness: a health check
+//! expensive enough to be affected by system load can fail *because*
+//! the machine is struggling, which is precisely when a supervisor
+//! must not.
 //!
 //! # Why a separate binary
 //!
@@ -69,13 +88,34 @@ use core::time::Duration;
 
 use supervise::{Action, RespawnLedger, decide};
 
-/// How often liveness is polled.
+/// How often liveness is polled while anything is changing.
 ///
 /// Seconds-scale: a respawn that lands within a few seconds of a crash
 /// is indistinguishable from "never went away" for an interactive
-/// search, and the probe is one cheap status call covering every
-/// supervised service.
+/// search.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Ceiling the interval backs off to once nothing has changed.
+///
+/// A supervisor spends essentially all of its life watching two
+/// processes that are fine.  Paying the full poll rate for that is
+/// wasted work — and worse, a health check that is expensive can fail
+/// *because* the machine is loaded, which is exactly when it must not.
+/// After [`STABLE_TICKS_BEFORE_BACKOFF`] uneventful ticks the interval
+/// doubles each time up to this ceiling, and any event at all snaps it
+/// straight back to [`POLL_INTERVAL`].
+///
+/// Worst-case detection latency becomes this value instead of
+/// `POLL_INTERVAL`; for a crashed background service that is not a
+/// difference anyone can perceive.
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Uneventful ticks tolerated before the interval starts growing.
+///
+/// Non-zero so a flapping service is still watched at full rate: a
+/// crash resets the counter, so backoff only happens during genuine
+/// calm.
+const STABLE_TICKS_BEFORE_BACKOFF: u32 = 6;
 
 /// Environment override for [`POLL_INTERVAL`], in seconds (tests, and
 /// operators who want a tighter or looser loop).
@@ -129,27 +169,51 @@ fn main() -> anyhow::Result<()> {
         },
     ];
 
-    eprintln!("uffs-watchdog armed (poll {}s)", poll.as_secs());
+    eprintln!(
+        "uffs-watchdog armed (poll {}s, backing off to {}s while stable)",
+        poll.as_secs(),
+        MAX_POLL_INTERVAL.as_secs()
+    );
+    let mut interval = poll;
+    let mut calm_ticks: u32 = 0;
     loop {
         // One snapshot per tick, shared by every service: the probe is a
         // single subprocess rather than one per service, and every
         // decision in a tick is taken against the same instant.
         let snapshot = status_snapshot();
+        let mut eventful = false;
         for service in &mut services {
-            tick(service, snapshot.as_deref());
+            eventful |= tick(service, snapshot.as_deref());
         }
-        std::thread::sleep(poll);
+        // Anything happening at all — a respawn, a stop honoured, a
+        // service first seen — restores full rate.  Calm compounds.
+        if eventful {
+            calm_ticks = 0;
+            interval = poll;
+        } else {
+            calm_ticks = calm_ticks.saturating_add(1);
+            if calm_ticks > STABLE_TICKS_BEFORE_BACKOFF {
+                interval = (interval * 2).min(MAX_POLL_INTERVAL);
+            }
+        }
+        std::thread::sleep(interval);
     }
 }
 
 /// Take one machine-readable snapshot of every service's liveness.
 ///
-/// `uffs --status --json` connects with `connect_raw`, which never
-/// auto-spawns anything, so probing has no side effects — an important
-/// property for something that runs every few seconds forever.
+/// `--brief` is the point: the full `--status --json` additionally does
+/// an SCM query, a named-pipe probe with a timeout, and a process
+/// enumeration that spawns a shell — plus another per session found.
+/// On Windows that is ~4 shell launches per call, and at this poll rate
+/// ~69 000 a day, to answer two booleans.  `--brief` is a socket
+/// connect and a PID-file read.
+///
+/// `connect_raw` never auto-spawns anything, so probing stays free of
+/// side effects — essential for something that runs forever.
 fn status_snapshot() -> Option<String> {
     let out = std::process::Command::new(uffs_exe())
-        .args(["--status", "--json"])
+        .args(["--status", "--json", "--brief"])
         .output()
         .ok()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -201,25 +265,35 @@ fn lifecycle_dir() -> std::path::PathBuf {
 }
 
 /// Evaluate and act on one service for this tick.
+///
+/// Returns `true` when something happened worth reacting to — a
+/// service seen for the first time, or found down.  The caller uses
+/// that to keep the poll interval tight while things are moving and
+/// let it back off during calm.
 #[expect(
     clippy::print_stderr,
     reason = "a supervisor's log IS its user interface; it has no other channel"
 )]
-fn tick(service: &mut Service, snapshot: Option<&str>) {
+fn tick(service: &mut Service, snapshot: Option<&str>) -> bool {
     // Unknown liveness is not death: leave the service exactly as it is
-    // and try again next tick.
+    // and try again next tick.  Also not an event — an unreadable probe
+    // must not hold the loop at full rate forever.
     let Some(alive) = snapshot.and_then(|doc| running(doc, service.status_key)) else {
-        return;
+        return false;
     };
     if alive {
+        // First sighting is an event: supervision has just begun for
+        // this service, and the next few ticks are the ones worth
+        // watching closely.
+        let first_sighting = !service.seen_running;
         service.seen_running = true;
-        return;
+        return first_sighting;
     }
     // Never *introduce* a service the user has not run themselves: a
     // machine that never starts the MCP gateway should not acquire one
     // because a watchdog is present.
     if !service.seen_running {
-        return;
+        return false;
     }
     let now = std::time::Instant::now();
     let recent = service.ledger.recent(now);
@@ -261,6 +335,10 @@ fn tick(service: &mut Service, snapshot: Option<&str>) {
             }
         }
     }
+    // A service being down is an event regardless of what we decided to
+    // do about it — including honouring a stop, since the operator is
+    // evidently touching things right now.
+    true
 }
 
 /// The `uffs` CLI to drive, resolved next to this binary so a watchdog
