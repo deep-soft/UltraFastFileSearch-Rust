@@ -86,6 +86,15 @@ pub struct DriveInfo {
     /// exists yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records_when_warm: Option<u64>,
+    /// `true` while this drive's body is actively being paged in.
+    ///
+    /// A re-warm is stepwise per drive, so the record count plateaus
+    /// for tens of seconds while one large drive loads.  Without this,
+    /// repeated polls showing identical numbers are indistinguishable
+    /// from a stalled warm — and giving up is the natural response to
+    /// what looks like no progress.  Absent from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loading: Option<bool>,
 }
 
 /// Response for the `status` method.

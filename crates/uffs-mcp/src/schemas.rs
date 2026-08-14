@@ -136,11 +136,15 @@ pub(crate) struct DriveOutput {
 /// Structured output for `uffs_status`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub(crate) struct StatusOutput {
-    /// Current daemon **process** status (`Ready` / `Loading` /
-    /// `Refreshing`).  This is the daemon's lifecycle, **not** whether
-    /// the index is searchable: a `Ready` daemon can have every drive
-    /// parked.  Read `index_ready` / `drives` for that.
-    pub status: serde_json::Value,
+    /// Daemon **process** state: `"running"`, `"loading (3/7 drives)"`,
+    /// or `"refreshing (C, D)"`.
+    ///
+    /// Deliberately never says "ready" — that word belongs to
+    /// `index_ready` alone.  A running daemon can have every drive
+    /// parked, and when both fields said "ready"/"false" the payload
+    /// answered the same apparent question two ways; the wrong one was
+    /// found first.
+    pub daemon_process: String,
     /// `true` when every loaded drive is `hot`/`warm`, i.e. a query
     /// answers immediately.  `false` means at least one drive is
     /// parked/cold and a query against it triggers a 30–120 s re-warm.
@@ -158,6 +162,15 @@ pub(crate) struct StatusOutput {
     /// several GB when warm.  `null` from a daemon that does not
     /// report it.
     pub index_heap_mb: Option<u64>,
+    /// Drives currently being paged in, e.g. `["E"]`.
+    ///
+    /// A re-warm is stepwise per drive, so `total_records` plateaus for
+    /// tens of seconds while one large drive loads.  Without knowing a
+    /// load is in flight, three identical polls read as "hung" and the
+    /// natural response is to give up — the one remaining way a caller
+    /// bails early on a warm that is working fine.  Empty means nothing
+    /// is loading right now.
+    pub currently_loading: Vec<String>,
     /// Records expected once every drive is warm — the denominator for
     /// `total_records`.  `null` when no drive has been warm yet, so
     /// there is genuinely nothing to measure against.

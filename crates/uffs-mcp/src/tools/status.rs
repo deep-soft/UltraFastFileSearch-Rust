@@ -24,6 +24,37 @@ fn commas(value: u64) -> String {
     out
 }
 
+/// Describe the daemon **process** state without ever using the word
+/// "ready".
+///
+/// The daemon's lifecycle enum has a `Ready` variant meaning "the
+/// process is up and accepting connections".  Serialised verbatim it
+/// put `"state": "ready"` in the payload beside `index_ready: false` —
+/// two fields answering what looks like the same question with
+/// different answers, and a model skimming for a readiness signal finds
+/// the wrong one first.  That is not hypothetical: it is the exact
+/// misread that produced a confident "the daemon is not cold" against
+/// seven parked shards.
+///
+/// So the process state is rendered as `running` / `loading` /
+/// `refreshing`, which is what it actually means, and the only "ready"
+/// left anywhere in the payload is `index_ready` — the field that
+/// really answers it.
+fn daemon_state_label(status: &uffs_client::protocol::response::DaemonStatus) -> String {
+    use uffs_client::protocol::response::DaemonStatus;
+    match status {
+        DaemonStatus::Ready => "running".to_owned(),
+        DaemonStatus::Loading {
+            drives_loaded,
+            drives_total,
+        } => format!("loading ({drives_loaded}/{drives_total} drives)"),
+        DaemonStatus::Refreshing { drives } => {
+            let list: Vec<String> = drives.iter().map(ToString::to_string).collect();
+            format!("refreshing ({})", list.join(", "))
+        }
+    }
+}
+
 /// Render a shard tier as the lowercase name agents match on.
 ///
 /// `None` (pre-tiering daemon) reads as `warm`: those daemons never
@@ -39,6 +70,52 @@ pub(crate) const fn tier_name(tier: Option<ShardTier>) -> &'static str {
     }
 }
 
+/// `Drives: C=warm D=cold …`, or a note that tiers are unavailable.
+fn render_tier_line(tiers: &alloc::collections::BTreeMap<String, String>) -> String {
+    if tiers.is_empty() {
+        return "Drives: (tier state unavailable)".to_owned();
+    }
+    let rendered: Vec<String> = tiers
+        .iter()
+        .map(|(letter, tier)| format!("{letter}={tier}"))
+        .collect();
+    format!("Drives: {}", rendered.join(" "))
+}
+
+/// The one line that says whether a query will answer or warm.
+const fn readiness_line(index_ready: bool) -> &'static str {
+    if index_ready {
+        "Index: READY — every drive is warm; queries answer immediately."
+    } else {
+        "Index: WARMING NEEDED — one or more drives are parked/cold. A query \
+         against them triggers a 30-120 s re-warm and returns a retry hint. \
+         Poll this tool until index_ready is true."
+    }
+}
+
+/// Name the drive being paged in, so a plateau reads as "S is loading"
+/// rather than "hung" — the difference between waiting and giving up.
+fn render_loading_line(loading_now: &[String]) -> String {
+    if loading_now.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\nLoading now: {} (counts plateau until it lands)",
+        loading_now.join(", ")
+    )
+}
+
+/// Progress against the expected total — shown only mid-warm, where at
+/// 100 % it is noise and without a denominator it would be a guess.
+fn render_progress(pct: Option<u8>, expected: Option<u64>) -> String {
+    match (pct, expected) {
+        (Some(percent), Some(total)) if percent < 100 => {
+            format!(" of {} expected ({percent}% warmed)", commas(total))
+        }
+        _ => String::new(),
+    }
+}
+
 /// Execute the status tool (no arguments).
 ///
 /// # Errors
@@ -50,7 +127,7 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
         .await
         .map_err(|err| BridgeError::Daemon(format!("Failed to get status: {err}")))?;
 
-    let status_str = serde_json::to_string_pretty(&response.status)?;
+    let daemon_process = daemon_state_label(&response.status);
 
     // Per-drive tiers.  Without these the tool answers "Ready" for a
     // daemon whose every drive is parked — which is how an agent
@@ -65,6 +142,15 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
         .map(|list| {
             list.iter()
                 .map(|drv| (drv.letter.to_string(), tier_name(drv.tier).to_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let loading_now: Vec<String> = drives
+        .as_ref()
+        .map(|list| {
+            list.iter()
+                .filter(|drv| drv.loading == Some(true))
+                .map(|drv| drv.letter.to_string())
                 .collect()
         })
         .unwrap_or_default();
@@ -104,34 +190,14 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
         u8::try_from(pct.min(100)).unwrap_or(100)
     });
 
-    let tier_line = if tiers.is_empty() {
-        "Drives: (tier state unavailable)".to_owned()
-    } else {
-        let rendered: Vec<String> = tiers
-            .iter()
-            .map(|(letter, tier)| format!("{letter}={tier}"))
-            .collect();
-        format!("Drives: {}", rendered.join(" "))
-    };
-    let readiness_line = if index_ready {
-        "Index: READY — every drive is warm; queries answer immediately."
-    } else {
-        "Index: WARMING NEEDED — one or more drives are parked/cold. A query \
-         against them triggers a 30-120 s re-warm and returns a retry hint. \
-         Poll this tool until index_ready is true."
-    };
-
+    let tier_line = render_tier_line(&tiers);
+    let readiness_line = readiness_line(index_ready);
+    let loading_line = render_loading_line(&loading_now);
     let heap_str = index_heap_mb.map_or_else(|| "n/a".to_owned(), |mb| format!("{mb} MB"));
-    // Only show progress mid-warm: at 100 % it is noise, and with no
-    // denominator a bare percentage would be a guess.
-    let progress_str = match (warming_progress_pct, records_when_warm) {
-        (Some(pct), Some(expected)) if pct < 100 => {
-            format!(" of {} expected ({pct}% warmed)", commas(expected))
-        }
-        _ => String::new(),
-    };
+    let progress_str = render_progress(warming_progress_pct, records_when_warm);
+
     let text = format!(
-        "Daemon Status: {status_str}\n{readiness_line}\n{tier_line}\n\
+        "Daemon process: {daemon_process}\n{readiness_line}\n{tier_line}{loading_line}\n\
          Resident: {} records{progress_str}, index heap {heap_str}\n\
          Uptime: {}s (process uptime — NOT how long the index has been warm)\n\
          Connections: {}\nPID: {}\nUFFS server version: {server_version}\n",
@@ -142,11 +208,12 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
     );
 
     let structured = StatusOutput {
-        status: serde_json::to_value(&response.status)?,
+        daemon_process: daemon_process.clone(),
         index_ready,
         drives: tiers,
         total_records,
         index_heap_mb,
+        currently_loading: loading_now.clone(),
         records_when_warm,
         warming_progress_pct,
         uptime_secs: response.uptime_secs,

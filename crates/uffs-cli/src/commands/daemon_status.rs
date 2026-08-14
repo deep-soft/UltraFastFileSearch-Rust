@@ -194,8 +194,22 @@ fn print_drive_headline(palette: Palette, drives: &[DriveInfo], width: usize) {
             .saturating_mul(100)
             .checked_div(expected)
             .unwrap_or(0);
+        // Name the drive in flight: a re-warm lands one drive at a time,
+        // so the count sits still for tens of seconds while a large one
+        // loads.  Without this, repeated looks show identical numbers and
+        // a working warm is indistinguishable from a stalled one.
+        let loading: Vec<String> = drives
+            .iter()
+            .filter(|dr| dr.loading == Some(true))
+            .map(|dr| dr.letter.to_string())
+            .collect();
+        let in_flight = if loading.is_empty() {
+            String::new()
+        } else {
+            format!(" \u{b7} loading {}", loading.join(", "))
+        };
         format!(
-            "{} loaded \u{b7} {} of {} records resident ({pct}% warmed)",
+            "{} loaded \u{b7} {} of {} records resident ({pct}% warmed){in_flight}",
             drives.len(),
             uffs_client::format::format_number_commas(records as u64),
             uffs_client::format::format_number_commas(expected),

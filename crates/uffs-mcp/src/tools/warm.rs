@@ -149,6 +149,7 @@ mod tests {
             source: "test".to_owned(),
             tier,
             records_when_warm: None,
+            loading: None,
         }
     }
 
