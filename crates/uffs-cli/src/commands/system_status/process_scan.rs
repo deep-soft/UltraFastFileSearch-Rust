@@ -158,13 +158,35 @@ fn find_mcp_stdio_processes() -> Option<Vec<StdioSession>> {
     )?;
     let text = String::from_utf8_lossy(&stdout);
     let my_pid = std::process::id();
+    let current_mtime = std::env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|meta| meta.modified().ok());
+    // The HTTP gateway is a `uffsmcp` process too, so an image-name
+    // filter catches it — but it has its own section above, and listing
+    // it here as a "stdio session" is simply wrong.
+    let gateway_pid = uffs_client::mcp_pid::is_mcp_server_running();
+    // Collect PIDs first so a supervisor's worker child can be told
+    // apart from a supervisor: the worker's parent is another `uffsmcp`.
+    let rows: Vec<(u32, u32, u64)> = text
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.trim().split(',');
+            let pid = fields.next()?.trim().parse::<u32>().ok()?;
+            let parent = fields.next()?.trim().parse::<u32>().unwrap_or(0);
+            let age = fields.next()?.trim().parse::<u64>().unwrap_or(0);
+            Some((pid, parent, age))
+        })
+        .collect();
+    let is_supervisor_pid = |pid: u32| rows.iter().any(|&(other, _, _)| other == pid);
+
     let mut sessions = Vec::new();
     for line in text.lines() {
         let mut fields = line.trim().split(',');
         let Some(pid) = fields.next().and_then(|val| val.trim().parse::<u32>().ok()) else {
             continue;
         };
-        if pid == my_pid {
+        if pid == my_pid || gateway_pid == Some(pid) {
             continue;
         }
         let parent_pid: u32 = fields
@@ -175,14 +197,32 @@ fn find_mcp_stdio_processes() -> Option<Vec<StdioSession>> {
             .next()
             .and_then(|val| val.trim().parse().ok())
             .unwrap_or(0);
-        let image = fields.next().unwrap_or("").trim().to_owned();
-        // A supervisor whose image was renamed aside by an installer is
-        // running code that is no longer at the canonical path.
-        let is_stale = !image.eq_ignore_ascii_case("uffsmcp.exe");
+        let _image = fields.next().unwrap_or("");
+        // A `uffsmcp` whose parent is another `uffsmcp` is a supervisor's
+        // worker child, not a session of its own.  Worth showing — a
+        // worker younger than its supervisor is the visible proof that a
+        // hot-swap happened — but labelled, not counted as a session.
+        let is_worker = is_supervisor_pid(parent_pid);
+        let parent_name = if is_worker {
+            Some(format!("worker of PID {parent_pid}"))
+        } else {
+            resolve_parent_name(parent_pid)
+        };
+        // Staleness by *age*, not by image name: Windows keeps reporting
+        // the original name after a rename-swap, so the name says nothing.
+        // A supervisor older than the installed binary is serving a
+        // superseded image — harmless once it has hot-swapped its worker,
+        // which is exactly why the worker is listed too.
+        let is_stale = !is_worker
+            && current_mtime.is_some_and(|bin_mtime| {
+                std::time::SystemTime::now()
+                    .checked_sub(core::time::Duration::from_secs(age_secs))
+                    .is_some_and(|started| started < bin_mtime)
+            });
         sessions.push(StdioSession {
             pid,
             uptime: core::time::Duration::from_secs(age_secs),
-            parent_name: resolve_parent_name(parent_pid),
+            parent_name,
             is_stale,
         });
     }
