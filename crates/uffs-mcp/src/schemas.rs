@@ -144,6 +144,14 @@ pub(crate) struct StatusOutput {
     /// "is the index actually ready", which the lifecycle `status`
     /// field above does not give.
     pub drives: alloc::collections::BTreeMap<String, String>,
+    /// Records resident across all loaded drives.  **`0` while every
+    /// drive is parked** — bodies released, not an empty index.  Reads
+    /// as the corroborating signal for `index_ready`.
+    pub total_records: usize,
+    /// Index bytes resident in the heap, in MB.  `0` while parked;
+    /// several GB when warm.  `null` from a daemon that does not
+    /// report it.
+    pub index_heap_mb: Option<u64>,
     /// Daemon uptime in seconds.
     pub uptime_secs: u64,
     /// Number of active connections.

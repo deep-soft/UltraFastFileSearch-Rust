@@ -10,6 +10,20 @@ use uffs_client::protocol::response::ShardTier;
 use crate::error::BridgeError;
 use crate::schemas::StatusOutput;
 
+/// Thousands-separate a count so `0` versus `24,988,343` is legible at
+/// a glance — the difference between a parked and a warm index.
+fn commas(value: usize) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (idx, ch) in digits.chars().enumerate() {
+        if idx > 0 && (digits.len() - idx).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// Render a shard tier as the lowercase name agents match on.
 ///
 /// `None` (pre-tiering daemon) reads as `warm`: those daemons never
@@ -63,6 +77,13 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
     // agent can surface (UFFS self-updates via `uffs --update`).
     let server_version = env!("CARGO_PKG_VERSION");
 
+    // Residency corroboration: records + heap.  Both read 0 while every
+    // drive is parked, which is the same fact the tier map states — but
+    // an agent that distrusts one number has the other to check it
+    // against, and "0 records / 0 MB" is unmistakable.
+    let total_records = client.stats().await.map_or(0, |stats| stats.total_records);
+    let index_heap_mb = response.index_heap_bytes.map(|bytes| bytes / (1024 * 1024));
+
     let tier_line = if tiers.is_empty() {
         "Drives: (tier state unavailable)".to_owned()
     } else {
@@ -80,15 +101,24 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
          Poll this tool until index_ready is true."
     };
 
+    let heap_str = index_heap_mb.map_or_else(|| "n/a".to_owned(), |mb| format!("{mb} MB"));
     let text = format!(
-        "Daemon Status: {status_str}\n{readiness_line}\n{tier_line}\nUptime: {}s\nConnections: {}\nPID: {}\nUFFS server version: {server_version}\n",
-        response.uptime_secs, response.connections, response.pid
+        "Daemon Status: {status_str}\n{readiness_line}\n{tier_line}\n\
+         Resident: {} records, index heap {heap_str}\n\
+         Uptime: {}s (process uptime — NOT how long the index has been warm)\n\
+         Connections: {}\nPID: {}\nUFFS server version: {server_version}\n",
+        commas(total_records),
+        response.uptime_secs,
+        response.connections,
+        response.pid
     );
 
     let structured = StatusOutput {
         status: serde_json::to_value(&response.status)?,
         index_ready,
         drives: tiers,
+        total_records,
+        index_heap_mb,
         uptime_secs: response.uptime_secs,
         connections: response.connections,
         pid: response.pid,
@@ -98,4 +128,39 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
     let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
     result.structured_content = Some(serde_json::to_value(structured)?);
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use uffs_client::protocol::response::ShardTier;
+
+    use super::{commas, tier_name};
+
+    /// The exact conflation that caused a field misdiagnosis: a daemon
+    /// whose lifecycle reads `Ready` while every drive is parked. The
+    /// tier names must say `parked` so `index_ready` can be false.
+    #[test]
+    fn parked_tiers_are_named_parked_not_ready() {
+        assert_eq!(tier_name(Some(ShardTier::Parked)), "parked");
+        assert_eq!(tier_name(Some(ShardTier::Cold)), "cold");
+        assert_eq!(tier_name(Some(ShardTier::Warm)), "warm");
+        assert_eq!(tier_name(Some(ShardTier::Hot)), "hot");
+    }
+
+    /// A pre-tiering daemon never demotes, so absent tier reads warm —
+    /// otherwise every query against an old daemon would gate forever.
+    #[test]
+    fn absent_tier_reads_warm() {
+        assert_eq!(tier_name(None), "warm");
+    }
+
+    /// `0` vs `24,988,343` is the parked/warm tell; it has to be
+    /// readable at a glance in the text block.
+    #[test]
+    fn record_counts_are_thousands_separated() {
+        assert_eq!(commas(0), "0");
+        assert_eq!(commas(999), "999");
+        assert_eq!(commas(1_000), "1,000");
+        assert_eq!(commas(24_988_343), "24,988,343");
+    }
 }
