@@ -568,10 +568,12 @@ fn stop_running_services() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    if let Some(pid) = gateway_pid
-        && mcp_is_running()
-    {
-        kill_pid(pid);
+    // Nested rather than a `let`-chain: rust-script compiles this file
+    // on its default edition, where `if let … && …` is not available.
+    if let Some(pid) = gateway_pid {
+        if mcp_is_running() {
+            kill_pid(pid);
+        }
     }
     // The watchdog is stopped FIRST: if it kept running while we tear
     // the daemon down, it would dutifully restart it mid-install — the
@@ -600,10 +602,10 @@ fn stop_running_services() {
     // gateway block above.  Stdio supervisors owned by AI hosts survive
     // an install now, and `rename_aside` replaces their binary underneath
     // them so they hot-swap instead of dying.
-    if let Some(pid) = daemon_pid
-        && daemon_is_running()
-    {
-        kill_pid(pid);
+    if let Some(pid) = daemon_pid {
+        if daemon_is_running() {
+            kill_pid(pid);
+        }
     }
 }
 
