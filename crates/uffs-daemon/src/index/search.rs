@@ -72,19 +72,8 @@ impl IndexManager {
             // cap is saturated.  Return a no-payload response with
             // the remaining metadata fields at their zero defaults
             // so the client still sees a valid (if empty) shape.
-            return SearchResponse {
-                payload: SearchPayload::Empty,
-                total_count: 0,
-                records_scanned: 0,
-                duration_ms: 0,
-                truncated: false,
-                profile: None,
-                applied_sorts: Vec::new(),
-                applied_projection: Vec::new(),
-                response_mode: None,
-                projected_rows: None,
-                aggregations: vec![],
-            };
+            // Rejected before any promote was attempted.
+            return empty_response(0, None);
         };
 
         let query_start = Instant::now();
@@ -193,10 +182,18 @@ impl IndexManager {
         // behaviour.
         // Registry warm-up only applies to live shards; a diff searches the
         // caller's baseline index, which is not in the registry.
-        if !is_diff {
+        // Timed unconditionally, not just under `--profile`: paging a
+        // cold index back in is the largest cost a query can incur, and
+        // a client that cannot see it reads `duration_ms: 1` and
+        // concludes the search was instant.
+        let promotion_ms = if is_diff {
+            0
+        } else {
+            let t_promote = Instant::now();
             self.ensure_warm_for_dispatch(&effective_params.drives, &filters.extensions)
                 .await;
-        }
+            u64::try_from(t_promote.elapsed().as_millis()).unwrap_or(u64::MAX)
+        };
 
         // ── Snapshot the index (< 1 μs) ────────────────────────────
         let t_lock = profiling.then(Instant::now);
@@ -302,38 +299,19 @@ impl IndexManager {
             Ok(Ok(res)) => res,
             Ok(Err(_join_err)) => {
                 tracing::error!("search task panicked");
-                return SearchResponse {
-                    payload: SearchPayload::Empty,
-                    total_count: 0,
-                    records_scanned: 0,
-                    duration_ms: 0,
-                    truncated: false,
-                    profile: None,
-                    applied_sorts: Vec::new(),
-                    applied_projection: Vec::new(),
-                    response_mode: None,
-                    projected_rows: None,
-                    aggregations: vec![],
-                };
+                // Promotion already happened; report what it cost even
+                // though the scan then failed.
+                return empty_response(0, Some(promotion_ms));
             }
             Err(_timeout) => {
                 tracing::warn!(
                     pattern = %effective_params.pattern,
                     "search timed out after 30s"
                 );
-                return SearchResponse {
-                    payload: SearchPayload::Empty,
-                    total_count: 0,
-                    records_scanned: 0,
-                    duration_ms: 30_000,
-                    truncated: false,
-                    profile: None,
-                    applied_sorts: Vec::new(),
-                    applied_projection: Vec::new(),
-                    response_mode: None,
-                    projected_rows: None,
-                    aggregations: vec![],
-                };
+                // A timeout that spent most of its budget paging the
+                // index in is a different diagnosis from one that spent
+                // it scanning — say which.
+                return empty_response(30_000, Some(promotion_ms));
             }
         };
         let search_us = if profiling {
@@ -429,6 +407,7 @@ impl IndexManager {
                         output = output_path,
                         rows = rows_written,
                         duration_ms,
+                        promotion_ms,
                         "daemon wrote results directly to file"
                     );
                     // Update perf counters.
@@ -469,6 +448,7 @@ impl IndexManager {
                         total_count,
                         records_scanned: result.records_scanned,
                         duration_ms,
+                        promotion_ms: Some(promotion_ms),
                         truncated: false,
                         profile,
                         applied_sorts: Vec::new(),
@@ -627,6 +607,7 @@ impl IndexManager {
             total_count,
             records_scanned: result.records_scanned,
             duration_ms,
+            promotion_ms: Some(promotion_ms),
             truncated,
             profile,
             applied_sorts,
@@ -729,6 +710,27 @@ impl IndexManager {
             path_build_row_ns,
             drives: drive_profiles,
         }
+    }
+}
+
+/// A response carrying no rows — the shape every early-out path returns
+/// (permit exhaustion, scan panic, scan timeout).  Factored out because
+/// the three literals differed in two fields, so every new
+/// `SearchResponse` field had to be threaded through all of them.
+const fn empty_response(duration_ms: u64, promotion_ms: Option<u64>) -> SearchResponse {
+    SearchResponse {
+        payload: SearchPayload::Empty,
+        total_count: 0,
+        records_scanned: 0,
+        duration_ms,
+        promotion_ms,
+        truncated: false,
+        profile: None,
+        applied_sorts: Vec::new(),
+        applied_projection: Vec::new(),
+        response_mode: None,
+        projected_rows: None,
+        aggregations: Vec::new(),
     }
 }
 

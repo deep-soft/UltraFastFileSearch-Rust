@@ -103,6 +103,10 @@ pub(crate) async fn run(
     // Apply roots-based scoping (drive + path prefix).
     roots::apply_roots_scope(roots_state, &mut params);
 
+    // Cold-index contract: return a retryable "warming" error instead of
+    // blocking silently for the length of a re-warm (see `tools::warm`).
+    super::warm::warm_gate(client, &params.drives).await?;
+
     let mut response = client
         .search(&params)
         .await

@@ -364,6 +364,10 @@ pub(crate) async fn run(
     // Apply roots-based scoping (drive + path prefix) when no explicit drives.
     roots::apply_roots_scope(roots_state, &mut search_params);
 
+    // Cold-index contract: return a retryable "warming" error instead of
+    // blocking silently for the length of a re-warm (see `tools::warm`).
+    super::warm::warm_gate(client, &search_params.drives).await?;
+
     tracing::debug!(
         params_json = %serde_json::to_string(&search_params).unwrap_or_default(),
         "uffs_search: sending search request to daemon"
@@ -422,6 +426,7 @@ pub(crate) async fn run(
         total_count,
         records_scanned: response.records_scanned,
         duration_ms: response.duration_ms,
+        promotion_ms: response.promotion_ms.unwrap_or(0),
         has_more,
         effective_limit,
         next_cursor: next_cursor.clone(),
@@ -446,6 +451,7 @@ pub(crate) async fn run(
         total_count,
         records_scanned: response.records_scanned,
         duration_ms: response.duration_ms,
+        promotion_ms: response.promotion_ms.unwrap_or(0),
         truncated: has_more,
         next_cursor,
         warnings,
@@ -496,8 +502,15 @@ struct FormatContext<'a> {
     total_count: u64,
     /// Number of MFT records scanned.
     records_scanned: usize,
-    /// Wall-clock duration of the search in milliseconds.
+    /// Wall-clock duration of the SCAN in milliseconds — excludes any
+    /// tier promotion, which is reported separately.
     duration_ms: u64,
+    /// Milliseconds spent paging parked/cold drives back in before the
+    /// scan.  Surfaced whenever non-zero: without it a query that spent
+    /// 21 s warming and 1 ms scanning reports "1ms", and the cost of
+    /// the slow case is invisible precisely when someone is wondering
+    /// where the time went.
+    promotion_ms: u64,
     /// Whether there are more results beyond this page.
     has_more: bool,
     /// The effective per-page limit (after clamping).
@@ -506,24 +519,39 @@ struct FormatContext<'a> {
     next_cursor: Option<String>,
 }
 
+/// Render the promotion cost, or nothing when there was none.
+///
+/// Silent in the steady state (a warm index promotes nothing), loud
+/// when a query just paid tens of seconds to page the index in.
+fn warm_note(promotion_ms: u64) -> String {
+    if promotion_ms == 0 {
+        String::new()
+    } else {
+        format!(" + {promotion_ms}ms index warm-up")
+    }
+}
+
 /// Render the human-readable text summary for the search results.
 fn format_text_output(ctx: &FormatContext<'_>) -> String {
     let mut output = String::new();
     if ctx.page_rows.is_empty() {
         _ = write!(
             output,
-            "0 matches ({} scanned in {}ms)\n\n",
-            ctx.records_scanned, ctx.duration_ms,
+            "0 matches ({} scanned in {}ms{})\n\n",
+            ctx.records_scanned,
+            ctx.duration_ms,
+            warm_note(ctx.promotion_ms),
         );
     } else {
         _ = write!(
             output,
-            "Showing {}-{} of {} matches ({} scanned in {}ms)\n\n",
+            "Showing {}-{} of {} matches ({} scanned in {}ms{})\n\n",
             ctx.offset + 1,
             ctx.end_offset,
             ctx.total_count,
             ctx.records_scanned,
             ctx.duration_ms,
+            warm_note(ctx.promotion_ms),
         );
     }
     for warning in ctx.warnings {

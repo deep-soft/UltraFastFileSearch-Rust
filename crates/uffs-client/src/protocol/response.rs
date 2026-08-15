@@ -335,8 +335,30 @@ pub struct SearchResponse {
     pub total_count: u64,
     /// Total records scanned.
     pub records_scanned: usize,
-    /// Search duration in milliseconds.
+    /// Search duration in milliseconds — **scan time only**.
+    ///
+    /// Explicitly excludes the tier promotion this query may have paid
+    /// for: see [`Self::promotion_ms`].  A query that spent 21 s paging
+    /// a cold index back in and 1 ms scanning it reports
+    /// `duration_ms: 1`, which is true and, on its own, badly
+    /// misleading.
     pub duration_ms: u64,
+    /// Milliseconds spent promoting parked/cold shards back to warm
+    /// before the scan could run — `0` when everything was already
+    /// resident, which is the steady state.
+    ///
+    /// Split out rather than folded into `duration_ms` because they
+    /// answer different questions: `duration_ms` is "how fast is the
+    /// index", `promotion_ms` is "what did I pay to have an index at
+    /// all".  Merging them would make a warm search look slow; omitting
+    /// it (the original behaviour) hides the expensive case entirely —
+    /// a client watching `duration_ms: 1` cannot tell it just waited
+    /// 21 s, so the cost is invisible exactly when it matters.
+    ///
+    /// Absent from an older daemon, which reads as "not reported"
+    /// rather than "was free".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_ms: Option<u64>,
     /// Whether results were truncated by limit.
     pub truncated: bool,
     /// Detailed timing breakdown from the daemon (only when

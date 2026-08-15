@@ -14,6 +14,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.33] - 2026-08-14
+
+### Added
+
+- mcp: report re-warm progress against a real record denominator
+- daemon: report promotion_ms so a cold query stops looking instant
+
+### Changed
+
+- watchdog: cheap liveness probe and an interval that breathes
+
+### Fixed
+
+- mcp: cold-index queries return a warming contract instead of hanging
+- mcp: expose per-drive tier so the warm-retry contract is followable
+- mcp: report residency numbers beside the tier map in uffs_status
+- dev: stop use-local killing AI-host MCP sessions to unlock binaries
+- cli: name the real tier for a demoted drive, not always 'parked'
+- dev: drop let-chains from install-bins (rust-script default edition)
+- cli: make the MCP stdio session scan work on Windows
+- cli: separate gateway, supervisor and worker in the stdio session list
+- cli: show resident-vs-expected records while drives are demoted
+- mcp: one readiness field, and name the drive that is loading
+- version: re-stamp the -dirty flag when the tree changes, not just HEAD
+- ci: clamp RLIMIT_NOFILE before zig links, unblocking toolchain-sync
+- ci: clamp the fd limit when ulimit reports "unlimited" too
+- ci: raise the fd limit for zig links — macOS defaults to 256
+
 ## [0.6.32] - 2026-08-13
 
 ### Added
@@ -2761,7 +2789,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.32...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.33...HEAD
+[0.6.33]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.32...v0.6.33
 [0.6.32]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.31...v0.6.32
 [0.6.31]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.30...v0.6.31
 [0.6.30]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.29...v0.6.30

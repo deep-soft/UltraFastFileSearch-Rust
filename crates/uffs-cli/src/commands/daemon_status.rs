@@ -175,11 +175,52 @@ fn print_drive_headline(palette: Palette, drives: &[DriveInfo], width: usize) {
         return;
     }
     let records: usize = drives.iter().map(|dr| dr.records).sum();
-    let value = format!(
-        "{} loaded \u{b7} {} records",
-        drives.len(),
-        uffs_client::format::format_number_commas(records as u64)
-    );
+    // Resident vs expected.  "7 loaded · 0 records" is true and unreadable:
+    // it looks like an empty index rather than a demoted one, and gives no
+    // way to watch a re-warm progress.  When some drives are demoted, say
+    // how far along the load is against the count they held when warm.
+    let expected: u64 = drives
+        .iter()
+        .map(|dr| dr.records_when_warm.unwrap_or(dr.records as u64))
+        .sum();
+    let demoted = drives.iter().any(|dr| {
+        matches!(
+            dr.tier,
+            Some(ShardTier::Parked | ShardTier::Cold | ShardTier::Evicting)
+        )
+    });
+    let value = if demoted && expected > 0 {
+        let pct = (records as u64)
+            .saturating_mul(100)
+            .checked_div(expected)
+            .unwrap_or(0);
+        // Name the drive in flight: a re-warm lands one drive at a time,
+        // so the count sits still for tens of seconds while a large one
+        // loads.  Without this, repeated looks show identical numbers and
+        // a working warm is indistinguishable from a stalled one.
+        let loading: Vec<String> = drives
+            .iter()
+            .filter(|dr| dr.loading == Some(true))
+            .map(|dr| dr.letter.to_string())
+            .collect();
+        let in_flight = if loading.is_empty() {
+            String::new()
+        } else {
+            format!(" \u{b7} loading {}", loading.join(", "))
+        };
+        format!(
+            "{} loaded \u{b7} {} of {} records resident ({pct}% warmed){in_flight}",
+            drives.len(),
+            uffs_client::format::format_number_commas(records as u64),
+            uffs_client::format::format_number_commas(expected),
+        )
+    } else {
+        format!(
+            "{} loaded \u{b7} {} records",
+            drives.len(),
+            uffs_client::format::format_number_commas(records as u64)
+        )
+    };
     println!("{}", field(palette, "Drives", &value, width));
 }
 
@@ -481,12 +522,40 @@ fn print_physical_drive_line(palette: Palette, drive: &PhysicalDrive, loaded: &[
         .map_or_else(
             || (Glyph::Off, format!(" \u{b7} {}", palette.dim("not loaded"))),
             |info| {
-                (
-                    Glyph::Up,
+                // A parked/cold shard reports 0 records because its body
+                // is released, not because the drive is empty.  Rendering
+                // that as "indexed (0 records)" reads as a broken index —
+                // say "parked" and the count returns on the next query.
+                let parked = matches!(
+                    info.tier,
+                    Some(ShardTier::Parked | ShardTier::Cold | ShardTier::Evicting)
+                );
+                let note = if parked {
+                    // Name the actual tier: a hibernated drive is `cold`,
+                    // not `parked`, and calling both "parked" hides which
+                    // rung of the ladder a drive is actually on.
+                    let label = match info.tier {
+                        Some(ShardTier::Cold) => "cold",
+                        Some(ShardTier::Evicting) => "evicting",
+                        _ => "parked",
+                    };
+                    format!(
+                        " \u{b7} {}",
+                        palette.dim(&format!("{label:<8} (re-warms on next query)"))
+                    )
+                } else {
                     format!(
                         " \u{b7} indexed ({:>11} records)",
                         format_number_commas(info.records as u64)
-                    ),
+                    )
+                };
+                (
+                    if parked {
+                        tier_glyph(info.tier)
+                    } else {
+                        Glyph::Up
+                    },
+                    note,
                 )
             },
         );

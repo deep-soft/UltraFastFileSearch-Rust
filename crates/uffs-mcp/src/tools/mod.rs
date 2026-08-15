@@ -20,3 +20,5 @@ pub(crate) mod info;
 pub(crate) mod search;
 /// `uffs_status` — daemon health and loading progress.
 pub(crate) mod status;
+/// Cold-index gate shared by the query tools.
+pub(crate) mod warm;

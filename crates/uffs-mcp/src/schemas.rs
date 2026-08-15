@@ -21,8 +21,14 @@ pub(crate) struct SearchOutput {
     pub total_count: u64,
     /// Total records scanned across all drives.
     pub records_scanned: usize,
-    /// Query execution time in milliseconds.
+    /// Scan time in milliseconds — excludes index warm-up, which is
+    /// reported separately as `promotion_ms`.
     pub duration_ms: u64,
+    /// Milliseconds spent paging parked/cold drives back in before the
+    /// scan could run; `0` on a warm index.  Without this a query that
+    /// warmed for 21 s and scanned for 1 ms reports `duration_ms: 1`,
+    /// hiding the expensive case entirely.
+    pub promotion_ms: u64,
     /// Whether more results exist beyond this page.
     pub truncated: bool,
     /// Opaque cursor for fetching the next page (null when no more pages).
@@ -112,10 +118,17 @@ pub(crate) struct DriveOutput {
     /// `char`-typed schema.  JSON schema is `char` (see [`SearchRowOutput`]).
     #[schemars(with = "char")]
     pub letter: uffs_mft::platform::DriveLetter,
-    /// Number of records in the compact index.
+    /// Number of records in the compact index.  **`0` for a `parked` or
+    /// `cold` drive** — the body is released, not empty; the count
+    /// returns when the drive re-warms.  Read `tier` before concluding
+    /// a drive holds nothing.
     pub records: usize,
     /// Data source (`"cache"`, `"live"`, `"mft_file"`).
     pub source: String,
+    /// Memory tier: `"hot"` / `"warm"` (searchable now) or
+    /// `"parked"` / `"cold"` (body released — a query re-warms it,
+    /// taking 30–120 s).  `null` from a pre-tiering daemon.
+    pub tier: Option<String>,
 }
 
 // ── uffs_status ─────────────────────────────────────────────────────
@@ -123,8 +136,52 @@ pub(crate) struct DriveOutput {
 /// Structured output for `uffs_status`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub(crate) struct StatusOutput {
-    /// Current daemon status object.
-    pub status: serde_json::Value,
+    /// Daemon **process** state: `"running"`, `"loading (3/7 drives)"`,
+    /// or `"refreshing (C, D)"`.
+    ///
+    /// Deliberately never says "ready" — that word belongs to
+    /// `index_ready` alone.  A running daemon can have every drive
+    /// parked, and when both fields said "ready"/"false" the payload
+    /// answered the same apparent question two ways; the wrong one was
+    /// found first.
+    pub daemon_process: String,
+    /// `true` when every loaded drive is `hot`/`warm`, i.e. a query
+    /// answers immediately.  `false` means at least one drive is
+    /// parked/cold and a query against it triggers a 30–120 s re-warm.
+    /// This is the field to poll while waiting out a warm.
+    pub index_ready: bool,
+    /// Per-drive tier, `"C"` → `"warm"`.  The authoritative answer to
+    /// "is the index actually ready", which the lifecycle `status`
+    /// field above does not give.
+    pub drives: alloc::collections::BTreeMap<String, String>,
+    /// Records resident across all loaded drives.  **`0` while every
+    /// drive is parked** — bodies released, not an empty index.  Reads
+    /// as the corroborating signal for `index_ready`.
+    pub total_records: usize,
+    /// Index bytes resident in the heap, in MB.  `0` while parked;
+    /// several GB when warm.  `null` from a daemon that does not
+    /// report it.
+    pub index_heap_mb: Option<u64>,
+    /// Drives currently being paged in, e.g. `["E"]`.
+    ///
+    /// A re-warm is stepwise per drive, so `total_records` plateaus for
+    /// tens of seconds while one large drive loads.  Without knowing a
+    /// load is in flight, three identical polls read as "hung" and the
+    /// natural response is to give up — the one remaining way a caller
+    /// bails early on a warm that is working fine.  Empty means nothing
+    /// is loading right now.
+    pub currently_loading: Vec<String>,
+    /// Records expected once every drive is warm — the denominator for
+    /// `total_records`.  `null` when no drive has been warm yet, so
+    /// there is genuinely nothing to measure against.
+    pub records_when_warm: Option<u64>,
+    /// Re-warm progress, 0–100, as `total_records / records_when_warm`.
+    /// `null` when the denominator is unknown.
+    ///
+    /// Measured in **records, not drives**: drive-count progress
+    /// misleads badly, since drives differ in size by three orders of
+    /// magnitude (four of seven warm was only 24 % of records).
+    pub warming_progress_pct: Option<u8>,
     /// Daemon uptime in seconds.
     pub uptime_secs: u64,
     /// Number of active connections.
