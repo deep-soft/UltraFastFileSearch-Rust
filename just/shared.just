@@ -192,6 +192,26 @@ toolchain-sync:
         exit 1
     fi
 
+    # Clamp the file-descriptor limit before any zig link.
+    #
+    # zig's linker fails with `ProcessFdQuotaExceeded` when RLIMIT_NOFILE
+    # is absurdly high — a shell configured with `ulimit -n 1048576` (4x
+    # this Mac's `kern.maxfilesperproc` of 245760) made every candidate
+    # nightly fail the Linux probe, including the current pin, so the
+    # sync stepped all the way to the floor and aborted the ship with
+    # "no longer compiles for x86_64-unknown-linux-gnu".
+    #
+    # It is not a toolchain regression and not FD exhaustion: the system
+    # had 10k of 491k files open. Verified directly — the identical
+    # `cargo zigbuild --workspace --all-features` that failed at
+    # 1048576 succeeds at 4096.
+    #
+    # Only ever lowered, never raised, and failures are ignored: a host
+    # whose hard limit is already below this needs no help from us.
+    if [ "$(ulimit -n)" != "unlimited" ] && [ "$(ulimit -n)" -gt 4096 ] 2>/dev/null; then
+        ulimit -n 4096 2>/dev/null || true
+    fi
+
     START_DATE=$(date -u +%Y-%m-%d)
     printf "\033[0;34m   Start date:  nightly-%s (today UTC)\033[0m\n\n" "$START_DATE"
 
