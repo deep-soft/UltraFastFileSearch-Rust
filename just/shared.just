@@ -208,9 +208,19 @@ toolchain-sync:
     #
     # Only ever lowered, never raised, and failures are ignored: a host
     # whose hard limit is already below this needs no help from us.
-    if [ "$(ulimit -n)" != "unlimited" ] && [ "$(ulimit -n)" -gt 4096 ] 2>/dev/null; then
+    #
+    # `unlimited` must be treated as "far too high", not skipped — the
+    # first version of this guard excluded it to avoid feeding a
+    # non-numeric value to `-gt`, which silently disabled the clamp on
+    # exactly the shells that needed it most.  The effective limit is
+    # printed because a guard that quietly does nothing is what made
+    # that mistake cost a full ship cycle to notice.
+    FD_BEFORE=$(ulimit -n 2>/dev/null || echo unknown)
+    if [ "$FD_BEFORE" = "unlimited" ] || { [ "$FD_BEFORE" -gt 4096 ] 2>/dev/null; }; then
         ulimit -n 4096 2>/dev/null || true
     fi
+    printf "   \033[0;36mfd limit: %s → %s (zig linker guard)\033[0m\n" \
+        "$FD_BEFORE" "$(ulimit -n)"
 
     START_DATE=$(date -u +%Y-%m-%d)
     printf "\033[0;34m   Start date:  nightly-%s (today UTC)\033[0m\n\n" "$START_DATE"

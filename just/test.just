@@ -199,7 +199,8 @@ lint-ci-linux-zig:
     # shell at `ulimit -n 1048576` fails every link; the same build
     # succeeds at 4096).  Same guard as `toolchain-sync` — see the long
     # comment there.  Lowered only, never raised.
-    if [ "$(ulimit -n)" != "unlimited" ] && [ "$(ulimit -n)" -gt 4096 ] 2>/dev/null; then \
+    FD_BEFORE=$(ulimit -n 2>/dev/null || echo unknown); \
+    if [ "$FD_BEFORE" = "unlimited" ] || { [ "$FD_BEFORE" -gt 4096 ] 2>/dev/null; }; then \
         ulimit -n 4096 2>/dev/null || true; \
     fi; \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v3 -C link-arg=-Wl,--gc-sections" \
