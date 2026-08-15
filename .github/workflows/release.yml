@@ -1228,7 +1228,51 @@ jobs:
             echo "::notice::created tag ${TAG} -> ${SHA}"
           fi
 
+      - name: Detect an already-published release (idempotency guard)
+        id: existing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-preparation.outputs.tag }}
+        run: |
+          # Every release fires release.yml TWICE: `release-auto-trigger`
+          # dispatches it when the `release/v*` PR merges, and
+          # `just release-tag` pushes a signed tag that triggers it again.
+          # The concurrency group serialises them, so the second run starts
+          # only after the first has published — and then tries to replace
+          # the assets that are already there. Replacing means deleting
+          # first, which GitHub refuses on an immutable release:
+          #
+          #   Cannot delete asset from an immutable release
+          #
+          # That is what failed v0.6.32's tag run and filed issue #593,
+          # while the release itself was complete and correct: all 49
+          # assets present, WinGet published. A red X for a non-problem.
+          #
+          # Rather than pick one trigger over the other — the dispatch
+          # exists because the manual step got forgotten (v0.5.121 shipped
+          # no binaries), and the signed tag is worth keeping because the
+          # dispatch would only create a lightweight unsigned one — make
+          # the publish idempotent: whichever run gets there first wins,
+          # and any later run reports what is already published and stops.
+          if gh release view "$TAG" --json assets --jq '.assets | length' \
+               > /tmp/asset-count 2>/dev/null; then
+            COUNT=$(cat /tmp/asset-count)
+          else
+            COUNT=0
+          fi
+          if [ "${COUNT:-0}" -gt 0 ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${TAG} already published with ${COUNT} assets — \
+              skipping publish (a concurrent trigger got there first)."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release (attaches to the pre-created tag)
+        # Skipped when a concurrent run already published this tag — see
+        # the idempotency guard above.
+        if: steps.existing.outputs.published != 'true'
         # No `target_commitish`: the tag was just created at the built
         # commit by the step above, so the release simply references the
         # existing tag — sidestepping the commit-SHA-target 403 entirely.
