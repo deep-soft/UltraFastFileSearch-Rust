@@ -192,35 +192,37 @@ toolchain-sync:
         exit 1
     fi
 
-    # Clamp the file-descriptor limit before any zig link.
+    # Raise the file-descriptor limit before any zig link.
     #
-    # zig's linker fails with `ProcessFdQuotaExceeded` when RLIMIT_NOFILE
-    # is absurdly high — a shell configured with `ulimit -n 1048576` (4x
-    # this Mac's `kern.maxfilesperproc` of 245760) made every candidate
-    # nightly fail the Linux probe, including the current pin, so the
-    # sync stepped all the way to the floor and aborted the ship with
-    # "no longer compiles for x86_64-unknown-linux-gnu".
+    # macOS ships a soft `RLIMIT_NOFILE` of 256.  A zig link of this
+    # workspace passes ~240 objects plus ~50 rlibs and needs more than
+    # that, so it dies with:
     #
-    # It is not a toolchain regression and not FD exhaustion: the system
-    # had 10k of 491k files open. Verified directly — the identical
-    # `cargo zigbuild --workspace --all-features` that failed at
-    # 1048576 succeeds at 4096.
+    #   error: unable to search for static library …/libaddr2line-….rlib:
+    #   ProcessFdQuotaExceeded
     #
-    # Only ever lowered, never raised, and failures are ignored: a host
-    # whose hard limit is already below this needs no help from us.
+    # toolchain-sync reads that as "this nightly is broken", steps back a
+    # day, and repeats until it hits the floor — aborting the ship with
+    # "current pin no longer compiles for x86_64-unknown-linux-gnu" when
+    # nothing is wrong with any toolchain.  Every candidate passes clippy
+    # and the Windows gate; only the Linux probe fails, always on fds.
     #
-    # `unlimited` must be treated as "far too high", not skipped — the
-    # first version of this guard excluded it to avoid feeding a
-    # non-numeric value to `-gt`, which silently disabled the clamp on
-    # exactly the shells that needed it most.  The effective limit is
-    # printed because a guard that quietly does nothing is what made
-    # that mistake cost a full ship cycle to notice.
-    FD_BEFORE=$(ulimit -n 2>/dev/null || echo unknown)
-    if [ "$FD_BEFORE" = "unlimited" ] || { [ "$FD_BEFORE" -gt 4096 ] 2>/dev/null; }; then
-        ulimit -n 4096 2>/dev/null || true
+    # Measured on this host: at soft 256 the link fails, and the same
+    # command at 4096 exits 0 — package-scoped and for the full
+    # `--workspace --all-features`.
+    #
+    # Only the SOFT limit moves; the hard limit is the ceiling and
+    # lowering it would be irreversible for this shell.  If the hard
+    # limit is below the target we take whatever it allows.  The result
+    # is printed: a guard that silently does nothing looks exactly like
+    # one that worked, and an earlier version of this block did nothing
+    # for two commits because of it.
+    FD_BEFORE=$(ulimit -Sn 2>/dev/null || echo unknown)
+    if [ "$FD_BEFORE" != "unlimited" ] && [ "$FD_BEFORE" -lt 4096 ] 2>/dev/null; then
+        ulimit -S -n 4096 2>/dev/null || ulimit -S -n "$(ulimit -Hn)" 2>/dev/null || true
     fi
-    printf "   \033[0;36mfd limit: %s → %s (zig linker guard)\033[0m\n" \
-        "$FD_BEFORE" "$(ulimit -n)"
+    printf "   \033[0;36mfd limit: %s → %s (zig linker needs headroom)\033[0m\n" \
+        "$FD_BEFORE" "$(ulimit -Sn)"
 
     START_DATE=$(date -u +%Y-%m-%d)
     printf "\033[0;34m   Start date:  nightly-%s (today UTC)\033[0m\n\n" "$START_DATE"

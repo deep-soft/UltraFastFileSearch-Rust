@@ -194,14 +194,13 @@ lint-ci-linux-zig:
     # subcommand args; the binary itself exposes `clippy` / `check` /
     # `test` / etc. as proper subcommands that wire up the same zig-cc
     # linker shim cargo-zigbuild's `zigbuild` does.
-    # Clamp RLIMIT_NOFILE first: zig's linker reports
-    # `ProcessFdQuotaExceeded` when the soft limit is absurdly high (a
-    # shell at `ulimit -n 1048576` fails every link; the same build
-    # succeeds at 4096).  Same guard as `toolchain-sync` — see the long
-    # comment there.  Lowered only, never raised.
-    FD_BEFORE=$(ulimit -n 2>/dev/null || echo unknown); \
-    if [ "$FD_BEFORE" = "unlimited" ] || { [ "$FD_BEFORE" -gt 4096 ] 2>/dev/null; }; then \
-        ulimit -n 4096 2>/dev/null || true; \
+    # Raise RLIMIT_NOFILE first: macOS defaults the soft limit to 256,
+    # and a zig link of this workspace needs more, failing with
+    # `ProcessFdQuotaExceeded`.  Measured: fails at 256, exits 0 at
+    # 4096.  Soft limit only — see the long comment in `toolchain-sync`.
+    FD_BEFORE=$(ulimit -Sn 2>/dev/null || echo unknown); \
+    if [ "$FD_BEFORE" != "unlimited" ] && [ "$FD_BEFORE" -lt 4096 ] 2>/dev/null; then \
+        ulimit -S -n 4096 2>/dev/null || ulimit -S -n "$(ulimit -Hn)" 2>/dev/null || true; \
     fi; \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v3 -C link-arg=-Wl,--gc-sections" \
         cargo-zigbuild clippy --workspace --all-targets --all-features --target x86_64-unknown-linux-gnu --no-deps -- -D warnings
