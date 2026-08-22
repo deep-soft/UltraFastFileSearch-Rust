@@ -47,8 +47,8 @@ user-login = "Darksonn"
 user-name = "Alice Ryhl"
 
 [[publisher.cc]]
-version = "1.4.2"
-when = "2026-08-08"
+version = "1.4.4"
+when = "2026-08-21"
 trusted-publisher = "github:rust-lang/cc-rs"
 
 [[publisher.cipher]]
@@ -108,8 +108,8 @@ when = "2026-04-02"
 trusted-publisher = "github:RustCrypto/utils"
 
 [[publisher.find-msvc-tools]]
-version = "0.1.10"
-when = "2026-08-07"
+version = "0.1.11"
+when = "2026-08-14"
 trusted-publisher = "github:rust-lang/cc-rs"
 
 [[publisher.ghash]]
@@ -152,8 +152,8 @@ user-login = "seanmonstar"
 user-name = "Sean McArthur"
 
 [[publisher.http-body-util]]
-version = "0.1.4"
-when = "2026-07-13"
+version = "0.1.5"
+when = "2026-08-12"
 user-id = 359
 user-login = "seanmonstar"
 user-name = "Sean McArthur"
@@ -675,8 +675,8 @@ user-login = "Manishearth"
 user-name = "Manish Goregaokar"
 
 [[publisher.zerovec-derive]]
-version = "0.11.3"
-when = "2026-04-01"
+version = "0.11.5"
+when = "2026-08-18"
 user-id = 1139
 user-login = "Manishearth"
 user-name = "Manish Goregaokar"
@@ -727,15 +727,6 @@ who = "Pat Hickey <phickey@fastly.com>"
 criteria = "safe-to-deploy"
 version = "0.1.6"
 notes = "Contains no unsafe code, no IO, no build.rs."
-
-[[audits.bytecode-alliance.audits.arrayref]]
-who = "Nick Fitzgerald <fitzgen@gmail.com>"
-criteria = "safe-to-deploy"
-version = "0.3.6"
-notes = """
-Unsafe code, but its logic looks good to me. Necessary given what it is
-doing. Well tested, has quickchecks.
-"""
 
 [[audits.bytecode-alliance.audits.atomic-waker]]
 who = "Alex Crichton <alex@alexcrichton.com>"
@@ -2018,19 +2009,6 @@ who = "Erich Gubler <erichdongubler@gmail.com>"
 criteria = "safe-to-deploy"
 delta = "0.1.1 -> 0.2.0"
 aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
-
-[[audits.zcash.audits.arrayref]]
-who = "Daira-Emma Hopwood <daira@jacaranda.org>"
-criteria = "safe-to-deploy"
-delta = "0.3.6 -> 0.3.8"
-aggregated-from = "https://raw.githubusercontent.com/zcash/zcash/master/qa/supply-chain/audits.toml"
-
-[[audits.zcash.audits.arrayref]]
-who = "Jack Grigg <jack@electriccoin.co>"
-criteria = "safe-to-deploy"
-delta = "0.3.8 -> 0.3.9"
-notes = "Changes to `unsafe` lines are to make some existing `unsafe fn`s `const`."
-aggregated-from = "https://raw.githubusercontent.com/zcash/zcash/master/qa/supply-chain/audits.toml"
 
 [[audits.zcash.audits.autocfg]]
 who = "Jack Grigg <jack@electriccoin.co>"
