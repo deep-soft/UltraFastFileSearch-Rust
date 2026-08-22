@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.35] - 2026-08-21
+
+### Added
+
+- daemon: changed_since RPC — USN-journal delta as first-class daemon surface
+
+### Fixed
+
+- cli: remediate from_utf8_lossy decision sites (anti-pattern gate)
+- mft: bounds-check truncated attribute headers — nightly fuzz find
+
 ## [0.6.33] - 2026-08-14
 
 ### Added
@@ -2789,7 +2800,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.33...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.35...HEAD
+[0.6.35]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.33...v0.6.35
 [0.6.33]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.32...v0.6.33
 [0.6.32]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.31...v0.6.32
 [0.6.31]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.30...v0.6.31

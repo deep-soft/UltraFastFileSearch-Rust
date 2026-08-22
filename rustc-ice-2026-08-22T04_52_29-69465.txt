@@ -1,0 +1,98 @@
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(41:5428 ~ tokio[6858]::process::{impl#0}::output::{opaque#0}) }, args: [], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(41:5456 ~ tokio[6858]::process::{impl#5}::wait_with_output::{opaque#0}) }, args: [], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:138 ~ uffs_ci_pipeline[de29]::exec::execute_command::{opaque#0}) }, args: ['{erased}, '{erased}, '{erased}, '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:130 ~ uffs_ci_pipeline[de29]::exec::execute_command_with_env::{opaque#0}) }, args: ['{erased}, '{erased}, '{erased}, '{erased}, '{erased}, '{erased}, '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(41:10785 ~ tokio[6858]::sync::semaphore::{impl#0}::acquire::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:170 ~ uffs_ci_pipeline[de29]::git_ops::switch_to_release_branch::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:180 ~ uffs_ci_pipeline[de29]::git_ops::ensure_on_release_branch::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:183 ~ uffs_ci_pipeline[de29]::git_ops::rebase_onto_upstream::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:186 ~ uffs_ci_pipeline[de29]::git_ops::push_release_branch::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:190 ~ uffs_ci_pipeline[de29]::git_ops::open_release_pr::{opaque#0}) }, args: ['{erased}, '{erased}, '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:193 ~ uffs_ci_pipeline[de29]::git_ops::enable_auto_merge::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:199 ~ uffs_ci_pipeline[de29]::git_ops::return_to_base_branch::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:219 ~ uffs_ci_pipeline[de29]::phases::coverage_report_command::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:148 ~ uffs_ci_pipeline[de29]::exec::execute_parallel_with_env::{opaque#0}) }, args: ['{erased}, '{erased}, '{erased}, '{erased}, '{erased}, '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:222 ~ uffs_ci_pipeline[de29]::phases::phase1_prime::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:225 ~ uffs_ci_pipeline[de29]::phases::phase1_tests::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:228 ~ uffs_ci_pipeline[de29]::phases::phase1_fanout_validation::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:173 ~ uffs_ci_pipeline[de29]::git_ops::git_commit::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:196 ~ uffs_ci_pipeline[de29]::git_ops::git_push::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:157 ~ uffs_ci_pipeline[de29]::exec::execute_step_with_tracking::{opaque#0}) }, args: [Closure(DefId(0:280 ~ uffs_ci_pipeline[de29]::ship::tracked_toolchain_step::{closure#0}::{closure#0}), [i32, Binder { value: extern "RustCall" fn(()) -> Coroutine(DefId(0:281 ~ uffs_ci_pipeline[de29]::ship::tracked_toolchain_step::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} str, &'{erased} str, &'{erased} context::PipelineContext)]), bound_vars: [] }, (&'{erased} str, &'{erased} str, &'{erased} context::PipelineContext)]), Coroutine(DefId(0:281 ~ uffs_ci_pipeline[de29]::ship::tracked_toolchain_step::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} str, &'{erased} str, &'{erased} context::PipelineContext)]), '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:157 ~ uffs_ci_pipeline[de29]::exec::execute_step_with_tracking::{opaque#0}) }, args: [Closure(DefId(0:298 ~ uffs_ci_pipeline[de29]::ship::tracked_clean_step::{closure#0}::{closure#0}), [i32, Binder { value: extern "RustCall" fn(()) -> Coroutine(DefId(0:299 ~ uffs_ci_pipeline[de29]::ship::tracked_clean_step::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), bound_vars: [] }, (&'{erased} context::PipelineContext,)]), Coroutine(DefId(0:299 ~ uffs_ci_pipeline[de29]::ship::tracked_clean_step::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:78 ~ uffs_ci_pipeline[de29]::context::disk_free_bytes::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:81 ~ uffs_ci_pipeline[de29]::context::dir_size_bytes::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:157 ~ uffs_ci_pipeline[de29]::exec::execute_step_with_tracking::{opaque#0}) }, args: [Closure(DefId(0:306 ~ uffs_ci_pipeline[de29]::ship::tracked_coverage_tests_step::{closure#0}::{closure#0}), [i32, Binder { value: extern "RustCall" fn(()) -> Coroutine(DefId(0:307 ~ uffs_ci_pipeline[de29]::ship::tracked_coverage_tests_step::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), bound_vars: [] }, (&'{erased} context::PipelineContext,)]), Coroutine(DefId(0:307 ~ uffs_ci_pipeline[de29]::ship::tracked_coverage_tests_step::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:157 ~ uffs_ci_pipeline[de29]::exec::execute_step_with_tracking::{opaque#0}) }, args: [Closure(DefId(0:311 ~ uffs_ci_pipeline[de29]::ship::tracked_parallel_validation_step::{closure#0}::{closure#0}), [i32, Binder { value: extern "RustCall" fn(()) -> Coroutine(DefId(0:312 ~ uffs_ci_pipeline[de29]::ship::tracked_parallel_validation_step::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), bound_vars: [] }, (&'{erased} context::PipelineContext,)]), Coroutine(DefId(0:312 ~ uffs_ci_pipeline[de29]::ship::tracked_parallel_validation_step::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:157 ~ uffs_ci_pipeline[de29]::exec::execute_step_with_tracking::{opaque#0}) }, args: [Closure(DefId(0:316 ~ uffs_ci_pipeline[de29]::ship::tracked_format_check_step::{closure#0}::{closure#0}), [i32, Binder { value: extern "RustCall" fn(()) -> Coroutine(DefId(0:317 ~ uffs_ci_pipeline[de29]::ship::tracked_format_check_step::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), bound_vars: [] }, (&'{erased} context::PipelineContext,)]), Coroutine(DefId(0:317 ~ uffs_ci_pipeline[de29]::ship::tracked_format_check_step::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:278 ~ uffs_ci_pipeline[de29]::ship::tracked_toolchain_step::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:296 ~ uffs_ci_pipeline[de29]::ship::tracked_clean_step::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:157 ~ uffs_ci_pipeline[de29]::exec::execute_step_with_tracking::{opaque#0}) }, args: [Closure(DefId(0:321 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase1::{closure#0}::{closure#0}), [i32, Binder { value: extern "RustCall" fn(()) -> Coroutine(DefId(0:322 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase1::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), bound_vars: [] }, (&'{erased} context::PipelineContext,)]), Coroutine(DefId(0:322 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase1::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:304 ~ uffs_ci_pipeline[de29]::ship::tracked_coverage_tests_step::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:309 ~ uffs_ci_pipeline[de29]::ship::tracked_parallel_validation_step::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:314 ~ uffs_ci_pipeline[de29]::ship::tracked_format_check_step::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:157 ~ uffs_ci_pipeline[de29]::exec::execute_step_with_tracking::{opaque#0}) }, args: [Closure(DefId(0:332 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase2::{closure#0}::{closure#0}), [i32, Binder { value: extern "RustCall" fn(()) -> Coroutine(DefId(0:333 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase2::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), bound_vars: [] }, (&'{erased} context::PipelineContext,)]), Coroutine(DefId(0:333 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase2::{closure#0}::{closure#0}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:176 ~ uffs_ci_pipeline[de29]::git_ops::count_unpushed_commits::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:157 ~ uffs_ci_pipeline[de29]::exec::execute_step_with_tracking::{opaque#0}) }, args: [Closure(DefId(0:334 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase2::{closure#0}::{closure#1}), [i32, Binder { value: extern "RustCall" fn(()) -> Coroutine(DefId(0:335 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase2::{closure#0}::{closure#1}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), bound_vars: [] }, (&'{erased} context::PipelineContext,)]), Coroutine(DefId(0:335 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase2::{closure#0}::{closure#1}::{closure#0}), [(), std::future::ResumeTy, (), std::result::Result<(), anyhow::Error>, (&'{erased} context::PipelineContext,)]), '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:319 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase1::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:330 ~ uffs_ci_pipeline[de29]::ship::run_enhanced_phase2::{opaque#0}) }, args: ['{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:342 ~ uffs_ci_pipeline[de29]::ship::print_sccache_stats_if_verbose::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:231 ~ uffs_ci_pipeline[de29]::phases::phase1_optimized::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:141 ~ uffs_ci_pipeline[de29]::exec::execute_parallel::{opaque#0}) }, args: ['{erased}, '{erased}, '{erased}, '{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:430 ~ uffs_ci_pipeline[de29]::print_startup_banner_and_warm_sccache::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:433 ~ uffs_ci_pipeline[de29]::handle_go::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:347 ~ uffs_ci_pipeline[de29]::ship::run_ship_pipeline::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:436 ~ uffs_ci_pipeline[de29]::handle_check_all::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:234 ~ uffs_ci_pipeline[de29]::phases::phase2_optimized::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:439 ~ uffs_ci_pipeline[de29]::handle_audit_comprehensive::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+delayed bug: unexpected rigid alias in layout_of after normalization: Alias(Yes, Alias { kind: Opaque { def_id: DefId(0:104 ~ uffs_ci_pipeline[de29]::cross_check::handle_cross_check::{opaque#0}) }, args: ['{erased}], .. })
+disabled backtrace
+
+
+rustc version: 1.100.0-nightly (c656540d6 2026-08-21)
+platform: aarch64-apple-darwin
