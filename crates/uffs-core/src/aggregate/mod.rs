@@ -418,6 +418,7 @@ pub fn run_aggregate_with_filters(
     options: &FinalizeOptions,
     pattern: Option<&str>,
     filter: &AggregateFilter,
+    search_filters: Option<&crate::search::filters::SearchFilters>,
 ) -> Result<AggregateOutput, AggregateError> {
     // Fast path: no filters and trivial pattern → unfiltered scan.
     use uffs_text::case_fold::CaseFold;
@@ -425,12 +426,20 @@ pub fn run_aggregate_with_filters(
     use crate::index_search::compile_parsed_pattern;
     use crate::pattern::ParsedPattern;
 
+    // `search_filters` carries the FULL record-level filter axis the row
+    // search applies (dates, attributes, excludes, months, tree metrics,
+    // …).  Ignoring it here is the bug that made `--newer 7d --count`
+    // count every file ever written: the aggregation scan honoured only
+    // extensions / directory-flag / size and silently dropped the rest.
+    // A populated filter therefore disqualifies every fast path below.
+    let sf_active = search_filters.is_some_and(|sf| !sf.is_empty());
+
     let trivial_pattern = pattern.is_none_or(|pat| matches!(pat, "*" | "**" | "**/*" | ""));
-    if filter.is_empty() && trivial_pattern {
+    if filter.is_empty() && trivial_pattern && !sf_active {
         return run_aggregate(drives, specs, options);
     }
     // Pattern-only → delegate to existing filtered path.
-    if filter.is_empty() {
+    if filter.is_empty() && !sf_active {
         if let Some(pat) = pattern {
             return run_aggregate_filtered(drives, specs, options, pat);
         }
@@ -481,11 +490,33 @@ pub fn run_aggregate_with_filters(
                 return (local, 0, 0);
             }
 
+            // Per-drive resolved copy of the search filters: extension
+            // strings become this drive's interned `u16` IDs, so the
+            // per-record check below stays O(1) instead of falling into
+            // the per-record string-extraction fallback.
+            let sf_drive = search_filters.map(|sf| {
+                let mut resolved = sf.clone();
+                resolved.resolve_ext_ids_for_drive(drive);
+                resolved
+            });
+            // Reusable fold buffer for exclude-glob matching — same
+            // zero-alloc pattern as the row search's scan loops.
+            let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
+
             for (idx, record) in drive.records.iter().enumerate() {
                 scanned += 1;
 
                 // Record-level filter (O(1) — extension ID + directory flag + size).
                 if !filter.matches(record, &resolved_ext_ids) {
+                    continue;
+                }
+
+                // Full record-level search filters — the SAME predicate the
+                // row search runs, so `--count` and a row listing can never
+                // disagree on dates, attributes, excludes, or tree metrics.
+                if let Some(sf) = &sf_drive
+                    && !sf.matches_record(record, &drive.names, &mut fold_buf, drive.fold)
+                {
                     continue;
                 }
 
@@ -535,6 +566,91 @@ pub fn run_aggregate_with_filters(
         response,
         records_scanned: total_scanned,
         records_matched: total_matched,
+        execution_us: start.elapsed().as_micros().try_into().unwrap_or(u64::MAX),
+    })
+}
+
+/// Run aggregations over an explicit, already-matched record set.
+///
+/// The record-scan entry points above re-derive the match set from
+/// pattern + filters — which is only correct for constraints that are
+/// decidable per `CompactRecord`.  Anything that needs a **resolved
+/// path** (`--in-path`, `--exclude-path`, path-aware globs like
+/// `**\GitHub\**\*`, `--match-path`, regex patterns) lives in the row
+/// search's post-filter pass and cannot be replicated here without
+/// semantic drift — the observed failure was `--in-path` silently
+/// ignored by `--count` and a path-aware glob counting 0.
+///
+/// For those queries the caller runs the row search (unbounded), which
+/// applies the full path semantics exactly once, and hands the matched
+/// `(drive letter, record index)` pairs here.  The search stays the
+/// single source of truth for what matched; this function only folds
+/// the survivors into accumulators.
+///
+/// `records_scanned` reports the matched-set size, not an index-wide
+/// scan — the scan already happened inside the row search.
+///
+/// # Errors
+///
+/// Returns [`AggregateError`] when the spec list fails to compile.
+pub fn run_aggregate_over_records(
+    drives: &[&DriveCompactIndex],
+    specs: &[AggregateSpec],
+    options: &FinalizeOptions,
+    matched: &[(uffs_mft::platform::DriveLetter, u32)],
+) -> Result<AggregateOutput, AggregateError> {
+    let start = std::time::Instant::now();
+    let plan = AggregatePlan::compile(specs)?;
+    let ext_map = ExtensionMap::build(drives);
+    let mut accumulators = plan.create_accumulators();
+
+    // Letter → (ordinal, drive) for O(1) row dispatch.  Ordinals index
+    // into `drives`, matching what the scan entry points feed and what
+    // finalize expects for drive-keyed groupings.
+    let by_letter: std::collections::HashMap<
+        uffs_mft::platform::DriveLetter,
+        (u8, &DriveCompactIndex),
+    > = drives
+        .iter()
+        .enumerate()
+        .map(|(ordinal, drive)| {
+            (
+                drive.letter,
+                (u8::try_from(ordinal).unwrap_or(u8::MAX), *drive),
+            )
+        })
+        .collect();
+
+    let mut fed: u64 = 0;
+    for &(letter, record_idx) in matched {
+        let Some(&(ordinal, drive)) = by_letter.get(&letter) else {
+            // Row from a drive outside the aggregation scope (e.g. a
+            // `--drives` subset) — scoping, not an error.
+            continue;
+        };
+        let idx = uffs_mft::frs_to_usize(u64::from(record_idx));
+        let Some(record) = drive.records.get(idx) else {
+            continue;
+        };
+        fed += 1;
+        for acc in &mut accumulators {
+            acc.feed(record, drive, idx, ordinal, &ext_map);
+        }
+    }
+
+    let response =
+        finalize::finalize_with_ext_map(accumulators, &plan, drives, options, fed, &ext_map);
+    tracing::info!(
+        drives = drives.len(),
+        rows_in = matched.len(),
+        records_matched = fed,
+        total_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "run_aggregate_over_records: done"
+    );
+    Ok(AggregateOutput {
+        response,
+        records_scanned: fed,
+        records_matched: fed,
         execution_us: start.elapsed().as_micros().try_into().unwrap_or(u64::MAX),
     })
 }

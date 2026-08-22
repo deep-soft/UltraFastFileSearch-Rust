@@ -19,6 +19,30 @@
 use uffs_client::protocol::SearchParams;
 use uffs_core::aggregate::finalize::{DrilldownPredicate, DrilldownValue};
 
+/// Must an aggregation ride on the row search's matched set instead of
+/// the record scan?
+///
+/// The aggregation record scan cannot honour anything that needs a
+/// **resolved path**: `--in-path` / `--exclude-path` / `--type` live in
+/// the display-row pass, and path-aware globs (`**\GitHub\**\*`),
+/// `--match-path`, and regex patterns are matched by the row search's
+/// own machinery, not by a name glob.  Running the scan anyway silently
+/// dropped those constraints — an `--in-path` naming an impossible
+/// directory still counted 3.8 M files, and a path glob counted 0.
+/// For such queries the aggregation folds the row search's matched set,
+/// so path semantics are applied exactly once, by the engine that owns
+/// them.
+pub(super) fn aggregation_needs_row_set(
+    params: &SearchParams,
+    filters: &uffs_core::search::filters::SearchFilters,
+) -> bool {
+    let pattern_needs_paths = params.match_path
+        || params.pattern.starts_with('>')
+        || params.pattern.contains('\\')
+        || params.pattern.contains('/');
+    !params.aggregations.is_empty() && (filters.needs_display_row_filter() || pattern_needs_paths)
+}
+
 /// Build the drill-down-predicate list that prefixes every
 /// aggregation bucket's follow-up query.
 ///

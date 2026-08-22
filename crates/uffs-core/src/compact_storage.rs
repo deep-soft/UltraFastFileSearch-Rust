@@ -21,7 +21,7 @@
 //!
 //! Mutation-side:  callers that need `Vec`-specific methods (`push`,
 //! `extend_from_slice`, `shrink_to_fit`, `reserve`) call
-//! `ColumnStorage::as_mut_vec`.  For [`ColumnStorage::Vec`] this is
+//! `ColumnStorage::vec_for_append`.  For [`ColumnStorage::Vec`] this is
 //! a cheap reference; for [`ColumnStorage::Mmap`] it triggers a
 //! one-time copy into a fresh `Vec<T>` and replaces the variant.  All
 //! mutating accessors funnel through the private
@@ -34,7 +34,7 @@
 //!   zero-cost; mutation is direct.
 //! - [`ColumnStorage::Mmap`] — read-only view onto a memory-mapped region.
 //!   Reads slice the mmap directly via [`bytemuck::cast_slice`] with zero
-//!   allocation.  Mutating operations (`as_mut_slice`, `as_mut_vec`,
+//!   allocation.  Mutating operations (`as_mut_slice`, `vec_for_append`,
 //!   `IndexMut`, `DerefMut`) transparently promote to a heap-resident
 //!   [`Vec<T>`] on first call — the column "materialises" into the heap, the
 //!   mmap stays alive (referenced by other [`Arc<Mmap>`] holders) and is
@@ -62,6 +62,35 @@ use core::ops::{Deref, DerefMut, Index, IndexMut};
 use core::slice::SliceIndex;
 
 use memmap2::Mmap;
+
+/// Divisor for the growth headroom [`ColumnStorage::vec_for_append`]
+/// reserves: `len / 8`, i.e. 12.5 %.
+///
+/// Growth stays geometric (so appends remain amortised O(1)) but the
+/// wasted capacity is capped at an eighth of the column instead of the
+/// whole of it. On a 3.3 M-record drive that is ~34 MB of slack rather
+/// than the ~276 MB a single `Vec::push` would have claimed.
+const APPEND_SLACK_DIVISOR: usize = 8;
+
+/// Floor for that headroom, so small columns do not reallocate on
+/// every USN event just because an eighth of them is a handful of
+/// entries.
+const MIN_APPEND_SLACK: usize = 1024;
+
+/// Reserve room for `additional` more elements, growing by a bounded
+/// slack instead of `Vec`'s doubling.
+///
+/// The policy behind [`ColumnStorage::vec_for_append`], exposed
+/// free-standing so the plain `Vec` fields that live beside the
+/// columns — `DriveCompactIndex::frs_to_compact` — grow the same way
+/// rather than each re-deriving it.  A no-op when the capacity already
+/// suffices.
+pub(crate) fn reserve_bounded<T>(vec: &mut Vec<T>, additional: usize) {
+    if vec.len().saturating_add(additional) > vec.capacity() {
+        let slack = (vec.len() / APPEND_SLACK_DIVISOR).max(MIN_APPEND_SLACK);
+        vec.reserve_exact(additional.saturating_add(slack));
+    }
+}
 
 /// Reasons a [`ColumnStorage::from_mmap_region`] call can reject a
 /// candidate `(mmap, byte_offset, len)` triple.
@@ -153,7 +182,7 @@ pub enum ColumnStorage<T: bytemuck::Pod> {
     /// Read-only typed view onto a region of an mmap'd file.
     ///
     /// Constructed via `ColumnStorage::from_mmap_region`.  Mutating
-    /// operations — `as_mut_slice`, `as_mut_vec`, [`IndexMut`],
+    /// operations — `as_mut_slice`, `vec_for_append`, [`IndexMut`],
     /// [`DerefMut`] — transparently allocate a fresh [`Vec<T>`] and
     /// `*self = Self::Vec(...)`, after which the column behaves as
     /// the `Vec` variant.
@@ -296,19 +325,35 @@ impl<T: bytemuck::Pod> ColumnStorage<T> {
         self.materialise_to_vec().as_mut_slice()
     }
 
-    /// Promote to a [`Vec`] if not already, and return a mutable
-    /// reference.
+    /// Promote to a [`Vec`] sized to accept `additional` more elements,
+    /// growing by a **bounded** amount rather than `Vec`'s doubling.
     ///
-    /// Used by callers that need `Vec`-specific methods that are not
-    /// part of the slice API: [`Vec::push`], [`Vec::extend_from_slice`],
-    /// [`Vec::shrink_to_fit`], [`Vec::reserve`].  The Windows USN-patch
-    /// path in `crate::compact_loader::apply_usn_patch` is the
-    /// canonical caller.
+    /// This is the **only** way to obtain a `&mut Vec` for appending —
+    /// a bare `as_mut_vec` escape hatch used to exist beside it, which
+    /// is exactly how the regression below reached production. Callers
+    /// that need `Vec`-specific mutation get it here, with the reserve
+    /// already done. Triggers a one-time `mmap → Vec` copy on the first
+    /// call against an `Mmap`-backed column; later calls are cheap.
     ///
-    /// Triggers a one-time `mmap → Vec` copy on the first call against
-    /// an `Mmap`-backed column.  Subsequent calls are cheap.
-    pub(crate) fn as_mut_vec(&mut self) -> &mut Vec<T> {
-        self.materialise_to_vec()
+    /// These columns are shrunk to an exact fit after the index is
+    /// built (`shrink_compact_vecs` reclaims ~500 MB across seven
+    /// drives), which leaves `capacity == len`.  `Vec`'s amortised
+    /// growth then reallocates to **twice** the capacity on the very
+    /// next append — so a single file created on `C:` handed back
+    /// every byte that shrink had reclaimed and then some: the record
+    /// column jumped 276 MB → 552 MB and the name arena 95 MB → 190 MB
+    /// for one new file, and stayed there for the life of the shard.
+    ///
+    /// Doubling is the right default for a `Vec` that knows nothing
+    /// about its contents, but these columns are hundreds of megabytes
+    /// and grow by a handful of records per USN batch. Reserving
+    /// [`APPEND_SLACK_DIVISOR`]⁻¹ of the current length keeps growth
+    /// geometric — so appends stay amortised O(1) — while capping the
+    /// waste at 12.5 % instead of 100 %.
+    pub(crate) fn vec_for_append(&mut self, additional: usize) -> &mut Vec<T> {
+        let vec = self.materialise_to_vec();
+        reserve_bounded(vec, additional);
+        vec
     }
 
     /// Consume and return the inner [`Vec`].
@@ -401,7 +446,7 @@ impl<T: bytemuck::Pod> ColumnStorage<T> {
     /// isn't already, then return a `&mut Vec<T>`.
     ///
     /// Single source of truth for [`Self::as_mut_slice`] and
-    /// [`Self::as_mut_vec`]: both delegate here.  For the `Vec`
+    /// [`Self::vec_for_append`]: both delegate here.  For the `Vec`
     /// variant the call is `O(1)` (a re-borrow); for the `Mmap`
     /// variant it allocates a fresh `Vec<T>` and `*self = Self::Vec`,
     /// so future calls are also `O(1)`.

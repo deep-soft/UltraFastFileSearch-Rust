@@ -122,6 +122,24 @@ pub(crate) struct DriveStats {
     ///
     /// [`StatusDrivesResponse`]: uffs_client::protocol::response::StatusDrivesResponse
     promotions_total: AtomicU64,
+    /// Record count this drive had the last time its body was
+    /// resident — the denominator for warm progress.
+    ///
+    /// A `Parked`/`Cold` shard drops its body and therefore reports
+    /// `records: 0`, which makes "6.07 M loaded" un-interpretable: an
+    /// agent waiting out a re-warm can see how far it has come but not
+    /// how far there is to go, and drive-count progress lies badly
+    /// (four of seven drives warm was only 24 % of the records,
+    /// because the three still cold were the big ones).
+    ///
+    /// `DriveStats` is the right home because the registry preserves
+    /// its `Arc` across every tier transition — the count survives
+    /// demotion for free, with no new plumbing through the
+    /// `new_parked` / `new_cold` rebuild constructors.  Zero means
+    /// "never been warm in this daemon's lifetime", which is honest:
+    /// a first-ever load genuinely has no denominator until it
+    /// finishes.
+    last_known_records: AtomicU64,
 }
 
 impl DriveStats {
@@ -135,7 +153,21 @@ impl DriveStats {
             last_decay_queries_total: AtomicU64::new(0),
             last_query_at_ms: AtomicU64::new(0),
             promotions_total: AtomicU64::new(0),
+            last_known_records: AtomicU64::new(0),
         }
+    }
+
+    /// Remember how many records this drive held while warm, so a
+    /// later re-warm can report progress against a real denominator.
+    pub(crate) fn set_last_known_records(&self, records: u64) {
+        self.last_known_records.store(records, Ordering::Relaxed);
+    }
+
+    /// Records this drive held when last resident; `0` if it has never
+    /// been warm in this daemon's lifetime.
+    #[must_use]
+    pub(crate) fn last_known_records(&self) -> u64 {
+        self.last_known_records.load(Ordering::Relaxed)
     }
 
     /// Lock-free increment of the total query counter.
@@ -404,6 +436,14 @@ pub(crate) struct DriveStatsSnapshot {
     /// preserves backward compat with on-disk persisted stats.
     #[serde(default)]
     pub promotions_total: u64,
+    /// Records held when last warm — see
+    /// [`DriveStats::last_known_records`].  Persisting it means a
+    /// freshly restarted daemon can report re-warm progress against a
+    /// real denominator on its very first load, instead of only after
+    /// it has been warm once.  Defaults to `0` (no denominator yet)
+    /// for snapshots written before this field existed.
+    #[serde(default)]
+    pub last_known_records: u64,
 }
 
 impl From<&DriveStats> for DriveStatsSnapshot {
@@ -415,6 +455,7 @@ impl From<&DriveStats> for DriveStatsSnapshot {
             last_query_at_ms: stats.last_query_at_ms.load(Ordering::Relaxed),
             last_decay_queries_total: stats.last_decay_queries_total.load(Ordering::Relaxed),
             promotions_total: stats.promotions_total.load(Ordering::Relaxed),
+            last_known_records: stats.last_known_records.load(Ordering::Relaxed),
         }
     }
 }
@@ -428,6 +469,7 @@ impl From<DriveStatsSnapshot> for DriveStats {
             last_decay_queries_total: AtomicU64::new(snap.last_decay_queries_total),
             last_query_at_ms: AtomicU64::new(snap.last_query_at_ms),
             promotions_total: AtomicU64::new(snap.promotions_total),
+            last_known_records: AtomicU64::new(snap.last_known_records),
         }
     }
 }

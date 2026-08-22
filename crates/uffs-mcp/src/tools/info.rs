@@ -30,6 +30,17 @@ pub(crate) async fn run(
         return Err(BridgeError::MissingParam("path"));
     }
 
+    // Cold-index contract, scoped to the path's own drive: an info
+    // lookup on a parked drive must not block for the re-warm either.
+    let scope: Vec<uffs_mft::platform::DriveLetter> = args
+        .path
+        .chars()
+        .next()
+        .and_then(|ch| uffs_mft::platform::DriveLetter::parse(ch).ok())
+        .into_iter()
+        .collect();
+    super::warm::warm_gate(client, &scope).await?;
+
     let response = client
         .info(&args.path)
         .await

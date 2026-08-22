@@ -14,6 +14,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.35] - 2026-08-21
+
+### Added
+
+- daemon: changed_since RPC — USN-journal delta as first-class daemon surface
+
+### Fixed
+
+- cli: remediate from_utf8_lossy decision sites (anti-pattern gate)
+- mft: bounds-check truncated attribute headers — nightly fuzz find
+
+## [0.6.33] - 2026-08-14
+
+### Added
+
+- mcp: report re-warm progress against a real record denominator
+- daemon: report promotion_ms so a cold query stops looking instant
+
+### Changed
+
+- watchdog: cheap liveness probe and an interval that breathes
+
+### Fixed
+
+- mcp: cold-index queries return a warming contract instead of hanging
+- mcp: expose per-drive tier so the warm-retry contract is followable
+- mcp: report residency numbers beside the tier map in uffs_status
+- dev: stop use-local killing AI-host MCP sessions to unlock binaries
+- cli: name the real tier for a demoted drive, not always 'parked'
+- dev: drop let-chains from install-bins (rust-script default edition)
+- cli: make the MCP stdio session scan work on Windows
+- cli: separate gateway, supervisor and worker in the stdio session list
+- cli: show resident-vs-expected records while drives are demoted
+- mcp: one readiness field, and name the drive that is loading
+- version: re-stamp the -dirty flag when the tree changes, not just HEAD
+- ci: clamp RLIMIT_NOFILE before zig links, unblocking toolchain-sync
+- ci: clamp the fd limit when ulimit reports "unlimited" too
+- ci: raise the fd limit for zig links — macOS defaults to 256
+
+## [0.6.32] - 2026-08-13
+
+### Added
+
+- watchdog: user-level supervisor for the resident daemon + MCP
+- watchdog: wire supervision into the service lifecycle
+
+### Fixed
+
+- cli: align the daemon status tables
+- dev: use-local skips unchanged binaries and cycles the broker service
+- dev: use-local restarts the daemon it stopped
+- dev: use-local stops the MCP cleanly and restarts it
+- cli: align the per-drive component breakdown
+- cli: align the physical-drive table past the free-space column
+- watchdog: record stop intent BEFORE the shutdown, not after
+- watchdog: stop supervisor restarts erasing stop intent; add a log
+- watchdog: read liveness per service so a stopped daemon stays stopped
+- core: bound column growth so one new file cannot double the index
+- aggregation: honour every search filter, not four of them
+
 ## [0.6.31] - 2026-08-11
 
 ### Added
@@ -2740,7 +2800,10 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.31...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.35...HEAD
+[0.6.35]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.33...v0.6.35
+[0.6.33]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.32...v0.6.33
+[0.6.32]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.31...v0.6.32
 [0.6.31]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.30...v0.6.31
 [0.6.30]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.29...v0.6.30
 [0.6.29]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.28...v0.6.29

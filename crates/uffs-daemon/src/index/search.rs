@@ -72,19 +72,8 @@ impl IndexManager {
             // cap is saturated.  Return a no-payload response with
             // the remaining metadata fields at their zero defaults
             // so the client still sees a valid (if empty) shape.
-            return SearchResponse {
-                payload: SearchPayload::Empty,
-                total_count: 0,
-                records_scanned: 0,
-                duration_ms: 0,
-                truncated: false,
-                profile: None,
-                applied_sorts: Vec::new(),
-                applied_projection: Vec::new(),
-                response_mode: None,
-                projected_rows: None,
-                aggregations: vec![],
-            };
+            // Rejected before any promote was attempted.
+            return empty_response(0, None);
         };
 
         let query_start = Instant::now();
@@ -193,10 +182,18 @@ impl IndexManager {
         // behaviour.
         // Registry warm-up only applies to live shards; a diff searches the
         // caller's baseline index, which is not in the registry.
-        if !is_diff {
+        // Timed unconditionally, not just under `--profile`: paging a
+        // cold index back in is the largest cost a query can incur, and
+        // a client that cannot see it reads `duration_ms: 1` and
+        // concludes the search was instant.
+        let promotion_ms = if is_diff {
+            0
+        } else {
+            let t_promote = Instant::now();
             self.ensure_warm_for_dispatch(&effective_params.drives, &filters.extensions)
                 .await;
-        }
+            u64::try_from(t_promote.elapsed().as_millis()).unwrap_or(u64::MAX)
+        };
 
         // ── Snapshot the index (< 1 μs) ────────────────────────────
         let t_lock = profiling.then(Instant::now);
@@ -248,8 +245,19 @@ impl IndexManager {
             max_size: filters.max_size,
         };
 
+        // ── Aggregation routing (decided BEFORE `filters` is moved) ──
+        // Rationale lives on `aggregation_needs_row_set`.
+        let agg_requested = !effective_params.aggregations.is_empty();
+        let agg_over_rows = aggregation_needs_row_set(&effective_params, &filters);
+        // The full record-level filter set for the scan path, cloned
+        // before `filters` moves into the search closure.
+        let agg_search_filters = filters.clone();
+
         let search_limit = resolve_search_limit(
-            requires_post_filter,
+            // Aggregating over the row set needs EVERY matching row, not
+            // the display limit's worth — a truncated set would silently
+            // undercount.
+            requires_post_filter || agg_over_rows,
             filters.needs_display_row_filter(),
             filters.malformed == Some(true),
             effective_params.limit,
@@ -291,38 +299,19 @@ impl IndexManager {
             Ok(Ok(res)) => res,
             Ok(Err(_join_err)) => {
                 tracing::error!("search task panicked");
-                return SearchResponse {
-                    payload: SearchPayload::Empty,
-                    total_count: 0,
-                    records_scanned: 0,
-                    duration_ms: 0,
-                    truncated: false,
-                    profile: None,
-                    applied_sorts: Vec::new(),
-                    applied_projection: Vec::new(),
-                    response_mode: None,
-                    projected_rows: None,
-                    aggregations: vec![],
-                };
+                // Promotion already happened; report what it cost even
+                // though the scan then failed.
+                return empty_response(0, Some(promotion_ms));
             }
             Err(_timeout) => {
                 tracing::warn!(
                     pattern = %effective_params.pattern,
                     "search timed out after 30s"
                 );
-                return SearchResponse {
-                    payload: SearchPayload::Empty,
-                    total_count: 0,
-                    records_scanned: 0,
-                    duration_ms: 30_000,
-                    truncated: false,
-                    profile: None,
-                    applied_sorts: Vec::new(),
-                    applied_projection: Vec::new(),
-                    response_mode: None,
-                    projected_rows: None,
-                    aggregations: vec![],
-                };
+                // A timeout that spent most of its budget paging the
+                // index in is a different diagnosis from one that spent
+                // it scanning — say which.
+                return empty_response(30_000, Some(promotion_ms));
             }
         };
         let search_us = if profiling {
@@ -342,6 +331,17 @@ impl IndexManager {
         }
 
         let mut total_count = filtered_rows.len() as u64;
+        // Snapshot the matched set for row-fed aggregation BEFORE the
+        // display truncation below — the display limit bounds what the
+        // user sees, never what an aggregation counts.
+        let agg_row_set: Vec<(uffs_mft::platform::DriveLetter, u32)> = if agg_over_rows {
+            filtered_rows
+                .iter()
+                .map(|row| (row.drive, row.record_index))
+                .collect()
+        } else {
+            Vec::new()
+        };
         if let Some(limit) = effective_params.limit {
             filtered_rows.truncate(limit as usize);
         }
@@ -407,6 +407,7 @@ impl IndexManager {
                         output = output_path,
                         rows = rows_written,
                         duration_ms,
+                        promotion_ms,
                         "daemon wrote results directly to file"
                     );
                     // Update perf counters.
@@ -447,6 +448,7 @@ impl IndexManager {
                         total_count,
                         records_scanned: result.records_scanned,
                         duration_ms,
+                        promotion_ms: Some(promotion_ms),
                         truncated: false,
                         profile,
                         applied_sorts: Vec::new(),
@@ -537,7 +539,19 @@ impl IndexManager {
         });
 
         // ── Aggregation (if requested) ─────────────────────────────
-        let (agg_results, agg_matched) = if !effective_params.aggregations.is_empty() {
+        let (agg_results, agg_matched) = if agg_over_rows {
+            // Path-dependent query: fold the row search's matched set —
+            // the rows already carry every filter and the true path
+            // semantics, applied once by the engine that owns them.
+            Self::run_aggregations_over_rows(
+                &agg_snapshot,
+                &effective_params.aggregations,
+                &agg_row_set,
+                build_query_predicates(&effective_params),
+                effective_params.agg_cursor.as_deref(),
+                effective_params.agg_page_size,
+            )
+        } else if agg_requested {
             let predicates = build_query_predicates(&effective_params);
 
             // Pass the pattern if it's non-trivial (not just `*`).
@@ -559,6 +573,7 @@ impl IndexManager {
                     pattern: agg_pattern,
                     drives_filter: &effective_params.drives,
                     record_filter: agg_record_filter,
+                    search_filters: Some(agg_search_filters),
                 },
             )
         } else {
@@ -592,6 +607,7 @@ impl IndexManager {
             total_count,
             records_scanned: result.records_scanned,
             duration_ms,
+            promotion_ms: Some(promotion_ms),
             truncated,
             profile,
             applied_sorts,
@@ -697,6 +713,27 @@ impl IndexManager {
     }
 }
 
+/// A response carrying no rows — the shape every early-out path returns
+/// (permit exhaustion, scan panic, scan timeout).  Factored out because
+/// the three literals differed in two fields, so every new
+/// `SearchResponse` field had to be threaded through all of them.
+const fn empty_response(duration_ms: u64, promotion_ms: Option<u64>) -> SearchResponse {
+    SearchResponse {
+        payload: SearchPayload::Empty,
+        total_count: 0,
+        records_scanned: 0,
+        duration_ms,
+        promotion_ms,
+        truncated: false,
+        profile: None,
+        applied_sorts: Vec::new(),
+        applied_projection: Vec::new(),
+        response_mode: None,
+        projected_rows: None,
+        aggregations: Vec::new(),
+    }
+}
+
 /// Decide the backend scan limit (the cap applied *before* the daemon's
 /// final truncate-to-`user_limit`).
 ///
@@ -742,7 +779,7 @@ pub(crate) use output_config::build_output_config;
 // `pub(super)` — not re-exported beyond the `search` module.
 #[path = "search_predicates.rs"]
 mod predicates;
-use predicates::build_query_predicates;
+use predicates::{aggregation_needs_row_set, build_query_predicates};
 
 // The `--out=<path>` file-export writer lives in a sibling file to keep
 // `search.rs` under the 800-line policy ceiling.  It was a `Self`-less

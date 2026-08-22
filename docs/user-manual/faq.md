@@ -33,10 +33,14 @@ a Windows machine.
 
 ### Does UFFS need Administrator privileges?
 
-On Windows, yes — reading the MFT requires elevated access.  On macOS
-and Linux, no — UFFS reads regular files (MFT captures).
+On Windows, **once** — reading the MFT requires elevated access, but
+installing the Access Broker (`uffs-broker --install`) grants it a
+single time, after which every search, daemon start/stop, and update
+runs unelevated with no UAC prompt.  Without the broker you need an
+Administrator terminal each time.  On macOS and Linux, no — UFFS reads
+regular files (MFT captures).
 
-> **Details:** [Installation §5](installation.md#5--windows-administrator-privileges)
+> **Details:** [Installation §3](installation.md#3--platform-requirements)
 
 ---
 
@@ -92,7 +96,7 @@ Bulkiness = (SizeOnDisk / Size) × 100.  It measures allocation waste.
 - **500** — 5× more disk space than logical data (wasteful)
 - **409600** — a 1-byte file using one 4 KB cluster
 
-> **Guide:** [Concepts §3](concepts.md#3--bulkiness)
+> **Guide:** [Concepts §3](concepts.md#3--bulkiness-waste-ratio)
 
 ---
 

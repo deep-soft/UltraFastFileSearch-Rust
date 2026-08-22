@@ -161,6 +161,36 @@ pub fn emit_build_env() {
     // movement, so it is the reliable trigger.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/logs/HEAD");
+    // …and `.git/index` for the `-dirty` half, which the two above do not
+    // cover at all: cleanliness is not a property of HEAD.
+    //
+    // Observed: a build made while the tree was dirty kept reporting
+    // `<sha>-dirty` long after the tree was clean, because HEAD had not
+    // moved since, so this script never re-ran. It took an empty commit
+    // to shake the stamp loose. The same staleness runs the other way and
+    // is worse — a build from a clean tree goes on claiming clean after
+    // the tree is edited, which is precisely the false reassurance the
+    // suffix exists to prevent.
+    //
+    // `.git/index` is rewritten by `add`, `commit`, `checkout` and `reset`,
+    // so it fires on those transitions.
+    //
+    // It does NOT cover a bare unstaged edit, which is the common case.
+    // Measured, not assumed: appending to a tracked file and running
+    // `git status` left `.git/index`'s mtime unchanged, so the trigger
+    // never fired and the build kept the previous stamp — `git status`
+    // only rewrites the index when it refreshes racily-clean stat
+    // entries, not when it merely observes a modified file.
+    //
+    // So the suffix is best-effort and skewed safe-ish: it goes stale in
+    // the "says clean while edited" direction until some git command
+    // touches the index. No cargo trigger can be airtight — "working
+    // tree cleanliness" is not a file — and the alternatives trade worse:
+    // forcing a re-run on every build spends two `git` subprocesses per
+    // cargo invocation, and dropping the suffix loses the signal
+    // entirely. Treat `-dirty` as informative when present, not as proof
+    // of cleanliness when absent.
+    println!("cargo:rerun-if-changed=../../.git/index");
     println!("cargo:rerun-if-env-changed=RUSTC");
 }
 

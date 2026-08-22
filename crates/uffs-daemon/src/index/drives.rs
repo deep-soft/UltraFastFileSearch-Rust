@@ -98,6 +98,15 @@ impl IndexManager {
         // where a guard's scope outlives the block that actually
         // needs it, since concurrent writers (demote / promote)
         // would block longer than necessary.
+        // Letters with a promote in flight right now.  A re-warm is
+        // stepwise per drive, so `records` plateaus while one large
+        // drive loads; without this a caller cannot tell a working warm
+        // from a hung one, and three identical polls read as "hung".
+        let loading: Vec<uffs_mft::platform::DriveLetter> =
+            self.in_flight_promotes.lock().map_or_else(
+                |poisoned| poisoned.into_inner().keys().copied().collect(),
+                |map| map.keys().copied().collect(),
+            );
         let drives: Vec<DriveInfo> = {
             let guard = self.index.read().await;
             guard
@@ -108,11 +117,19 @@ impl IndexManager {
                         || (0_usize, tier_source_label(tier).to_owned()),
                         |body| (body.records.len(), describe_index_source(&body.source)),
                     );
+                    // While the body is resident, park the count in the
+                    // Arc-preserved stats so a later re-warm has a real
+                    // denominator to report progress against.
+                    if records > 0 {
+                        shard.stats.set_last_known_records(records as u64);
+                    }
                     DriveInfo {
                         letter: shard.drive,
                         records,
                         source,
                         tier: Some(tier),
+                        records_when_warm: Some(shard.stats.last_known_records()),
+                        loading: Some(loading.contains(&shard.drive)),
                     }
                 })
                 .collect()

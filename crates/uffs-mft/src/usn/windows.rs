@@ -250,10 +250,53 @@ pub fn read_usn_journal(
     journal_id: u64,
     start_usn: super::Usn,
 ) -> Result<(Vec<UsnRecord>, super::Usn), std::io::Error> {
+    let (records, next_usn, _exhausted) =
+        read_usn_journal_capped(volume, journal_id, start_usn, None)?;
+    Ok((records, next_usn))
+}
+
+/// Bounded variant of [`read_usn_journal`].
+///
+/// Stops looping once at least `max_records` records have been
+/// collected, so a caller serving the journal over an RPC can page
+/// instead of buffering an arbitrarily large journal in one response.
+///
+/// The bound is checked at 64 KiB-batch granularity — a batch is never
+/// split, so the returned USN is always a valid batch-aligned resume
+/// cursor and the actual record count may exceed `max_records` by up to
+/// one batch. The `bool` in the result is `true` when the journal was
+/// exhausted (nothing further to read past the returned USN) and
+/// `false` when the caller should call again from the returned USN.
+///
+/// # Errors
+///
+/// Same failure surface as [`read_usn_journal`].
+pub fn read_usn_journal_bounded(
+    volume: crate::platform::DriveLetter,
+    journal_id: u64,
+    start_usn: super::Usn,
+    max_records: usize,
+) -> Result<(Vec<UsnRecord>, super::Usn, bool), std::io::Error> {
+    read_usn_journal_capped(volume, journal_id, start_usn, Some(max_records))
+}
+
+/// Shared read loop behind [`read_usn_journal`] (uncapped) and
+/// [`read_usn_journal_bounded`] (capped): reads batches of USN records
+/// from `start_usn`, stopping when the journal is exhausted or (when
+/// `max_records` is `Some`) after the first batch that reaches the cap.
+/// The returned `bool` reports exhaustion — `true` iff the loop stopped
+/// because nothing further remained, never because of the cap.
+fn read_usn_journal_capped(
+    volume: crate::platform::DriveLetter,
+    journal_id: u64,
+    start_usn: super::Usn,
+    max_records: Option<usize>,
+) -> Result<(Vec<UsnRecord>, super::Usn, bool), std::io::Error> {
     let handle = open_volume_handle(volume)?;
     let mut buffer = vec![0_u8; 64 * 1024];
     let mut all_records = Vec::new();
     let mut current_usn = start_usn.raw();
+    let mut exhausted = false;
 
     loop {
         let read_data = ReadUsnJournalDataV0 {
@@ -358,13 +401,20 @@ pub fn read_usn_journal(
         // everything — stop looping.
         if batch_count == 0 || next_usn == current_usn {
             current_usn = next_usn;
+            exhausted = true;
             break;
         }
         current_usn = next_usn;
+        // Cap check AFTER the batch is fully consumed, so `current_usn`
+        // is always a batch-aligned resume cursor (see
+        // `read_usn_journal_bounded`'s doc comment).
+        if max_records.is_some_and(|cap| all_records.len() >= cap) {
+            break;
+        }
     }
 
     close_volume_handle(handle);
-    Ok((all_records, super::Usn::new(current_usn)))
+    Ok((all_records, super::Usn::new(current_usn), exhausted))
 }
 
 /// Reads specific MFT records by FRS and re-parses them into the index.

@@ -454,6 +454,10 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
         records_scanned: usize::try_from(header.records_scanned)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?,
         duration_ms: header.duration_ms,
+        // The shmem header carries no promotion field; the caller that
+        // issued the search already has it from the RPC response this
+        // blob was announced in.
+        promotion_ms: None,
         truncated: header.truncated != 0,
         profile: None,
         applied_sorts: Vec::new(),

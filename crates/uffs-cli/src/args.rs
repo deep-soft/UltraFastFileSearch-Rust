@@ -115,6 +115,7 @@ pub enum Commands {
 }
 
 /// Actions for `uffs --daemon` subcommand.
+#[derive(Debug)]
 pub(crate) enum DaemonAction {
     /// Start the daemon.
     Start {
@@ -219,6 +220,23 @@ pub(crate) enum DaemonAction {
     /// shards included so `forget` candidates are visible without
     /// cross-referencing tracing logs.
     StatusDrives,
+    /// USN-journal delta probe: ask the daemon which files changed on
+    /// a drive since a cursor (`changed_since` RPC).
+    ///
+    /// Read-only operator/diagnostic surface for the journal-delta
+    /// capability: run once with no cursor to bootstrap
+    /// (`journal_id` + `next_usn` are printed), then again with those
+    /// values to see the delta since.
+    ChangedSince {
+        /// Drive whose journal to read.
+        drive: DriveLetter,
+        /// Journal identity the cursor belongs to (`0` = bootstrap).
+        journal_id: u64,
+        /// USN cursor (`0` = bootstrap).
+        since_usn: i64,
+        /// Optional per-call bound on raw journal records read.
+        max_records: Option<u32>,
+    },
 }
 
 /// Sub-action of `uffs --daemon resident`.
@@ -256,9 +274,11 @@ pub(crate) fn parse_daemon_action(args: &[String]) -> Result<DaemonAction, anyho
         "forget" => parse_daemon_forget(rest),
         "resident" => parse_daemon_resident(rest),
         "status_drives" | "status-drives" => Ok(DaemonAction::StatusDrives),
+        "changed_since" | "changed-since" => parse_daemon_changed_since(rest),
         other => anyhow::bail!(
             "Unknown daemon action: '{other}'. Use: start, status, stop, kill, \
-             restart, load, hibernate, preload, forget, resident, status_drives"
+             restart, load, hibernate, preload, forget, resident, status_drives, \
+             changed-since"
         ),
     }
 }
@@ -456,6 +476,59 @@ fn parse_daemon_hibernate(rest: &[String]) -> DaemonAction {
     DaemonAction::Hibernate { drives }
 }
 
+/// Parse `uffs --daemon changed-since <DRIVE> [--journal-id N]
+/// [--since-usn N] [--max-records N]`.
+///
+/// # Errors
+///
+/// Returns an error when no (or more than one) drive letter is given,
+/// or a numeric flag value doesn't parse — the daemon would reject the
+/// request anyway, so fail CLI-side with an actionable message.
+fn parse_daemon_changed_since(rest: &[String]) -> Result<DaemonAction, anyhow::Error> {
+    let mut drives: Vec<DriveLetter> = Vec::new();
+    let mut journal_id: u64 = 0;
+    let mut since_usn: i64 = 0;
+    let mut max_records: Option<u32> = None;
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--journal-id" => {
+                let val = iter.next().map(String::as_str).unwrap_or_default();
+                journal_id = val
+                    .parse::<u64>()
+                    .map_err(|err| anyhow::anyhow!("--journal-id '{val}' is not a u64: {err}"))?;
+            }
+            "--since-usn" => {
+                let val = iter.next().map(String::as_str).unwrap_or_default();
+                since_usn = val
+                    .parse::<i64>()
+                    .map_err(|err| anyhow::anyhow!("--since-usn '{val}' is not an i64: {err}"))?;
+            }
+            "--max-records" => {
+                let val = iter.next().map(String::as_str).unwrap_or_default();
+                max_records =
+                    Some(val.parse::<u32>().map_err(|err| {
+                        anyhow::anyhow!("--max-records '{val}' is not a u32: {err}")
+                    })?);
+            }
+            other => extend_drives_from_csv(&mut drives, other),
+        }
+    }
+    let [drive] = drives[..] else {
+        anyhow::bail!(
+            "`uffs --daemon changed-since` requires exactly one drive letter, got {}; \
+             e.g. `uffs --daemon changed-since C`",
+            drives.len()
+        );
+    };
+    Ok(DaemonAction::ChangedSince {
+        drive,
+        journal_id,
+        since_usn,
+        max_records,
+    })
+}
+
 /// Parse `uffs --daemon preload [DRIVE...]` / `--drive D` /
 /// `--drives A,B,...` / `--pin-minutes N`.
 ///
@@ -573,7 +646,7 @@ pub(crate) use help::{
 mod tests {
     use core::error::Error as _;
 
-    use super::{ParseDriveLetterError, parse_drive_letter};
+    use super::{DaemonAction, ParseDriveLetterError, parse_daemon_action, parse_drive_letter};
 
     /// `BadShape` carries the original input and its Display matches the
     /// byte-for-byte format the previous `Result<_, String>` produced.
@@ -627,6 +700,73 @@ mod tests {
         assert!(
             matches!(&err, ParseDriveLetterError::BadShape { input } if input.is_empty()),
             "expected BadShape(''), got {err:?}",
+        );
+    }
+
+    /// `changed-since` parsing: cursor flags land in the right fields,
+    /// exactly one drive is enforced, and both spellings dispatch.
+    #[test]
+    fn changed_since_parses_cursor_flags() {
+        let args: Vec<String> = [
+            "changed-since",
+            "C",
+            "--journal-id",
+            "77",
+            "--since-usn",
+            "123456",
+            "--max-records",
+            "1000",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        let action = parse_daemon_action(&args).expect("valid changed-since invocation");
+        assert!(
+            matches!(action, DaemonAction::ChangedSince {
+                journal_id: 77,
+                since_usn: 123_456,
+                max_records: Some(1000),
+                ..
+            }),
+            "cursor flags must land in the matching fields, got {action:?}",
+        );
+
+        let underscore: Vec<String> = ["changed_since", "D"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(
+            matches!(
+                parse_daemon_action(&underscore).expect("underscore spelling must dispatch"),
+                DaemonAction::ChangedSince {
+                    journal_id: 0,
+                    since_usn: 0,
+                    max_records: None,
+                    ..
+                }
+            ),
+            "bare invocation must default to the bootstrap cursor",
+        );
+    }
+
+    /// `changed-since` without a drive (or with several) is rejected
+    /// CLI-side with an actionable message.
+    #[test]
+    fn changed_since_requires_exactly_one_drive() {
+        let none: Vec<String> = vec!["changed-since".to_owned()];
+        let err = parse_daemon_action(&none).expect_err("no drive must be rejected");
+        assert!(
+            err.to_string().contains("exactly one drive letter"),
+            "error must say what is required, got: {err}",
+        );
+
+        let two: Vec<String> = ["changed-since", "C", "D"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(
+            parse_daemon_action(&two).is_err(),
+            "two drives must be rejected",
         );
     }
 }

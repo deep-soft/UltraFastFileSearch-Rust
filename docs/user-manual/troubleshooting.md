@@ -150,7 +150,44 @@ NTFS drives and 25 million files uses roughly 4–6 GB of RAM.
 
 ---
 
-## 9  Getting Help
+## 9  The Daemon Restarts After I Stop It
+
+If you made UFFS [resident](daemon.md#permanent-residency-start-at-login-never-retire),
+a supervisor is keeping it alive on purpose.  A **deliberate** stop is
+still honoured — `uffs --daemon stop` and `--daemon kill` record stop
+intent, and the watchdog leaves the service down until you start it
+again.  So a daemon that comes back means something *else* started it.
+Check, in order:
+
+```bash
+# 1. What decision did the watchdog take, and on what evidence?
+#    Windows: %LOCALAPPDATA%\uffs\watchdog.log
+cat ~/.local/share/uffs/watchdog.log
+
+# 2. Is the MCP gateway up?  It starts a daemon when a tool call needs one.
+uffs --mcp status
+
+# 3. Is residency armed at all?  Shows login item, marker, and watchdog.
+uffs --daemon resident status
+```
+
+A log line reading `HonourStopIntent` means the watchdog did **not**
+touch it — look instead at the MCP gateway, or at whatever ran a
+search, since any search auto-starts a daemon.
+
+To stop the services and have them stay stopped, turn residency off
+first — that removes the login item and the auto-spawn marker and
+disarms the watchdog, then stop the daemon (`resident off` leaves a
+running daemon alone on purpose):
+
+```bash
+uffs --daemon resident off
+uffs --daemon stop
+```
+
+---
+
+## 10  Getting Help
 
 ```bash
 # Show all available flags

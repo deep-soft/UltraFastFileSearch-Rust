@@ -130,6 +130,11 @@ ACTIONS:
     off                Remove the login item
     status             Show login-item + daemon state (default)
   status_drives      Per-drive tier + telemetry table (Hot/Warm/Parked/Cold)
+  changed-since      USN-journal delta probe: files changed since a cursor
+    DRIVE              Drive letter (exactly one)
+    --journal-id N     Journal identity from a previous call (0 = bootstrap)
+    --since-usn N      USN cursor from a previous call (0 = bootstrap)
+    --max-records N    Bound raw journal records read in this one call
 ";
 
 /// Print daemon help.
@@ -263,6 +268,10 @@ OPTIONS:
   -v, --verbose   Expand every section (build, broker mode, live-update,
                   memory, paths; broker binary + uptime on Windows)
   --json          Machine-readable superset of all sections
+  --brief         With --json: liveness booleans only. Skips the broker
+                  pipe probe and the MCP process scan, so it costs a
+                  socket connect instead of several subprocesses — for
+                  supervisors and scripts that poll on a timer.
 ";
 
 /// Print status help.

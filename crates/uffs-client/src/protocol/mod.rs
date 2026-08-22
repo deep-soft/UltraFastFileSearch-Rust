@@ -14,6 +14,7 @@ pub mod aggregate_wire;
 pub mod cli_args;
 mod cli_args_helpers;
 pub mod response;
+pub(crate) mod response_journal;
 pub(crate) mod response_status;
 pub(crate) mod response_tiering;
 pub mod search_params;

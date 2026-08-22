@@ -28,9 +28,22 @@ const BROKER_PIPE_PROBE_MS: u32 = 1_000;
 /// One mebibyte, for the `bytes → MB` display conversions.
 const MIB: u64 = 1024 * 1024;
 
-/// `uffs --status [-v] [--json]` — show combined system status.
+/// `uffs --status [-v] [--json] [--brief]` — show combined system status.
+///
+/// `brief` exists for the watchdog, which polls this on a timer and
+/// needs only "is each service alive".  The full view costs an SCM
+/// query, a named-pipe probe with a timeout, and a process enumeration
+/// that spawns a shell (plus one more per session found) — roughly four
+/// PowerShell launches per call on Windows.  At a 5 s poll that is
+/// ~69 000 shell spawns a day to answer two booleans, and a health
+/// check that expensive can fail *because* the machine is loaded, which
+/// is exactly when a supervisor must not.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-pub(crate) fn system_status(verbose: bool, json: bool) {
+pub(crate) fn system_status(verbose: bool, json: bool, brief: bool) {
+    if brief {
+        render_brief_json();
+        return;
+    }
     let daemon = gather_daemon();
     if json {
         render_json(daemon.as_ref());
@@ -87,6 +100,27 @@ fn render_json(daemon: Option<&DaemonSnapshot>) {
         "mcp_stdio": mcp_stdio_json(),
     });
     match serde_json::to_string_pretty(&doc) {
+        Ok(text) => println!("{text}"),
+        Err(err) => println!("{{\"error\":\"{err}\"}}"),
+    }
+}
+
+/// Liveness-only JSON: the two booleans a supervisor polls for, and
+/// nothing that costs a subprocess.
+///
+/// Deliberately does NOT call `broker_json` (SCM query + pipe probe) or
+/// `mcp_stdio_json` (process enumeration).  The daemon check is a
+/// socket connect; the gateway check is a PID-file read plus a liveness
+/// test — both sub-millisecond.
+#[expect(clippy::print_stdout, reason = "CLI --json output")]
+fn render_brief_json() {
+    let daemon_running = UffsClientSync::connect_raw().is_ok();
+    let mcp_running = uffs_client::mcp_pid::is_mcp_server_running().is_some();
+    let doc = serde_json::json!({
+        "daemon": { "running": daemon_running },
+        "mcp_http": { "running": mcp_running },
+    });
+    match serde_json::to_string(&doc) {
         Ok(text) => println!("{text}"),
         Err(err) => println!("{{\"error\":\"{err}\"}}"),
     }

@@ -56,6 +56,7 @@ fn bare_response(rows: Vec<SearchRow>) -> SearchResponse {
         total_count: u64::try_from(row_count).unwrap_or(u64::MAX),
         records_scanned: row_count,
         duration_ms: 0,
+        promotion_ms: None,
         truncated: false,
         profile: None,
         applied_sorts: Vec::new(),

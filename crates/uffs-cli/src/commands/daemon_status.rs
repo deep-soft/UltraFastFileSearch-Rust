@@ -28,6 +28,10 @@ use uffs_statusfmt::{Glyph, Palette, field, header, section, status_row};
 /// One mebibyte, for the `bytes → MB` display conversions.
 const MIB: u64 = 1024 * 1024;
 
+/// Width reserved for a quoted volume label in the physical-drive table,
+/// so the `· indexed (…)` column after it lines up across rows.
+const LABEL_COLUMN: usize = 12;
+
 /// `uffs --daemon status [-v] [--json]` — show daemon status, PID, drives, and
 /// (in long / JSON form) performance counters.
 ///
@@ -171,11 +175,52 @@ fn print_drive_headline(palette: Palette, drives: &[DriveInfo], width: usize) {
         return;
     }
     let records: usize = drives.iter().map(|dr| dr.records).sum();
-    let value = format!(
-        "{} loaded \u{b7} {} records",
-        drives.len(),
-        uffs_client::format::format_number_commas(records as u64)
-    );
+    // Resident vs expected.  "7 loaded · 0 records" is true and unreadable:
+    // it looks like an empty index rather than a demoted one, and gives no
+    // way to watch a re-warm progress.  When some drives are demoted, say
+    // how far along the load is against the count they held when warm.
+    let expected: u64 = drives
+        .iter()
+        .map(|dr| dr.records_when_warm.unwrap_or(dr.records as u64))
+        .sum();
+    let demoted = drives.iter().any(|dr| {
+        matches!(
+            dr.tier,
+            Some(ShardTier::Parked | ShardTier::Cold | ShardTier::Evicting)
+        )
+    });
+    let value = if demoted && expected > 0 {
+        let pct = (records as u64)
+            .saturating_mul(100)
+            .checked_div(expected)
+            .unwrap_or(0);
+        // Name the drive in flight: a re-warm lands one drive at a time,
+        // so the count sits still for tens of seconds while a large one
+        // loads.  Without this, repeated looks show identical numbers and
+        // a working warm is indistinguishable from a stalled one.
+        let loading: Vec<String> = drives
+            .iter()
+            .filter(|dr| dr.loading == Some(true))
+            .map(|dr| dr.letter.to_string())
+            .collect();
+        let in_flight = if loading.is_empty() {
+            String::new()
+        } else {
+            format!(" \u{b7} loading {}", loading.join(", "))
+        };
+        format!(
+            "{} loaded \u{b7} {} of {} records resident ({pct}% warmed){in_flight}",
+            drives.len(),
+            uffs_client::format::format_number_commas(records as u64),
+            uffs_client::format::format_number_commas(expected),
+        )
+    } else {
+        format!(
+            "{} loaded \u{b7} {} records",
+            drives.len(),
+            uffs_client::format::format_number_commas(records as u64)
+        )
+    };
     println!("{}", field(palette, "Drives", &value, width));
 }
 
@@ -387,9 +432,26 @@ fn print_drive_line(palette: Palette, dr: &DriveInfo, memory: &[DriveMemoryInfo]
             match memory.iter().find(|dm| dm.drive == dr.letter) {
                 Some(dm) => {
                     let mb = |bytes: u64| bytes / MIB;
+                    // Every numeric column is width-padded so the whole
+                    // block reads as a table down the list.  Unpadded, a
+                    // one-digit `rec=1` and a three-digit `rec=608` started
+                    // in the same place and pushed every later field out of
+                    // line, which is exactly what you cannot scan by eye:
+                    //
+                    //   [rec=1 names=0 tri=0 ch=0 ext=0]
+                    //   [rec=608 names=439 tri=518 ch=55 ext=27]
+                    //
+                    // Widths: rec/names/tri hold four digits (a ~10 GB
+                    // component on a very large drive), ch/ext three.  The
+                    // source label is padded too — it is `live` today but
+                    // `cache` and friends exist, and an unpadded label would
+                    // shift the whole rest of the row.
+                    // Pad the whole `(source)` token, not the text inside
+                    // it — `(live )` with the space before the paren reads
+                    // as a typo.
+                    let source = format!("({})", dr.source);
                     println!(
-                        "  {glyph} {letter} {records:>12} records ({}) \u{b7} {} MB  [rec={} names={} tri={} ch={} ext={}]",
-                        dr.source,
+                        "  {glyph} {letter} {records:>12} records {source:<7} \u{b7} {:>6} MB  [rec={:>4} names={:>4} tri={:>4} ch={:>3} ext={:>3}]",
                         mb(dm.heap_bytes),
                         mb(dm.records_bytes),
                         mb(dm.names_bytes),
@@ -448,26 +510,74 @@ fn print_physical_drive_line(palette: Palette, drive: &PhysicalDrive, loaded: &[
     use uffs_client::format::{format_bytes, format_number_commas};
 
     let boot = if drive.is_boot { "*" } else { "" };
-    let letter = palette.bold(&format!("{}:{boot}", drive.letter));
+    // Pad the RAW text before colouring — ANSI escapes would be counted by a
+    // width specifier applied afterwards and silently break the alignment
+    // (same rule as `uffs_statusfmt::field`).  The boot marker makes `C:*`
+    // one column wider than `D:`, which shifted every column on the boot
+    // drive's row relative to the others.
+    let letter = palette.bold(&format!("{:<3}", format!("{}:{boot}", drive.letter)));
     let (glyph, index_note) = loaded
         .iter()
         .find(|info| info.letter == drive.letter)
         .map_or_else(
             || (Glyph::Off, format!(" \u{b7} {}", palette.dim("not loaded"))),
             |info| {
-                (
-                    Glyph::Up,
+                // A parked/cold shard reports 0 records because its body
+                // is released, not because the drive is empty.  Rendering
+                // that as "indexed (0 records)" reads as a broken index —
+                // say "parked" and the count returns on the next query.
+                let parked = matches!(
+                    info.tier,
+                    Some(ShardTier::Parked | ShardTier::Cold | ShardTier::Evicting)
+                );
+                let note = if parked {
+                    // Name the actual tier: a hibernated drive is `cold`,
+                    // not `parked`, and calling both "parked" hides which
+                    // rung of the ladder a drive is actually on.
+                    let label = match info.tier {
+                        Some(ShardTier::Cold) => "cold",
+                        Some(ShardTier::Evicting) => "evicting",
+                        _ => "parked",
+                    };
                     format!(
-                        " \u{b7} indexed ({} records)",
+                        " \u{b7} {}",
+                        palette.dim(&format!("{label:<8} (re-warms on next query)"))
+                    )
+                } else {
+                    format!(
+                        " \u{b7} indexed ({:>11} records)",
                         format_number_commas(info.records as u64)
-                    ),
+                    )
+                };
+                (
+                    if parked {
+                        tier_glyph(info.tier)
+                    } else {
+                        Glyph::Up
+                    },
+                    note,
                 )
             },
         );
+    // Pad the volume label so the `· indexed (…)` column that follows
+    // starts in the same place on every row.  Unpadded, a short label
+    // ("DATA") and a long one ("NTFS_16_GB") pushed the index note to
+    // different columns, which is the part you scan down the list.
+    //
+    // 12 columns fits the labels seen in practice (plus the quotes);
+    // NTFS permits up to 32, and a longer one simply pushes its own row
+    // rather than being truncated — losing information to preserve a
+    // column would be the wrong trade.
     let label = if drive.label.is_empty() {
-        String::new()
+        // Still occupy the column, so a drive with no label does not
+        // pull its index note left of everyone else's.
+        " ".repeat(LABEL_COLUMN + 2)
     } else {
-        format!("  \u{201c}{}\u{201d}", drive.label)
+        format!(
+            "  {:<width$}",
+            format!("\u{201c}{}\u{201d}", drive.label),
+            width = LABEL_COLUMN
+        )
     };
     println!(
         "  {} {letter} {:<9} {:>9} \u{b7} {:>4.0}% used \u{b7} {:>9} free{label}{index_note}",

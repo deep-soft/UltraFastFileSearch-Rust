@@ -345,6 +345,8 @@ async fn mcp_start(
         cmd.env("UFFS_LOG_FILE", &default_log);
     }
 
+    // An explicit start revokes any earlier stop intent.
+    uffs_client::daemon_ctl::clear_stop_intent(uffs_client::daemon_ctl::ServiceKind::Mcp);
     println!("Starting MCP HTTP server on {bind}:{port}...");
     let mut child = cmd.spawn().with_context(|| "Failed to spawn MCP server")?;
     let pid = child.id();
@@ -425,6 +427,22 @@ async fn preflight_reclaim_or_reuse(
 
     if daemon_ok {
         println!("MCP HTTP server already running on {bind}:{port} (gateway ✓, daemon ✓).");
+        process::reload_stale_stdio_sessions();
+        return Ok(true);
+    }
+
+    // A *supervised* restart must not undo a deliberate `uffs --daemon
+    // stop`. Interactively, "you asked for the gateway, the gateway
+    // needs a daemon" is the helpful reading and still applies. But the
+    // watchdog is not the operator: when it revives a gateway it must
+    // not silently drag a daemon the operator stopped on purpose back
+    // up with it — which is exactly how a deliberate stop was observed
+    // to bounce straight back.
+    if std::env::var_os("UFFS_SUPERVISED_RESTART").is_some()
+        && uffs_client::daemon_ctl::stop_intent_path(uffs_client::daemon_ctl::ServiceKind::Daemon)
+            .exists()
+    {
+        println!("  Gateway on port {port} is alive; daemon is stopped on purpose — leaving it.");
         process::reload_stale_stdio_sessions();
         return Ok(true);
     }
@@ -565,6 +583,10 @@ fn mcp_stop() {
         println!("MCP server is not running.");
         return;
     };
+    // Record intent BEFORE signalling, for the same reason the daemon
+    // does: between the process dying and the marker appearing, a
+    // watchdog tick would read an unexplained death and restart it.
+    uffs_client::daemon_ctl::record_stop_intent(uffs_client::daemon_ctl::ServiceKind::Mcp);
     println!("Stopping MCP server (PID {pid})...");
     process::signal_pid(pid, cfg!(windows));
     println!("MCP server stopped.");

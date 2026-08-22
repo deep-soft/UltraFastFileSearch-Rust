@@ -190,6 +190,22 @@ struct AggregateCacheCtx<'a> {
     cache: Option<&'a uffs_core::aggregate::AggregateCache>,
 }
 
+/// The scan-scope inputs [`IndexManager::compute_aggregate_output`]
+/// forwards into the core record scan.
+///
+/// Bundled so the helper stays under clippy's `too_many_arguments`
+/// budget — the three fields always travel together anyway: they are
+/// exactly the inputs that decide which records the scan feeds.
+#[derive(Clone, Copy)]
+struct ScanScope<'a> {
+    /// Glob / regex name matcher, `None` for match-all.
+    pattern: Option<&'a str>,
+    /// O(1)-per-record predicates: extension IDs, directory flag, size.
+    record_filter: &'a uffs_core::aggregate::AggregateFilter,
+    /// Full record-level search-filter axis (dates, attributes, …).
+    search_filters: Option<&'a uffs_core::search::filters::SearchFilters>,
+}
+
 /// Bundled inputs for [`IndexManager::run_aggregations`].
 ///
 /// Wraps the predicates, pagination knobs, and scope filters that
@@ -231,6 +247,14 @@ pub(crate) struct AggregationRequest<'a> {
     /// size bounds.  Defaults to "no filter" via
     /// [`uffs_core::aggregate::AggregateFilter::default`].
     pub record_filter: uffs_core::aggregate::AggregateFilter,
+    /// The FULL record-level filter set the row search applies (dates,
+    /// attributes, excludes, months, tree metrics, …), so aggregation
+    /// honours every `--flag` the row listing honours.  `None` (the
+    /// test default) means "no extra constraints".  Path-dependent
+    /// filters inside it are NOT applied by the record scan — callers
+    /// with path-dependent queries must use
+    /// [`IndexManager::run_aggregations_over_rows`] instead.
+    pub search_filters: Option<uffs_core::search::filters::SearchFilters>,
 }
 
 impl IndexManager {
@@ -262,6 +286,7 @@ impl IndexManager {
             pattern,
             drives_filter,
             record_filter,
+            search_filters,
         } = request;
 
         // Convert wire specs to core specs.
@@ -303,6 +328,7 @@ impl IndexManager {
                 drives_filter,
                 &record_filter,
                 &query_predicates,
+                search_filters.as_ref(),
             )
         });
 
@@ -328,8 +354,11 @@ impl IndexManager {
             &drive_refs,
             &specs,
             &options,
-            pattern,
-            &record_filter,
+            ScanScope {
+                pattern,
+                record_filter: &record_filter,
+                search_filters: search_filters.as_ref(),
+            },
             &snapshot.drives,
         ) {
             Some(out) => out,
@@ -352,6 +381,77 @@ impl IndexManager {
         (wire_results, records_matched)
     }
 
+    /// Run aggregation specs over the row search's matched result set.
+    ///
+    /// The record-scan path ([`Self::run_aggregations`]) cannot honour
+    /// anything that needs a **resolved path** — `--in-path`,
+    /// `--exclude-path`, path-aware globs, `--match-path`, regex
+    /// patterns.  It used to run anyway and silently ignore them: an
+    /// `--in-path` naming a directory that cannot exist still counted
+    /// 3.8 M files, and `'**\GitHub\**\*' --count` returned 0 because
+    /// the path glob was matched against bare names.
+    ///
+    /// For those queries the caller has already run the row search
+    /// unbounded — which applies full path semantics exactly once —
+    /// and passes the matched rows here.  The search stays the single
+    /// source of truth for what matched; aggregation only folds the
+    /// survivors.  No cache: the row set is the input, and hashing
+    /// millions of `(drive, idx)` pairs would cost more than the fold.
+    pub(crate) fn run_aggregations_over_rows(
+        snapshot: &DriveIndex,
+        wire_specs: &[uffs_client::protocol::AggregateSpecWire],
+        matched: &[(uffs_mft::platform::DriveLetter, u32)],
+        query_predicates: Vec<DrilldownPredicate>,
+        agg_cursor: Option<&str>,
+        agg_page_size: Option<u16>,
+    ) -> (Vec<uffs_client::protocol::AggregateResultWire>, u64) {
+        use uffs_core::aggregate::finalize::FinalizeOptions;
+        use uffs_core::aggregate::spec::AggregateSpec;
+
+        let mut specs: Vec<AggregateSpec> = Vec::new();
+        for ws in wire_specs {
+            match Self::convert_wire_spec(ws) {
+                Ok(converted) => specs.extend(converted),
+                Err(e) => {
+                    tracing::warn!(kind = %ws.kind, "skipping malformed aggregate spec: {e}");
+                }
+            }
+        }
+        if specs.is_empty() {
+            return (vec![], 0);
+        }
+
+        let drive_refs: Vec<&uffs_core::compact::DriveCompactIndex> =
+            snapshot.drives.iter().map(|arc| arc.as_ref()).collect();
+        let options = FinalizeOptions {
+            query_predicates,
+            ..FinalizeOptions::default()
+        };
+
+        match uffs_core::aggregate::run_aggregate_over_records(
+            &drive_refs,
+            &specs,
+            &options,
+            matched,
+        ) {
+            Ok(mut output) => {
+                Self::run_duplicate_verification(&specs, &mut output, &snapshot.drives);
+                let records_matched = output.records_matched;
+                let wire_results = convert_aggregate_results_to_wire(
+                    output.response.results,
+                    agg_cursor,
+                    agg_page_size,
+                    &snapshot.drives,
+                );
+                (wire_results, records_matched)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "row-set aggregation failed");
+                (vec![], 0)
+            }
+        }
+    }
+
     /// Look up the cached `AggregateOutput` if present, otherwise run
     /// the core aggregation with duplicate verification + cache fill.
     ///
@@ -363,8 +463,7 @@ impl IndexManager {
         drive_refs: &[&uffs_core::compact::DriveCompactIndex],
         specs: &[uffs_core::aggregate::spec::AggregateSpec],
         options: &uffs_core::aggregate::finalize::FinalizeOptions,
-        pattern: Option<&str>,
-        record_filter: &uffs_core::aggregate::AggregateFilter,
+        scope: ScanScope<'_>,
         drives: &[alloc::sync::Arc<uffs_core::compact::DriveCompactIndex>],
     ) -> Option<uffs_core::aggregate::AggregateOutput> {
         let AggregateCacheCtx { key_hash, cache } = cache_ctx;
@@ -381,8 +480,9 @@ impl IndexManager {
             drive_refs,
             specs,
             options,
-            pattern,
-            record_filter,
+            scope.pattern,
+            scope.record_filter,
+            scope.search_filters,
         ) {
             Ok(mut fresh) => {
                 tracing::info!(
@@ -439,6 +539,7 @@ impl IndexManager {
         drives_filter: &[uffs_mft::platform::DriveLetter],
         record_filter: &uffs_core::aggregate::AggregateFilter,
         query_predicates: &[DrilldownPredicate],
+        search_filters: Option<&uffs_core::search::filters::SearchFilters>,
     ) -> u64 {
         use core::hash::{Hash as _, Hasher as _};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -451,6 +552,14 @@ impl IndexManager {
         drives_filter.hash(&mut hasher);
         record_filter.hash(&mut hasher);
         query_predicates.hash(&mut hasher);
+        // `SearchFilters` does not implement `Hash` (and hand-listing its
+        // ~30 fields here would silently miss every future addition), so
+        // hash the `Debug` rendering: it includes every field, and this
+        // cache is in-process memory only — the representation never has
+        // to be stable across builds, only within one daemon lifetime.
+        // Missing a filter here is not a stale-display nuisance; it is
+        // the `--newer 7d --count` bug served forever out of the cache.
+        format!("{search_filters:?}").hash(&mut hasher);
         hasher.finish()
     }
 

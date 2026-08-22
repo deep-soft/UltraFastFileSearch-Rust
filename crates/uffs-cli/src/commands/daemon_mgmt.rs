@@ -92,6 +92,7 @@ pub(crate) fn daemon(action: &DaemonAction) -> Result<()> {
             action,
             DaemonAction::Status { .. }
                 | DaemonAction::StatusDrives
+                | DaemonAction::ChangedSince { .. }
                 | DaemonAction::Resident { .. }
                 | DaemonAction::Start { elevate: true, .. }
         );
@@ -173,6 +174,17 @@ pub(crate) fn daemon(action: &DaemonAction) -> Result<()> {
             drives,
         } => super::resident::resident(*mode, mft_file, data_dir.as_deref(), drives),
         DaemonAction::StatusDrives => daemon_tiering::daemon_status_drives(),
+        DaemonAction::ChangedSince {
+            drive,
+            journal_id,
+            since_usn,
+            max_records,
+        } => super::daemon_journal::daemon_changed_since(
+            *drive,
+            *journal_id,
+            *since_usn,
+            *max_records,
+        ),
     }
 }
 
@@ -381,6 +393,17 @@ fn daemon_start(
         );
     }
 
+    // An explicit OPERATOR start revokes any earlier stop intent, so the
+    // watchdog resumes supervising this service.
+    //
+    // A supervisor-driven restart must NOT clear it: the watchdog
+    // respawns by invoking this very command, so clearing here would let
+    // it erase the marker it is supposed to obey — the intent survives
+    // exactly one tick and the service bounces back anyway. The watchdog
+    // sets `UFFS_SUPERVISED_RESTART` to say "this start is mine".
+    if std::env::var_os("UFFS_SUPERVISED_RESTART").is_none() {
+        uffs_client::daemon_ctl::clear_stop_intent(uffs_client::daemon_ctl::ServiceKind::Daemon);
+    }
     if !is_quiet() {
         println!("Starting daemon...");
     }
@@ -410,9 +433,27 @@ fn daemon_start(
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn daemon_stop() -> Result<()> {
     if let Ok(mut client) = UffsClientSync::connect_raw() {
-        client
+        // Record the intent BEFORE the RPC, not after.
+        //
+        // `shutdown()` blocks until the daemon is actually gone, and on a
+        // large index (24.9 M records, seven journal loops) that teardown
+        // takes seconds. Writing the marker afterwards leaves a window in
+        // which the daemon is already dead and the marker does not exist
+        // yet — a watchdog tick landing there sees an unexplained death
+        // and dutifully respawns it, so a deliberate stop bounces back.
+        // Observed exactly that on a live box before this ordering fix.
+        uffs_client::daemon_ctl::record_stop_intent(uffs_client::daemon_ctl::ServiceKind::Daemon);
+        if let Err(err) = client
             .shutdown()
-            .with_context(|| "Shutdown RPC failed — try `uffs --daemon kill` instead")?;
+            .with_context(|| "Shutdown RPC failed — try `uffs --daemon kill` instead")
+        {
+            // The daemon is still up: an intent we never carried out must
+            // not keep the watchdog from reviving a later genuine crash.
+            uffs_client::daemon_ctl::clear_stop_intent(
+                uffs_client::daemon_ctl::ServiceKind::Daemon,
+            );
+            return Err(err);
+        }
         println!("Daemon shutdown requested.");
     } else {
         println!("Daemon is not running.");
@@ -430,6 +471,9 @@ fn daemon_stop() -> Result<()> {
 /// running" half-kill.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn daemon_kill() -> Result<()> {
+    // A kill is as deliberate as a stop — same reasoning, same ordering:
+    // record before the process actually dies.
+    uffs_client::daemon_ctl::record_stop_intent(uffs_client::daemon_ctl::ServiceKind::Daemon);
     let pid_path = pid_file_path();
 
     let mut pid =

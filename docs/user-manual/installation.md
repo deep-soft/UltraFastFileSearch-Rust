@@ -248,6 +248,38 @@ every other end user runs, so bug reports are reproducible.
 binaries to `~/bin`.  Use this when you want to test local changes
 before opening a PR.
 
+Because it replaces binaries that may be **running**, it manages the
+service lifecycle around the copy and puts things back as it found
+them:
+
+* **Unchanged binaries are skipped.**  Only files whose contents
+  actually differ are replaced, so a rebuild that changed one crate
+  does not disturb the other 23 processes — and cannot fail with
+  `os error 32` (file in use) for no reason.
+* **The Access Broker is a service**, so it cannot simply be
+  overwritten: if its binary changed, the installer stops the service,
+  replaces it, and starts it again (`⏸️ stopping` / `▶️ restarted`).
+* **The watchdog is stopped first and restarted last.**  If it kept
+  running during the install it would dutifully restart the daemon
+  mid-teardown — the supervisor fighting the installer.
+* **AI-host MCP sessions survive.**  Teardown force-kills only the
+  daemon and the HTTP gateway *by PID*, never `uffsmcp` by image name —
+  that would also kill the stdio supervisors your AI hosts spawned, and
+  a session killed mid-request looks exactly like a hung tool call.  A
+  binary that is locked by a running process is **renamed aside** rather
+  than deleted, so the new one lands at the canonical path and the
+  [stdio supervisor](mcp.md#zero-downtime-upgrades-stdio-supervisor)
+  hot-swaps its worker without dropping the host's connection.  The
+  renamed `*.oldN` sidecars are swept by the next install, once the old
+  process has exited.
+* **The daemon and MCP server are restarted only if they were running
+  before**, and the daemon comes back through the normal start path, so
+  a resident daemon returns resident (`--no-retire`).
+
+The net effect is that `use-local` leaves the machine in the state it
+found it, which is what [residency](daemon.md#permanent-residency-start-at-login-never-retire)
+promises.
+
 If `~/bin` is not on your PATH, either recipe prints the line to add
 to your shell profile.
 
