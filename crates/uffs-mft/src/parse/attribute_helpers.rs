@@ -171,7 +171,13 @@ pub(super) fn parse_file_name_full(
 
     use crate::ntfs::{FileNameAttribute, file_reference_to_frs};
 
-    let value_offset_bytes = &data[attr_offset + 20..attr_offset + 22];
+    // The resident-attribute value offset (bytes 20..22 of the header)
+    // may fall past the end of a truncated or malformed record — the
+    // exact shape the 2026-08-17 nightly fuzzer found (a 98-byte record
+    // whose last attribute header is cut mid-field). Slice with `get`
+    // so corrupt input yields `None` instead of an out-of-bounds panic,
+    // matching `parse_standard_info_full`'s identical hardening above.
+    let value_offset_bytes = data.get(attr_offset + 20..attr_offset + 22)?;
     let value_offset = u16::from_le_bytes(value_offset_bytes.try_into().unwrap_or([0, 0])) as usize;
 
     let fn_offset = attr_offset + value_offset;
@@ -262,7 +268,10 @@ pub(super) fn parse_data_attribute_full(
     }
 
     let (size, allocated_size, is_sparse, is_compressed) = if is_resident {
-        let value_length_bytes = &data[attr_offset + 16..attr_offset + 20];
+        // Same truncated-header hazard as the value-offset read in
+        // `parse_file_name_full`: bytes 16..20 may overrun a cut-short
+        // record, so slice with `get` rather than panic.
+        let value_length_bytes = data.get(attr_offset + 16..attr_offset + 20)?;
         let value_length = u32::from_le_bytes(value_length_bytes.try_into().ok()?);
         (u64::from(value_length), 0, false, false)
     } else {
