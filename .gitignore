@@ -189,3 +189,6 @@ uffs-mcp-claude-video.mp4
 # cargo-mutants local run artifacts (CI keeps its own copies as uploaded artifacts)
 /mutants.out/
 /mutants.out.old/
+
+# rustc ICE dumps (transient nightly "delayed bug" reports; never commit)
+rustc-ice-*.txt
