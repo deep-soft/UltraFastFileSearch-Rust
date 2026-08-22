@@ -92,6 +92,7 @@ pub(crate) fn daemon(action: &DaemonAction) -> Result<()> {
             action,
             DaemonAction::Status { .. }
                 | DaemonAction::StatusDrives
+                | DaemonAction::ChangedSince { .. }
                 | DaemonAction::Resident { .. }
                 | DaemonAction::Start { elevate: true, .. }
         );
@@ -173,6 +174,17 @@ pub(crate) fn daemon(action: &DaemonAction) -> Result<()> {
             drives,
         } => super::resident::resident(*mode, mft_file, data_dir.as_deref(), drives),
         DaemonAction::StatusDrives => daemon_tiering::daemon_status_drives(),
+        DaemonAction::ChangedSince {
+            drive,
+            journal_id,
+            since_usn,
+            max_records,
+        } => super::daemon_journal::daemon_changed_since(
+            *drive,
+            *journal_id,
+            *since_usn,
+            *max_records,
+        ),
     }
 }
 

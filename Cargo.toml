@@ -324,16 +324,21 @@ hex = "0.4.3"
 # Blocking HTTP with rustls + the system trust store. `rustls-tls-native-roots`
 # matches the existing transitive reqwest config, so no new crate enters the lock.
 #
-# DELIBERATELY HELD AT 0.12 (re-evaluated 2026-08-12, everything else in this
-# workspace is at latest).  0.13 drops `rustls-tls-native-roots` and routes
-# system trust through `rustls-platform-verifier`, which pulls the Android JNI
-# stack — `jni`, `jni-macros`, `jni-sys`, `combine`, `simd_cesu8`, roughly 63k
-# lines.  None of it appears in the host or `x86_64-pc-windows-msvc` dependency
-# trees (verified with `cargo tree -i jni`): it is Android-only, a target UFFS
-# does not ship.  cargo-vet audits every target regardless, so 0.13 would cost
-# ~63k lines of supply-chain review for code that never enters a binary we
-# build, in exchange for no functional gain.  Revisit if reqwest ever offers
-# system trust without the Android dependency, or if we ever target Android.
+# DELIBERATELY HELD AT 0.12 (re-verified 2026-08-21 against 0.13.4; everything
+# else in this workspace is at latest).  0.13 still drops
+# `rustls-tls-native-roots` and routes system trust through
+# `rustls-platform-verifier`, which pulls the Android JNI stack — `jni`,
+# `jni-macros`, `jni-sys`, `combine`, `simd_cesu8`, roughly 63k lines.  None of
+# it appears in the host or `x86_64-pc-windows-msvc` dependency trees (verified
+# with `cargo tree -i jni`): it is Android-only, a target UFFS does not ship.
+# cargo-vet audits every target regardless, so 0.13 would cost ~63k lines of
+# supply-chain review for code that never enters a binary we build, in exchange
+# for no functional gain.  A second, independent blocker verified 2026-08-21:
+# polars-io (through 0.55.2, our current polars) stays on the reqwest 0.12
+# line, so bumping ours to 0.13 would compile TWO reqwest/TLS stacks into the
+# same binaries.  Revisit when reqwest offers system trust
+# without the Android dependency AND polars adopts the 0.13 line, or if we
+# ever target Android.
 reqwest = { version = "0.12.28", default-features = false, features = [
   "blocking",
   "rustls-tls-native-roots",

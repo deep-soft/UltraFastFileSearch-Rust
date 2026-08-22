@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use super::response_journal::{ChangedSinceParams, ChangedSinceResponse, JournalChange};
 pub use super::response_status::{
     DaemonPaths, DaemonStatus, DriveInfo, DriveMemoryInfo, DrivesResponse, LiveUpdateInfo,
     ShardTier, StatsResponse, StatusResponse,

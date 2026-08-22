@@ -375,7 +375,9 @@ pub fn aggregate_changes(records: &[UsnRecord]) -> HashMap<Frs, FileChange> {
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{query_usn_journal, read_targeted_frs_records, read_usn_journal};
+pub use windows::{
+    query_usn_journal, read_targeted_frs_records, read_usn_journal, read_usn_journal_bounded,
+};
 
 /// Queries the USN Journal for a volume (non-Windows stub).
 ///
@@ -403,6 +405,25 @@ pub fn read_usn_journal(
     _journal_id: u64,
     _start_usn: Usn,
 ) -> Result<(Vec<UsnRecord>, Usn), std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "USN Journal is only available on Windows",
+    ))
+}
+
+/// Bounded USN Journal read (non-Windows stub) — see the Windows
+/// implementation for the paging contract.
+///
+/// # Errors
+///
+/// Always returns an error on non-Windows platforms.
+#[cfg(not(windows))]
+pub fn read_usn_journal_bounded(
+    _volume: crate::platform::DriveLetter,
+    _journal_id: u64,
+    _start_usn: Usn,
+    _max_records: usize,
+) -> Result<(Vec<UsnRecord>, Usn, bool), std::io::Error> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "USN Journal is only available on Windows",

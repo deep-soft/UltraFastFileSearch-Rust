@@ -216,7 +216,11 @@ fn status_snapshot() -> Option<String> {
         .args(["--status", "--json", "--brief"])
         .output()
         .ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    // Strict, not lossy: the payload is JSON (UTF-8 by spec) from our
+    // own binary. Invalid UTF-8 means a corrupted stream — report
+    // *unknown* (None) rather than let replacement characters feed the
+    // JSON parse.
+    String::from_utf8(out.stdout).ok()
 }
 
 /// Is the service reported under `key` running, per a `--status --json`

@@ -46,6 +46,12 @@ use parse_search_params::ParseSearchParamsError;
 #[path = "handler_diff.rs"]
 mod diff_handler;
 
+// The USN-journal `changed_since` handler lives in a sibling file for the
+// same 800-LOC policy reason; `#[path]` keeps it an `impl RequestHandler`
+// method the dispatcher calls as `self.handle_changed_since(...)`.
+#[path = "handler_journal.rs"]
+mod journal_handler;
+
 /// Request handler holding shared daemon state.
 pub(crate) struct RequestHandler {
     /// Shared index manager.
@@ -88,6 +94,7 @@ impl RequestHandler {
             "preload" => self.handle_preload(id, req).await,
             "forget" => self.handle_forget(id, req).await,
             "status_drives" => self.handle_status_drives(id).await,
+            "changed_since" => self.handle_changed_since(id, req).await,
             _ => serde_json::to_string(&RpcErrorResponse::error(
                 Some(id),
                 ERR_METHOD_NOT_FOUND,

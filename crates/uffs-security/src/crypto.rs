@@ -542,4 +542,90 @@ mod tests {
             );
         }
     }
+
+    // ── Mutation-kill tests (2026-08-17 nightly cargo-mutants run) ──
+    // Each test below pins one boundary the mutants run proved
+    // untested: it asserts the SPECIFIC error (or success) that
+    // distinguishes the real operator from its surviving mutation,
+    // not merely "some error happened".
+
+    /// Build a synthetic UFFSENC prefix (magic + version + algorithm)
+    /// zero-padded to `total_len` — indexing-free by construction so the
+    /// test lane's `indexing_slicing` deny holds even in tests.
+    fn synthetic_header(version: u16, total_len: usize) -> Vec<u8> {
+        let mut data = Vec::with_capacity(total_len);
+        data.extend_from_slice(ENCRYPTED_MAGIC.as_slice()); // 0..8
+        data.extend_from_slice(&version.to_le_bytes()); // 8..10
+        data.push(ALGO_AES_256_GCM); // 10
+        data.resize(total_len, 0);
+        data
+    }
+
+    /// Kills `<` → `==`/`<=` at the v1 minimum-size gate (192:19): a
+    /// buffer of EXACTLY the 44-byte minimum must get PAST the gate
+    /// (failing later, at GCM auth — not with "too short").
+    #[test]
+    fn v1_exact_minimum_size_passes_the_size_gate() {
+        // v1 length field (24..28) stays 0 → expected = 28 + 0 + 16 = 44.
+        let data = synthetic_header(1, HEADER_SIZE_V1 + TAG_SIZE);
+        let err = decrypt_cache(&data, &[0_u8; 32]).expect_err("garbage tag must fail GCM auth");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("too short"),
+            "a 44-byte buffer must pass the minimum-size gate, got: {msg}"
+        );
+    }
+
+    /// Kills `+` → `-` inside the v1 minimum (192:36): an under-minimum
+    /// buffer must be rejected BY THE SIZE GATE, with its message —
+    /// not stumble into a later header-parse error.
+    #[test]
+    fn v1_under_minimum_is_rejected_by_the_size_gate() {
+        let data = synthetic_header(1, 20);
+        let err = decrypt_cache(&data, &[0_u8; 32]).expect_err("20 bytes is under the minimum");
+        assert!(
+            err.to_string().contains("too short"),
+            "the size gate must reject it, got: {err}"
+        );
+    }
+
+    /// Kills `+` → `-` in the v2 minimum (228:44): an under-minimum v2
+    /// buffer must be rejected by the v2 size gate with its message.
+    #[test]
+    fn v2_under_minimum_is_rejected_by_the_v2_size_gate() {
+        let data = synthetic_header(2, HEADER_SIZE_V2 + TAG_SIZE - 2);
+        let err = decrypt_cache(&data, &[0_u8; 32]).expect_err("46 bytes is under the v2 minimum");
+        assert!(
+            err.to_string().contains("v2 cache too short"),
+            "the v2 size gate must reject it, got: {err}"
+        );
+    }
+
+    /// Kills `+` → `-` in `expected` (255:46) — a one-byte-truncated
+    /// real ciphertext must be rejected as TRUNCATED, not slip through
+    /// a shrunken expectation into a GCM failure.
+    #[test]
+    fn one_byte_truncation_is_reported_as_truncated() {
+        let key = [0x77_u8; 32];
+        let mut encrypted = encrypt_cache(b"boundary", &key).expect("encrypt");
+        let _last = encrypted.pop();
+        let err = decrypt_cache(&encrypted, &key).expect_err("truncated input must fail");
+        assert!(
+            err.to_string().contains("truncated"),
+            "must fail the expected-size check, got: {err}"
+        );
+    }
+
+    /// Kills `<` → `>` in the truncation check (256:19): TRAILING bytes
+    /// after a valid ciphertext are tolerated (the slices are exact),
+    /// so decryption must still succeed.
+    #[test]
+    fn trailing_garbage_after_valid_ciphertext_still_decrypts() {
+        let key = [0x33_u8; 32];
+        let plaintext = b"suffix tolerant";
+        let mut encrypted = encrypt_cache(plaintext, &key).expect("encrypt");
+        encrypted.extend_from_slice(&[0xEE; 7]);
+        let decrypted = decrypt_cache(&encrypted, &key).expect("trailing bytes are not an error");
+        assert_eq!(decrypted, plaintext);
+    }
 }
