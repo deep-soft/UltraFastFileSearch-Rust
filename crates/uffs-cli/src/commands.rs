@@ -13,6 +13,7 @@ pub mod aggregate;
 /// Split off `daemon_mgmt` so the lifecycle file stays under the
 /// 800-LOC policy ceiling without a file-size exception (mirrors
 /// the `daemon_tiering` decomposition for the Phase 8 commands).
+pub(crate) mod daemon_journal;
 pub(crate) mod daemon_load;
 /// Daemon management subcommands.
 pub(crate) mod daemon_mgmt;

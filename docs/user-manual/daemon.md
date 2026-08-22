@@ -299,6 +299,7 @@ the page-in on the next first query unless it was preloaded.
 | `uffs --daemon hibernate` | Demote drive(s) to `Cold` (frees RAM, cache stays) |
 | `uffs --daemon load` | Hot-load additional MFT file(s) into a running daemon |
 | `uffs --daemon forget` | Evict drive(s) and delete their on-disk caches |
+| `uffs --daemon changed-since <DRIVE>` | USN-journal delta probe: which files changed since a cursor (read-only) |
 
 `stop` and `kill` record *stop intent* so the [watchdog](#the-watchdog--surviving-crashes-and-installers)
 does not undo them; the next explicit `start` clears it.
@@ -412,6 +413,37 @@ G      warm         2 MiB 0.00    10m ago           -                         0
 
 > **`uffs --daemon stats` has been folded into `uffs --daemon status -v`.**
 > The old command now prints a one-line redirect.
+
+
+### `uffs --daemon changed-since` — USN-journal delta probe
+
+Read-only probe for the daemon's `changed_since` RPC: ask which files
+changed on a drive since a cursor, answered from the NTFS USN journal
+instead of any index sweep. Two-step usage mirrors the cursor contract:
+
+```powershell
+# 1. Bootstrap — no cursor yet; the daemon prints a fresh one:
+$ uffs --daemon changed-since C
+Drive C: USN journal delta
+  journal_id: 133742...
+  next_usn:   4520448
+  delta:      unavailable — no cursor given (bootstrap)
+
+# 2. Change some files, then ask for the delta since that cursor:
+$ uffs --daemon changed-since C --journal-id 133742... --since-usn 4520448
+Drive C: USN journal delta
+  changed:    3 file(s)
+    frs       281474  ...
+```
+
+A cursor that no longer matches the volume's journal (the journal was
+recreated, or wrapped past it) comes back as `delta: unavailable` with a
+fresh cursor — the daemon never fabricates a delta it cannot prove. A
+large catch-up is paged: `--max-records N` bounds one call, and a
+`truncated` response is continued from its printed `next_usn`. This is
+the operator surface of the journal-delta capability consumed
+programmatically over the `changed_since` RPC
+(`uffs-client::protocol::response_journal`).
 
 ### `uffs --daemon status --json`
 
