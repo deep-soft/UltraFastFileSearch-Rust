@@ -185,6 +185,9 @@ fn watchdog_running() -> bool {
     std::process::Command::new("tasklist")
         .args(["/FI", "IMAGENAME eq uffs-watchdog.exe", "/NH"])
         .output()
+        // AUDIT-OK(bytes): ASCII needle survives lossy byte-exact;
+        // strict parse of tasklist's console-codepage output would
+        // report "not running" and double-spawn the watchdog.
         .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("uffs-watchdog.exe"))
 }
 
@@ -351,6 +354,7 @@ fn run_tool(program: &str, args: &[&str]) -> Result<std::process::Output> {
         anyhow::bail!(
             "{program} {} failed: {}",
             args.join(" "),
+            // AUDIT-OK(bytes): display-only human-facing error text.
             String::from_utf8_lossy(&output.stderr).trim()
         )
     }
@@ -379,10 +383,9 @@ mod platform {
     /// The current user's launchd GUI domain (`gui/<uid>`).
     fn gui_domain() -> Result<String> {
         let output = run_tool("id", &["-u"])?;
-        Ok(format!(
-            "gui/{}",
-            String::from_utf8_lossy(&output.stdout).trim()
-        ))
+        // Strict: the uid feeds a launchctl target — never lossy-mangle it.
+        let uid = String::from_utf8(output.stdout).context("`id -u` emitted non-UTF-8 output")?;
+        Ok(format!("gui/{}", uid.trim()))
     }
 
     /// Minimal XML escaping for plist string values.

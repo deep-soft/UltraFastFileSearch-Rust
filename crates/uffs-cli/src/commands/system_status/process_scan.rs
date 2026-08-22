@@ -156,6 +156,12 @@ fn find_mcp_stdio_processes() -> Option<Vec<StdioSession>> {
         &["-NoProfile", "-NonInteractive", "-Command", script],
         PS_TIMEOUT,
     )?;
+    // AUDIT-OK(bytes): the consumed fields are ASCII (PIDs, ages,
+    // comma separators, the `uffsmcp%` image-name prefix), which lossy
+    // conversion preserves byte-exact; every field is then strictly
+    // parsed per line (`filter_map` drops bad rows). A strict whole-
+    // buffer parse would discard the entire scan over one console-
+    // codepage byte in an unrelated field.
     let text = String::from_utf8_lossy(&stdout);
     let my_pid = std::process::id();
     let current_mtime = std::env::current_exe()
@@ -237,6 +243,12 @@ fn find_mcp_stdio_processes() -> Option<Vec<StdioSession>> {
     // AUDIT-OK(bytes): per-line PID scan of process-list output; each line's
     // PID parses-or-skips (fail-safe). Whole-buffer strict decode would drop
     // the whole list on one bad byte. (WI-4.3 follow-up)
+    // AUDIT-OK(bytes): the consumed fields are ASCII (PIDs, ages,
+    // comma separators, the `uffsmcp%` image-name prefix), which lossy
+    // conversion preserves byte-exact; every field is then strictly
+    // parsed per line (`filter_map` drops bad rows). A strict whole-
+    // buffer parse would discard the entire scan over one console-
+    // codepage byte in an unrelated field.
     let text = String::from_utf8_lossy(&stdout);
     let my_pid = std::process::id();
     let current_mtime = std::env::current_exe()
