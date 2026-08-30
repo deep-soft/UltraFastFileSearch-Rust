@@ -14,6 +14,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.38] - 2026-08-24
+
+### Added
+
+- daemon: warm_plan RPC - the bloom-aware cold-index answer external gates must use
+
+### Fixed
+
+- dev: single-pass install build — capture the artifact JSON from the real build
+- daemon: lifecycle idle-timer tests on tokio's paused clock
+- client: UFFS_NO_AUTOSTART kill-switch so tests never spawn uffsd
+- core: compact-cache poisoning via delta-carrying saves and the empty-trigram reader gap
+
+## [0.6.37] - 2026-08-22
+
+### Fixed
+
+- mcp: stamp SEP-2549 ttlMs/cacheScope on every result — protocol 2026-07-28 clients rejected tools/list
+- dev: hermetic cache-key for cargo-spawned runs — kills the Keychain-prompt test hang
+
+## [0.6.36] - 2026-08-22
+
+### Fixed
+
+- mft: offset-read fallback rung on the existing volume handle — broker-mode
+  full MFT reads no longer dead-end when the file object's one-shot IOCP
+  association is already claimed (the "drive stuck Cold under zero-UAC"
+  incident of 2026-08-22)
+- core: corruption-class compact-cache load failures quarantine the poisoned
+  file as `<name>.corrupt` so the next load rebuilds from scratch instead of
+  failing on the same bytes forever
+- core: the parked-tier (bloom + trie) loader joins the same self-heal —
+  corruption-class failures quarantine the file instead of folding into a
+  silent `None`
+- mft: the `.uffs.tmp` sweep in `cache_dir()` is age-gated (1 h) — it no
+  longer deletes temp files an in-flight background cache save is still
+  writing (root cause of the intermittent "Background compact cache save
+  failed" os error 2)
+
 ## [0.6.35] - 2026-08-21
 
 ### Added
@@ -2800,7 +2839,10 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.35...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.38...HEAD
+[0.6.38]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.37...v0.6.38
+[0.6.37]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.36...v0.6.37
+[0.6.36]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.35...v0.6.36
 [0.6.35]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.33...v0.6.35
 [0.6.33]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.32...v0.6.33
 [0.6.32]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.31...v0.6.32
