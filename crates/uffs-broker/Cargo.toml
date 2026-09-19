@@ -74,6 +74,11 @@ anyhow.workspace = true
 # off Windows.
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Daily-rotating, retention-capped file logging for the SCM service path:
+# a service has no stdout, so the broker's own account of an incident
+# was previously written nowhere at all. Bounded on purpose — `uffsd`
+# uses `rolling::never` and one production log reached 305 MB.
+tracing-appender.workspace = true
 windows.workspace = true
 # Shared in-process Authenticode (`WinVerifyTrust`) verification — the
 # single implementation now lives in `uffs-security` (DRY with the

@@ -27,7 +27,12 @@ use uffs_broker_protocol::{HandleRequest, HandleResponse, PIPE_NAME, RESPONSE_WI
 #[path = "broker/service.rs"]
 mod service;
 #[cfg(windows)]
-use service::{install_service, uninstall_service};
+use service::{install_service, repair_service, uninstall_service};
+
+// SCM failure-recovery configuration (`sc failure` / `failureflag`), used by
+// `--install` and `--repair`. See `broker/recovery.rs`.
+#[path = "broker/recovery.rs"]
+mod recovery;
 
 // Operator-facing `--status` / `--start` / `--stop` via native SCM
 // (`uffs-winsvc`), split out to keep this file under the 800-LOC ceiling.
@@ -103,6 +108,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == "--uninstall") {
         return uninstall_service();
     }
+    if args.iter().any(|arg| arg == "--repair") {
+        return repair_service();
+    }
     if args.iter().any(|arg| arg == "--status") {
         control::status();
         return Ok(());
@@ -126,33 +134,12 @@ pub(crate) fn run() -> anyhow::Result<()> {
     service::run_as_service()
 }
 
-/// Print CLI usage help to stderr.
-///
-/// Runs before the `tracing` subscriber is initialised, so uses `eprintln!`
-/// directly — the usual logging channel isn't available yet.
+// Usage banner + `--self-test-vss` argument lookup, split out to keep this
+// file under the 800-LOC ceiling. See `broker/cli.rs`.
+#[path = "broker/cli.rs"]
+mod cli;
 #[cfg(windows)]
-#[expect(
-    clippy::print_stderr,
-    reason = "CLI help text written before tracing subscriber init"
-)]
-fn print_usage() {
-    eprintln!("uffs-broker: use --install, --uninstall, --status, --start, --stop, or --run");
-    eprintln!("  --install     Install as Windows Service");
-    eprintln!("  --uninstall   Remove Windows Service");
-    eprintln!("  --status      Show service state, pid, and pipe-serving status");
-    eprintln!("  --start       Start the service (waits for RUNNING)");
-    eprintln!("  --stop        Stop the service (waits for STOPPED)");
-    eprintln!("  --run         Run in foreground (debugging)");
-    eprintln!("  --self-test-vss <dir>  Elevated smoke test: real VSS snapshot create/read/delete");
-    eprintln!("  --version     Print version (also -V)");
-}
-
-/// Return the directory argument following `--self-test-vss`, if present.
-#[cfg(windows)]
-fn self_test_vss_dir(args: &[String]) -> Option<std::path::PathBuf> {
-    let flag_index = args.iter().position(|arg| arg == "--self-test-vss")?;
-    args.get(flag_index + 1).map(std::path::PathBuf::from)
-}
+use cli::{print_usage, self_test_vss_dir};
 
 /// Run `snapshot_manager::self_test_round_trip` standalone (no service,
 /// no pipe server) and print a PASS/FAIL result — a manual, elevated
