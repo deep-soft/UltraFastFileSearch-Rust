@@ -456,3 +456,97 @@ async fn await_ready_times_out_when_drive_load_progress_stalls() {
         ),
     }
 }
+
+// ── RPC deadline: the whole round trip, not each line ──────────────────
+
+/// One JSON-RPC notification line, shaped like the daemon's periodic
+/// `StatsHeartbeat` broadcast (a `method`, deliberately no `id`).
+const HEARTBEAT: &[u8] =
+    b"{\"jsonrpc\":\"2.0\",\"method\":\"StatsHeartbeat\",\"params\":{\"queries\":0}}\n";
+
+/// The daemon broadcasts a heartbeat notification to every connected client
+/// about every 30 seconds.  The RPC deadline is measured from the start of the
+/// request and must **not** be extended by those notifications.
+///
+/// This is the 2026-09-04 MCP hang, reduced: an `uffs_search` sat silent for
+/// 30 minutes because the deadline was applied per `read_line` and re-armed on
+/// every notification, so a request the daemon never answered waited forever
+/// while the code looked thoroughly timed-out.
+///
+/// Runs on a paused clock, so the 300-second budget costs no wall time.  The
+/// heartbeats stop after 40 rounds (1200 virtual seconds) purely so a
+/// regression **fails** the elapsed assertion instead of hanging the suite.
+#[tokio::test(start_paused = true)]
+async fn heartbeat_notifications_do_not_extend_the_rpc_deadline() {
+    let (client_side, daemon_side) = tokio::io::duplex(8192);
+    let (client_read, client_write) = tokio::io::split(client_side);
+    let mut client = UffsClient::from_parts_for_test(
+        BufReader::new(Box::new(client_read)),
+        Box::new(client_write),
+    );
+
+    // A daemon that is alive and chatty but never answers the request.
+    let daemon = tokio::spawn(async move {
+        let (_daemon_read, mut daemon_write) = tokio::io::split(daemon_side);
+        for _round in 0_u32..40 {
+            tokio::time::sleep(core::time::Duration::from_secs(30)).await;
+            if tokio::io::AsyncWriteExt::write_all(&mut daemon_write, HEARTBEAT)
+                .await
+                .is_err()
+            {
+                return; // client gave up — the expected outcome
+            }
+        }
+        core::future::pending::<()>().await;
+    });
+
+    let started = tokio::time::Instant::now();
+    let outcome = client.status().await;
+    let elapsed = started.elapsed();
+    daemon.abort();
+
+    assert!(
+        matches!(outcome, Err(ClientError::Timeout)),
+        "an unanswered RPC must surface as Timeout, got {outcome:?}"
+    );
+    assert!(
+        elapsed <= core::time::Duration::from_secs(301),
+        "the deadline must bound the whole round trip; heartbeats stretched it to {elapsed:?}"
+    );
+}
+
+/// The happy path still works through the same bounded code: a response that
+/// arrives after a couple of notifications is returned normally, and the
+/// notifications are routed rather than mistaken for the response.
+#[tokio::test(start_paused = true)]
+async fn a_response_arriving_after_notifications_is_still_returned() {
+    let (client_side, daemon_side) = tokio::io::duplex(8192);
+    let (client_read, client_write) = tokio::io::split(client_side);
+    let mut client = UffsClient::from_parts_for_test(
+        BufReader::new(Box::new(client_read)),
+        Box::new(client_write),
+    );
+
+    let daemon = tokio::spawn(async move {
+        let (_daemon_read, mut daemon_write) = tokio::io::split(daemon_side);
+        for _round in 0_u32..2 {
+            tokio::time::sleep(core::time::Duration::from_secs(30)).await;
+            let _sent = tokio::io::AsyncWriteExt::write_all(&mut daemon_write, HEARTBEAT).await;
+        }
+        // id 1 — the first request this client sends.
+        let _answered = tokio::io::AsyncWriteExt::write_all(
+            &mut daemon_write,
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"status\":{\"state\":\"ready\"},\"uptime_secs\":42,\"connections\":1,\"pid\":1234}}\n",
+        )
+        .await;
+        core::future::pending::<()>().await;
+    });
+
+    let outcome = client.status().await;
+    daemon.abort();
+
+    assert!(
+        outcome.is_ok(),
+        "a response arriving after notifications must still be returned, got {outcome:?}"
+    );
+}
