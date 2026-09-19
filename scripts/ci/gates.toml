@@ -42,6 +42,39 @@ docs = '\.md$'
 # code = (rust OR dep OR infra) — derived; not a regex
 
 # ─────────────────────────────────────────────────────────────────────
+# Cross-workflow consistency tables (uffs-gen-workflow properties 6-7,
+# plan §4.2a).  Placed BEFORE the first [[gate]] on purpose: the awk in
+# check_gates_drift.sh resets its gate-state on any table header, so
+# these tables are invisible to the Phase-1 drift detector.
+# ─────────────────────────────────────────────────────────────────────
+
+# Tool versions every workflow must agree on (property 6).  Bump here
+# and in the workflow(s) together; uffs-gen-workflow --check fails on
+# any workflow that pins a different version.
+[toolchain]
+ziglang = "0.14.1"
+cargo-zigbuild = "0.22.3"
+
+# The RUSTFLAGS each build target carries (property 7), in matrix rows
+# and in jobs that name --target under a job-level RUSTFLAGS.
+# target-cpu=native is refused everywhere outside comments.
+[[target]]
+target = "x86_64-pc-windows-msvc"
+rustflags = "-C target-cpu=x86-64-v3"
+
+[[target]]
+target = "aarch64-apple-darwin"
+rustflags = "-C target-cpu=apple-m1 -C link-arg=-Wl,-dead_strip"
+
+[[target]]
+target = "x86_64-unknown-linux-musl"
+rustflags = "-C target-cpu=x86-64-v3 -C link-arg=-Wl,--gc-sections"
+
+[[target]]
+target = "x86_64-unknown-linux-gnu"
+rustflags = "-C target-cpu=x86-64-v3 -C link-arg=-Wl,--gc-sections"
+
+# ─────────────────────────────────────────────────────────────────────
 # Always-on gates — fire regardless of change classification
 # ─────────────────────────────────────────────────────────────────────
 
