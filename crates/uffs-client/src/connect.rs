@@ -22,6 +22,52 @@ use crate::daemon_ctl::pid_file_path;
 use crate::protocol::response::{DaemonStatus, DrivesResponse, SearchResponse, StatusResponse};
 use crate::protocol::{RpcRequest, SearchParams};
 
+/// Default deadline for one complete JSON-RPC round trip, in seconds.
+///
+/// Deliberately more generous than the synchronous client's 60 s
+/// ([`crate::connect_sync_platform::rpc_deadline`]): this is the path the MCP
+/// server and other long-running callers use, where a single `search` can
+/// legitimately block while the daemon warms a cold drive (measured at ~30 s
+/// for one drive, more for several). Five minutes is the value the previous
+/// per-line timeout already intended — the change here is that it now bounds
+/// the whole request instead of being restarted by every notification.
+const DEFAULT_ASYNC_RPC_DEADLINE_SECS: u64 = 300;
+
+/// Resolve the per-RPC deadline from env + default.
+///
+/// Honors the same `UFFS_CLIENT_TIMEOUT_SECS` override as the synchronous
+/// client, including `0` to disable it entirely when attaching a debugger.
+fn rpc_deadline() -> Option<core::time::Duration> {
+    let secs = std::env::var("UFFS_CLIENT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_ASYNC_RPC_DEADLINE_SECS);
+    if secs == 0 {
+        None
+    } else {
+        Some(core::time::Duration::from_secs(secs))
+    }
+}
+
+/// `write_all` bounded by an optional absolute deadline.
+///
+/// An unbounded write is not hypothetical: on Windows the daemon's pipe has a
+/// 64 KB input buffer, so a daemon that has stopped draining blocks the
+/// writer forever with nothing logged on either side.
+async fn write_all_by(
+    writer: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+    buf: &[u8],
+    deadline: Option<tokio::time::Instant>,
+) -> Result<(), crate::error::ClientError> {
+    match deadline {
+        Some(at) => tokio::time::timeout_at(at, writer.write_all(buf))
+            .await
+            .map_err(|_elapsed| crate::error::ClientError::Timeout)?,
+        None => writer.write_all(buf).await,
+    }
+    .map_err(|io_err| crate::error::ClientError::Io(io_err.to_string()))
+}
+
 /// Thin client for the UFFS daemon.
 ///
 /// Uses boxed async I/O so the same struct works with Unix domain sockets
@@ -139,19 +185,36 @@ impl UffsClient {
         let json = serde_json::to_string(&req)
             .map_err(|ser_err| crate::error::ClientError::Protocol(ser_err.to_string()))?;
 
+        // ONE deadline for the whole round trip, armed before the first byte
+        // goes out and never extended.
+        //
+        // This used to be a 5-minute timeout around each individual
+        // `read_line`, re-armed on every loop iteration. The daemon broadcasts
+        // a `StatsHeartbeat` notification to every connected client every 30
+        // seconds, and each one of those restarted the clock — so a request
+        // the daemon never answered waited forever while the code looked
+        // thoroughly timed-out. That is how an MCP `uffs_search` sat silent
+        // for 30 minutes with nothing logged on either side.
+        //
+        // The writes were not bounded at all, which on Windows means a full
+        // 64 KB pipe buffer blocks the caller indefinitely if the daemon is
+        // not draining.
+        let deadline = rpc_deadline().map(|budget| tokio::time::Instant::now() + budget);
+
         tracing::info!(id, method, "send_request: writing request");
-        self.writer
-            .write_all(json.as_bytes())
+        write_all_by(&mut *self.writer, json.as_bytes(), deadline)
             .await
-            .map_err(|io_err| crate::error::ClientError::Io(io_err.to_string()))?;
-        self.writer
-            .write_all(b"\n")
-            .await
-            .map_err(|io_err| crate::error::ClientError::Io(io_err.to_string()))?;
-        self.writer
-            .flush()
-            .await
-            .map_err(|io_err| crate::error::ClientError::Io(io_err.to_string()))?;
+            .inspect_err(|_err| {
+                tracing::warn!(id, method, "send_request: write deadline exceeded");
+            })?;
+        write_all_by(&mut *self.writer, b"\n", deadline).await?;
+        match deadline {
+            Some(at) => tokio::time::timeout_at(at, self.writer.flush())
+                .await
+                .map_err(|_elapsed| crate::error::ClientError::Timeout)?,
+            None => self.writer.flush().await,
+        }
+        .map_err(|io_err| crate::error::ClientError::Io(io_err.to_string()))?;
         tracing::info!(
             id,
             method,
@@ -162,15 +225,18 @@ impl UffsClient {
         // Notifications (no id) are routed to the notification channel.
         loop {
             let mut line = String::new();
-            let read_result = tokio::time::timeout(
-                core::time::Duration::from_mins(5),
-                self.reader.read_line(&mut line),
-            )
-            .await
-            .map_err(|_timeout_err| {
-                tracing::info!(id, method, "send_request: read timed out after 300s");
-                crate::error::ClientError::Timeout
-            })?
+            let read_fut = self.reader.read_line(&mut line);
+            let read_result = match deadline {
+                // `timeout_at` — an absolute instant, so routing a
+                // notification below does NOT buy the response more time.
+                Some(at) => tokio::time::timeout_at(at, read_fut)
+                    .await
+                    .map_err(|_elapsed| {
+                        tracing::warn!(id, method, "send_request: RPC deadline exceeded");
+                        crate::error::ClientError::Timeout
+                    })?,
+                None => read_fut.await,
+            }
             .map_err(|io_err| crate::error::ClientError::Io(io_err.to_string()))?;
 
             if read_result == 0 {

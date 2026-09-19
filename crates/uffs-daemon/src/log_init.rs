@@ -23,6 +23,13 @@ pub(crate) fn default_log_file() -> PathBuf {
     uffs_security::log_dir::log_dir().join("uffsd.log")
 }
 
+/// Daily log files kept before the oldest is pruned.
+///
+/// A week of history is enough to investigate an incident reported the
+/// morning after a weekend, and short enough that the logs cannot quietly
+/// consume a disk.
+const KEPT_LOG_FILES: usize = 7;
+
 /// Initialise tracing for the daemon process.
 ///
 /// * `log_file = Some(path)` — write to that file (append mode). A path of
@@ -100,12 +107,42 @@ pub fn init_tracing(
             return None;
         }
 
-        let file_appender = tracing_appender::rolling::never(
-            parent_dir,
-            resolved
-                .file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new("uffsd.log")),
-        );
+        // Daily rotation with bounded retention — NOT `rolling::never`.
+        //
+        // `never` is append-forever with no size cap and no retention. One
+        // production `uffsd.log` reached **305 MB** that way. The dominant
+        // source of that volume is fixed at the source (the MFT-layout INFO
+        // that fired on every USN poll — see `io::extent_map::MftExtentMap`),
+        // but an unbounded log is a standing hazard regardless of what is
+        // writing to it: the daemon runs for weeks and nothing ever truncates.
+        //
+        // The caller's directory and file stem are preserved, so a
+        // `--log-file /var/log/uffsd.log` becomes `/var/log/uffsd.<date>.log`.
+        let stem = resolved
+            .file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("uffsd");
+        let extension = resolved
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("log");
+        let built = tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix(stem)
+            .filename_suffix(extension)
+            .max_log_files(KEPT_LOG_FILES)
+            .build(parent_dir);
+        let Ok(file_appender) = built else {
+            eprintln!(
+                "uffsd: could not open a rolling log in {}; falling back to stdout logging",
+                parent_dir.display()
+            );
+            let _ignore = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_target(false)
+                .try_init();
+            return None;
+        };
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
         // `try_init` — a subscriber may already exist when invoked via
         // the embedded `uffs --daemon run` path.

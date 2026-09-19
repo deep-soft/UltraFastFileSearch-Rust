@@ -648,6 +648,7 @@ pub(crate) async fn cmd_benchmark_multi_volume(
         // Create extent map
         let extent_map =
             uffs_mft::io::MftExtentMap::new(extents, volume_data.bytes_per_cluster, record_size);
+        extent_map.log_layout();
 
         // Get bitmap
         let bitmap = handle.get_mft_bitmap().ok();

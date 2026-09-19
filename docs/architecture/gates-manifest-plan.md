@@ -295,6 +295,48 @@ reads files; it cannot break the workflow.
 - **Job ordering** — the file lists jobs in roughly cost order;
   the validator doesn't enforce any ordering invariant.
 
+### 4.2a Cross-workflow consistency — properties 5–8 (added 2026-09-03)
+
+Properties 1–4 read `pr-fast.yml` only, because that is the file the
+gate manifest drives.  The release, preview, nightly and dependabot
+workflows are hand-written and were outside every check — which is
+exactly where they drift: one action pinned at two SHAs after a
+partial dependabot bump, a zig version bumped in one job and not the
+other, a target's RUSTFLAGS copied with a typo (one typo from a
+SIGILL on a customer's box), a nextest profile renamed in
+`.config/nextest.toml` and not in the workflow that names it.
+
+`uffs-gen-workflow --check` therefore also validates, over **every**
+`*.yml` under `.github/workflows` (same read-only posture — it can
+fail a push, never rewrite a file):
+
+5. **One pin per action** — every `uses: owner/name@<sha>` for a
+   given action resolves to the same SHA across all workflows.
+6. **Toolchain versions** — every `ziglang==<v>` and
+   `cargo-zigbuild@<v>` matches the manifest's `[toolchain]` table.
+7. **Build targets** — a matrix row `target: T` with
+   `rustflags: "X"`, and a job that names `--target T` under a
+   job-level `RUSTFLAGS`, carry the flags the manifest's `[[target]]`
+   row for `T` gives; `target-cpu=native` is refused anywhere outside
+   a comment.
+8. **Nextest profiles** — every `--profile <name>` on a
+   `nextest run|archive` command (backslash continuations joined)
+   names a `[profile.<name>]` in `.config/nextest.toml`.
+   (`rustup toolchain install --profile minimal` is not a nextest
+   profile and is not matched; `cargo build --profile ship` likewise.)
+
+The `[toolchain]` and `[[target]]` tables sit in `gates.toml` BEFORE
+the first `[[gate]]`, so `check_gates_drift.sh`'s awk (which resets
+its gate-state on any table header) never sees them.  No new gate, no
+hook regeneration, no `pr-fast.yml` change: the existing
+`workflow-drift` gate simply covers more.
+
+Ported from the docenta side of the CI-posture alignment (docenta
+commit `63cf6f6`, 2026-09-03), where the same four properties were
+added to that repo's copy of this generator.  Note the numbering
+collision: properties 5-8 here are unrelated to the deferred "naming
+convention" property 5 of the original §4.2 plan text above.
+
 ### 4.3 `scripts/ci/gen-docs` (Phase 3, deferred)
 
 ```

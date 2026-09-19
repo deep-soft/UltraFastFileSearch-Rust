@@ -35,19 +35,39 @@ impl MftExtentMap {
     /// * `bytes_per_cluster` - Cluster size in bytes
     /// * `bytes_per_record` - File record size in bytes
     #[must_use]
-    pub fn new(extents: Vec<MftExtent>, bytes_per_cluster: u32, bytes_per_record: u32) -> Self {
-        let total_clusters: u64 = extents.iter().map(|ext| ext.cluster_count).sum();
-        let records_per_cluster = bytes_per_cluster / bytes_per_record;
-        let total_records = total_clusters * u64::from(records_per_cluster);
-        let total_size_mb = bytes_to_mb(total_clusters * u64::from(bytes_per_cluster));
-
-        log_extent_layout(&extents, total_clusters, total_records, total_size_mb);
-
+    pub const fn new(
+        extents: Vec<MftExtent>,
+        bytes_per_cluster: u32,
+        bytes_per_record: u32,
+    ) -> Self {
+        // Deliberately silent, and deliberately does no work beyond storing
+        // the fields.  This constructor is called on the USN
+        // journal-poll path (`usn::read_targeted_frs_records`), which on a
+        // busy volume runs several times a second — and the layout line it
+        // used to emit is an INFO.  One production `uffsd.log` reached 305 MB
+        // that way, in a self-feeding loop: writing the log line created a
+        // USN record, which triggered a poll, which rebuilt the map and wrote
+        // the line again.  Callers that genuinely want the layout (the
+        // one-shot cold loads) call [`Self::log_layout`] explicitly.
         Self {
             extents,
             bytes_per_cluster,
             bytes_per_record,
         }
+    }
+
+    /// Log this map's fragmentation layout: one INFO summary plus a DEBUG
+    /// line per extent.
+    ///
+    /// Call this from **one-shot** paths only (a cold drive load, a capture, a
+    /// benchmark).  It is not on the constructor because the USN journal poll
+    /// builds an extent map on every tick; see [`Self::new`].
+    pub fn log_layout(&self) {
+        let total_clusters: u64 = self.extents.iter().map(|ext| ext.cluster_count).sum();
+        let records_per_cluster = self.bytes_per_cluster / self.bytes_per_record;
+        let total_records = total_clusters * u64::from(records_per_cluster);
+        let total_size_mb = bytes_to_mb(total_clusters * u64::from(self.bytes_per_cluster));
+        log_extent_layout(&self.extents, total_clusters, total_records, total_size_mb);
     }
 
     /// Creates a simple extent map for a contiguous MFT.

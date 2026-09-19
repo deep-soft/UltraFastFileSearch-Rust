@@ -91,6 +91,14 @@ criteria = "safe-to-deploy"
 delta = "2.13.0 -> 2.13.1"
 notes = "Reviewed diff (6 files, 30/18 lines): pure perf change in the generated all() macro body (computes the ALL flags mask in a const block instead of a runtime loop, per upstream changelog 'Lower the LLVM IR output'). No new unsafe, no capability changes."
 
+[[audits.bitflags]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "2.13.1 -> 2.13.2"
+notes = """
+Reviewed the full diff (177 changed lines, 10 files). No API change and no behavioural change to generated flag types: the two upstream PRs are a documentation example reordering (#494) and a refactor that re-pulls const declarations out of a nested const block in the macro expansion (#496, src/public.rs / src/traits.rs). No unsafe added, no build.rs, no fs/net/process/env access, and no dependency changes.
+"""
+
 [[audits.blake3]]
 who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
 criteria = "safe-to-deploy"
@@ -208,6 +216,14 @@ who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
 criteria = "safe-to-deploy"
 delta = "0.5.15 -> 0.5.16"
 notes = "Delta audit (cargo vet diff 0.5.15 -> 0.5.16). Files: CHANGELOG/Cargo.toml(.orig) (version bump only, no dependency changes), src/channel.rs, src/flavors/{never,zero}.rs, src/select_macro.rs, src/utils.rs, src/waker.rs, tests/mpsc.rs. Net unsafe: 0 added, 0 removed. Two upstream changes: (1) #1250 constify never() and the zero/never Channel::new() (pub fn -> pub const fn, Channel {..} -> Self {..}) — no runtime behavior change; (2) #1240 change the select!/select_biased! body matcher from => $body:block to => { $($body:tt)* } so rust-analyzer can auto-complete inside the block — semantically equivalent token capture. channel.rs/waker.rs additionally switch from std::sync::Mutex to the crate internal crate::utils::Mutex wrapper, dropping the .lock().unwrap() poison-handling at each call site; the wrapper is a thin non-poisoning shim over the same std Mutex (no new unsafe). No build script, no new dependencies, no new ambient-capability surface. Publisher taiki-e (crossbeam maintainer, same publisher already trusted for the crossbeam-epoch 0.9.18 -> 0.9.20 delta). Strictly a constification + tooling + internal-mutex refactor; trust extends from the audited 0.5.15 base."
+
+[[audits.crossbeam-channel]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "0.5.16 -> 0.5.17"
+notes = """
+Reviewed the full diff (179 changed lines). This is a soundness release and is wanted on its merits: it fixes undefined behaviour in the bounded channel when a `SelectedOperation` is leaked (#1295), fixes an overflow in bounded-channel initialization (#1301), corrects an already-received inconsistency in `at()` (#1296), and widens the index to 64-bit on 32-bit platforms where a 64-bit atomic exists (#1321). Changes are confined to src/channel.rs, src/counter.rs and src/flavors/{array,at,list}.rs plus their tests. No new unsafe blocks, no build.rs, no fs/net/process/env access, no dependency changes. UFFS uses bounded crossbeam channels in the MFT reader pipeline, which is exactly the code path the leak-related UB fix covers.
+"""
 
 [[audits.crossbeam-deque]]
 who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
@@ -933,6 +949,14 @@ criteria = "safe-to-deploy"
 delta = "3.1.2 -> 3.1.4"
 notes = "Security-positive fixes: client secrets redacted from Debug output, response-id correlation enforced (uncorrelated error responses rejected), auto-discovery probe timeout, legacy-initialize fallback with preserved auth challenges. Reviewed auth.rs/client.rs/server.rs diffs; no new capability."
 
+[[audits.rmcp]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "3.1.4 -> 3.4.0"
+notes = """
+Reviewed the diff (6731 changed lines across 63 files) for supply-chain risk rather than line-by-line feature review. No `unsafe` is introduced anywhere, there is no build.rs, and the only additions touching `std::fs` / `std::process` / `std::env` are five lines inside tests/test_unix_socket_transport.rs that build a per-PID temp directory for a socket fixture and clean it up — test-only, never compiled into a dependent binary. New functionality is behind opt-in features UFFS does not enable (`auth-enterprise-managed`, the OAuth/JWT auth stack, and the streamable-HTTP client tests); UFFS builds rmcp with `server`, `transport-io` and `macros` only. The consumer-visible change we did take is the deprecation of the `ServerInfo` alias in favour of `ServerConfig` (both alias `InitializeResult`), which UFFS migrated to in the same commit rather than suppressing the warning.
+"""
+
 [[audits.rmcp-macros]]
 who = "Robert Nio <50460704+githubrobbi@users.noreply.github.com>"
 criteria = "safe-to-deploy"
@@ -975,6 +999,14 @@ criteria = "safe-to-deploy"
 delta = "3.1.2 -> 3.1.4"
 notes = "Changelog + version metadata only; the referenced fix (auto-discovery probe timeout) lives in rmcp, not the macros crate."
 
+[[audits.rmcp-macros]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "3.1.4 -> 3.4.0"
+notes = """
+Reviewed the full diff (140 changed lines across 7 files). Proc-macro crate; no unsafe, no build.rs, no fs/net/process/env access, and no dependency changes. Changes track the companion rmcp 3.1.4 -> 3.4.0 release's attribute surface; generated code remains the tool/router expansion UFFS already relies on.
+"""
+
 [[audits.rustc-hash]]
 who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
 criteria = "safe-to-deploy"
@@ -1004,6 +1036,34 @@ who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
 criteria = "safe-to-deploy"
 delta = "0.23.40 -> 0.23.43"
 notes = "No new or changed unsafe code; no new dependencies or features in Cargo.toml (Cargo.lock gains dev-only entries such as defmt and jiff-core that do not affect dependents). Main feature is RFC 9149 ticket_request support: new public ClientConfig::send_ticket_request (default None) and ServerConfig::max_tls13_tickets (default 0), both off by default so behavior is unchanged unless opted in; wire handling is two u8 counts each way. Handshake-critical hardening: the client now rejects a ServerHello cipher suite unless it was actually offered in its own ClientHello (tracked via offered_cipher_suites) and is usable for the current protocol, and supports_version/find_cipher_suite now take a Protocol parameter so QUIC connections only accept TLS 1.3 on both client and server (server-side error-ordering for QUIC adjusted accordingly). Panic-avoidance fixes: aws-lc-rs ticketer decrypt uses checked_sub so truncated ciphertexts return None instead of underflowing, PSK binder length computations use saturating_sub, and session-ticket age uses a checked u32 conversion. Remaining changes are cfg(read_buf) nightly BorrowedCursor<'_, u8> signature updates, a const fn annotation, and cosmetic cleanups; certificate verification code is untouched. Nothing suspicious observed; capability surface (I/O, network, process, env) is unchanged."
+
+[[audits.rustls]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "0.23.43 -> 0.23.45"
+notes = """
+Security bump taken to clear RUSTSEC-2026-0285 (GHSA-2mjx-qc3c-rqvc), which
+`cargo deny` flagged on 0.23.43: rustls accepted TLS 1.3 handshake messages
+sent at the wrong encryption level when they followed a key-changing message
+in the same record, contrary to RFC 8446 section 5.1.
+
+Reviewed the diff (661 changed lines across 29 files) and located the fix in
+src/msgs/deframer/handshake.rs: `is_aligned` changes from "there is no partial
+fragment of a handshake message" to `!self.is_active()`, i.e. a complete but
+still-pending handshake message now also counts as unaligned, so an
+`EncryptedExtensions` packed into the same record as `ServerHello` is rejected
+instead of accepted.
+
+The rest is hardening in the same vein rather than new surface: additional
+`PeerMisbehaved` rejections (`CipherSuiteDifferedOnRetry`,
+`MissingPskExtensionInSecondClientHello`,
+`SignedHandshakeWithUnadvertisedSigScheme`) and a type-level `NonEmpty`
+parameter on `PayloadU24` so an empty OCSP response cannot be constructed.
+
+No unsafe added, no build.rs, no new `std::fs` / `net` / `process` / `env`
+access, and no new dependencies — only the existing `webpki` 0.103.5 ->
+0.103.14 and `zeroize`-family minimums move.
+"""
 
 [[audits.rustls-native-certs]]
 who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
@@ -1096,6 +1156,14 @@ who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
 criteria = "safe-to-deploy"
 delta = "1.0.2 -> 1.0.3"
 notes = "Delta audit (cargo vet diff 1.0.2 -> 1.0.3, 5 files +105/-36). .gitignore: adds .swival editor tmpdir (no runtime effect). Cargo.toml/Cargo.toml.orig: version bump only. src/sip.rs + src/sip128.rs: single-shot fast-path optimization for the existing SipHasher{,13,24}::hash() and ::hash() (Hash128) public APIs. The old impls cloned the Hasher state, called .write(bytes), then .finish() — going through the buffered short_write codepath byte-by-byte even though the full message was available up-front. The new impls add private Hasher<S>::hash(msg) / hash128(msg) fast paths that, when ntail==0 (no buffered tail bytes from a prior write), XOR-fold msg's 8-byte chunks directly into the SipHash state in a tight loop, then finalize with the standard tail handling. When ntail!=0 the impl falls back to the original clone-write-finish path so correctness is preserved for partially-streamed hashers. The fast path's two unsafe blocks (load_int_le! and u8to64_le) were already present in the pre-existing .write() path and are reused unchanged: the 'while i < len - left' loop with 'left = len & 0x7' guarantees i + 8 <= len, so load_int_le! is in bounds; u8to64_le's 3rd arg 'left' is bounded to 0..8 by construction. Also adds Hasher::write_u16 (was missing — previously fell through to the default Hasher trait impl, which is byte-by-byte). write_u16 mirrors the existing write_u32/_u64/_usize pattern: short_write(i, i.to_le() as u64). finish()/finish128() are refactored to delegate to static finish{,128}_with_state(state,length,tail) helpers — pure structural extraction, output bytes unchanged for any given (state,length,tail). Net result: speed-up for single-shot byte-array hashing; no public-API additions beyond write_u16 (which is part of the std::hash::Hasher trait, not a new surface); no new unsafe operations beyond what already existed; no FFI / FS / network / process — pure crypto primitive, used here only via phf_shared for compile-time string hashing in transitive deps. Author jedisct1 (Frank Denis) is a well-known cryptography maintainer."
+
+[[audits.smallvec]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "1.15.2 -> 1.16.1"
+notes = """
+Reviewed the full diff (735 changed lines across 7 files). The bulk is rustfmt re-wrapping of comments and expressions; in particular the three lines that a naive grep flags as "new unsafe" are the pre-existing `unsafe { MaybeUninit::uninit().assume_init() }` block and two `unsafe` doc/test lines moved onto different lines, with their SAFETY comments preserved verbatim and no change to what is executed. The genuine addition is the `DrainFilter` API (`drain_filter`, `keep_rest`). Dependency surface shrinks: the `debugger_visualizer` feature and its `debugger_test` / `debugger_test_parser` dev-dependencies are removed. No build.rs, no fs/net/process/env access, no new runtime dependencies.
+"""
 
 [[audits.snap]]
 who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
@@ -1302,6 +1370,14 @@ who = "Robert M1 <clauderobert@nios.net>"
 criteria = "safe-to-deploy"
 delta = "1.24.0 -> 1.24.1"
 notes = "Error-diagnostics fix in src/error.rs: invalid-character classification now matches on char (is_ascii_hexdigit) instead of truncating via 'as u8', so non-ASCII input is reported faithfully. Rest is lockfile/doc-link churn. No unsafe, no I/O."
+
+[[audits.uuid]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "1.26.0 -> 1.26.1"
+notes = """
+Reviewed the full diff (281 changed lines). The substantive change is a rework of the v7 counter / `rand_a` bit-packing in src/v7.rs and src/timestamp.rs: the counter is now explicitly clamped to the 74 payload bits (12 `rand_a` + 62), shifted down when the supplied counter is wider, and the fully-random path is separated from the counter path. This is a correctness fix in UUIDv7 generation, not a new capability. No public API added, no unsafe, no build.rs, no fs/net/process/env access, no dependency changes. UFFS uses only `Uuid::new_v4`, which this diff does not touch.
+"""
 
 [[audits.value-trait]]
 who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"

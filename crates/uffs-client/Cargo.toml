@@ -121,6 +121,10 @@ uffs-broker-protocol.workspace = true
 [dev-dependencies]
 # Temporary PID-file fixtures for verify_strict / deep_health_check tests.
 tempfile.workspace = true
+# `test-util` enables tokio's paused clock, which lets the RPC-deadline
+# regression tests span 300 virtual seconds in microseconds of wall time.
+# Dev-only: production builds never see this feature.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

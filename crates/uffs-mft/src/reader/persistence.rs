@@ -105,6 +105,7 @@ impl MftReader {
         });
 
         let extent_map = MftExtentMap::new(extents, volume_data.bytes_per_cluster, record_size);
+        extent_map.log_layout();
         let total_records = extent_map.total_records();
         let total_records_usize = usize::try_from(total_records).map_err(|err| {
             MftError::InvalidData(format!(

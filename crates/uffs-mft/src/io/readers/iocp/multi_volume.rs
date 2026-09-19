@@ -4,6 +4,9 @@
 //! Multi-volume IOCP reader.
 
 use super::prelude::*;
+use crate::platform::{
+    IOCP_WAIT_COMPLETION_DEADLINE, IOCP_WAIT_POLL_INTERVAL_MS, WAIT_TIMEOUT_ERROR_CODE,
+};
 
 /// Per-volume state for multi-volume IOCP reading.
 #[cfg(windows)]
@@ -217,6 +220,8 @@ impl MultiVolumeIocpReader {
         // Process completions
         let mut bytes_read_total = 0_u64;
 
+        // Stall clock for the bounded wait below.
+        let mut last_completion_at = std::time::Instant::now();
         while total_pending > 0 {
             let mut bytes_transferred: u32 = 0;
             let mut completion_key: usize = 0;
@@ -231,9 +236,31 @@ impl MultiVolumeIocpReader {
                     &raw mut bytes_transferred,
                     &raw mut completion_key,
                     &raw mut overlapped_ptr,
-                    u32::MAX,
+                    // Poll, never INFINITE: a completion that never arrives
+                    // (a lost or cancelled read) would otherwise park this
+                    // thread in the kernel for the life of the process.
+                    IOCP_WAIT_POLL_INTERVAL_MS,
                 )
             };
+
+            // A poll that simply saw nothing is not a failure — only a total
+            // absence of progress past the deadline is.
+            if wait_result.is_err() {
+                // SAFETY: `GetLastError` reads the calling thread's last-error
+                // slot and does not dereference any Rust pointers.
+                let poll_error = unsafe { GetLastError() };
+                if poll_error.0 == WAIT_TIMEOUT_ERROR_CODE {
+                    if last_completion_at.elapsed() < IOCP_WAIT_COMPLETION_DEADLINE {
+                        continue;
+                    }
+                    warn!(
+                        stalled_secs = last_completion_at.elapsed().as_secs(),
+                        total_pending, "IOCP wait stalled past the deadline; abandoning the read"
+                    );
+                    break;
+                }
+            }
+            last_completion_at = std::time::Instant::now();
 
             if wait_result.is_err() || overlapped_ptr.is_null() {
                 // SAFETY: `GetLastError` reads the calling thread's last-error

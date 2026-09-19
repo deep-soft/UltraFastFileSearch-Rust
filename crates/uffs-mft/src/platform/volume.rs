@@ -25,7 +25,7 @@ use zerocopy::FromBytes as _;
 use super::bitmap::MftBitmap;
 use super::extents::{MftExtent, get_retrieval_pointers};
 use crate::error::{MftError, Result};
-use crate::index::{frs_to_usize, u32_as_usize};
+use crate::index::frs_to_usize;
 use crate::ntfs::NtfsBootSector;
 
 /// `FILE_READ_DATA` access right (0x0001) - required to read data from a
@@ -1152,38 +1152,21 @@ impl VolumeHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`MftError::Io`] if `SetFilePointerEx`/`ReadFile` on the
-    /// volume handle fails, and [`MftError::InvalidData`] if the sector
-    /// returns fewer bytes than `size_of::<NtfsBootSector>()` or decoding
-    /// the boot-sector layout fails.
-    #[expect(unsafe_code, reason = "FFI: windows API to read the boot sector")]
+    /// Returns [`MftError::Io`] if the overlapped read of the volume handle
+    /// fails, and [`MftError::InvalidData`] if decoding the boot-sector
+    /// layout fails.  A short read is reported by [`read_handle_at`] itself,
+    /// so the 512-byte window is always fully populated on success.
     pub fn read_boot_sector(&self) -> Result<NtfsBootSector> {
-        use windows::Win32::Storage::FileSystem::{FILE_BEGIN, ReadFile, SetFilePointerEx};
-
-        let mut new_position = 0_i64;
-        // SAFETY: `self.handle` is a live volume handle and `new_position`
-        // points to writable stack storage for the duration of the call.
-        unsafe { SetFilePointerEx(self.handle, 0, Some(&raw mut new_position), FILE_BEGIN) }?;
-
         let mut buffer = [0_u8; 512];
-        let mut bytes_read = 0_u32;
 
-        // SAFETY: `self.handle` is a live volume handle, `buffer` is a writable
-        // 512-byte stack array, and `bytes_read` is a valid out-parameter.
-        unsafe {
-            ReadFile(
-                self.handle,
-                Some(&mut buffer),
-                Some(&raw mut bytes_read),
-                None,
-            )
-        }?;
-
-        if bytes_read != 512 {
-            return Err(MftError::BootSectorRead(format!(
-                "Expected 512 bytes, got {bytes_read}"
-            )));
-        }
+        // Overlapped-offset read, never seek-then-read — the same hazard fixed
+        // in `get_mft_bitmap_internal`: on a broker-vended
+        // `FILE_FLAG_OVERLAPPED` handle there is no synchronous file pointer,
+        // so `SetFilePointerEx` is meaningless and a NULL-`lpOverlapped`
+        // `ReadFile` issues an async read that never reports completion —
+        // hanging the caller outright instead of failing. `read_handle_at`
+        // carries its own bounded wait and works on both handle kinds.
+        read_handle_at(self.handle, 0, &mut buffer)?;
 
         let Ok((boot_sector, _)) = NtfsBootSector::read_from_prefix(&buffer) else {
             return Err(MftError::InvalidBootSector(
@@ -1372,9 +1355,7 @@ impl VolumeHandle {
         reason = "every failure branch returns `Ok(MftBitmap::new_all_valid(...))` (graceful fallback); the `Result<_>` signature documents the fallible Win32 call surface and aligns with `get_mft_bitmap` / `get_mft_bitmap_verbose` callers"
     )]
     fn get_mft_bitmap_internal(&self, verbose: bool) -> Result<MftBitmap> {
-        use windows::Win32::Storage::FileSystem::{
-            FILE_BEGIN, GetFileSizeEx, ReadFile, SYNCHRONIZE, SetFilePointerEx,
-        };
+        use windows::Win32::Storage::FileSystem::{GetFileSizeEx, SYNCHRONIZE};
 
         // Same rationale as `get_mft_extents`: `"{volume}:\$MFT::$BITMAP"`
         // re-derives a *live* drive-letter path from `self.volume` (a bare
@@ -1549,32 +1530,45 @@ impl VolumeHandle {
                 );
             }
 
-            let mut new_position = 0_i64;
-            // SAFETY: `self.handle` is a live volume handle and `new_position`
-            // is valid writable storage for the duration of the seek call.
-            unsafe {
-                if let Err(err) = SetFilePointerEx(
-                    self.handle,
-                    byte_offset,
-                    Some(&raw mut new_position),
-                    FILE_BEGIN,
-                ) {
-                    if verbose {
-                        tracing::warn!(
-                            volume = %self.volume,
-                            extent_index = i,
-                            byte_offset,
-                            error = ?err,
-                            "SetFilePointerEx for MFT bitmap extent failed; falling back to all-valid bitmap"
-                        );
-                    }
-                    return Ok(MftBitmap::new_all_valid(frs_to_usize(
-                        self.estimated_record_count(),
-                    )));
-                }
+            // Overlapped-offset read, never seek-then-read.
+            //
+            // `self.handle` may be a `DuplicateHandle` copy of the Access
+            // Broker's `FILE_FLAG_OVERLAPPED` volume handle, which has **no
+            // synchronous file pointer**.  The old `SetFilePointerEx` +
+            // NULL-`lpOverlapped` `ReadFile` pair therefore issued an
+            // asynchronous read the kernel had nowhere to report: the call
+            // never returned and never failed.  Zero bytes, zero CPU, forever.
+            //
+            // That is what wedged a fragmented 14 GB MFT (73 extents) on the
+            // broker path until an external supervisor killed the run at its
+            // four-hour ceiling.  It stopped immediately after the extent
+            // bootstrap because this bitmap load is the very next step and is
+            // silent on the non-verbose path.
+            //
+            // `read_handle_at` is the bounded overlapped primitive the
+            // `$UpCase` read was moved to after the same class of hang (see
+            // its doc comment); it is correct on a synchronous handle too,
+            // where the offset in the `OVERLAPPED` is honoured directly.
+            if extent.lcn.is_hole() {
+                // A sparse extent has no on-disk bytes to read; its window
+                // stays zeroed, which reads as "these records are not in use".
+                buffer_offset += extent_bytes;
+                continue;
             }
+            let Ok(read_offset) = u64::try_from(byte_offset) else {
+                if verbose {
+                    tracing::warn!(
+                        volume = %self.volume,
+                        extent_index = i,
+                        byte_offset,
+                        "MFT bitmap extent has a negative byte offset; falling back to all-valid bitmap"
+                    );
+                }
+                return Ok(MftBitmap::new_all_valid(frs_to_usize(
+                    self.estimated_record_count(),
+                )));
+            };
 
-            let mut bytes_read: u32 = 0;
             let Some(extent_window) = buffer.get_mut(buffer_offset..buffer_offset + extent_bytes)
             else {
                 if verbose {
@@ -1591,35 +1585,33 @@ impl VolumeHandle {
                     self.estimated_record_count(),
                 )));
             };
-            // SAFETY: `self.handle` is a live volume handle, the slice points to
-            // a contiguous writable region of `extent_bytes`, and `bytes_read`
-            // is a valid out-parameter for the duration of the read.
-            unsafe {
-                if let Err(err) = ReadFile(
-                    self.handle,
-                    Some(extent_window),
-                    Some(&raw mut bytes_read),
-                    None,
-                ) {
-                    if verbose {
-                        tracing::warn!(
-                            volume = %self.volume,
-                            extent_index = i,
-                            extent_bytes,
-                            error = ?err,
-                            "ReadFile for MFT bitmap extent failed; falling back to all-valid bitmap"
-                        );
-                    }
-                    return Ok(MftBitmap::new_all_valid(frs_to_usize(
-                        self.estimated_record_count(),
-                    )));
+
+            if let Err(err) = read_handle_at(self.handle, read_offset, extent_window) {
+                if verbose {
+                    tracing::warn!(
+                        volume = %self.volume,
+                        extent_index = i,
+                        extent_bytes,
+                        error = %err,
+                        "Read of MFT bitmap extent failed; falling back to all-valid bitmap"
+                    );
                 }
+                return Ok(MftBitmap::new_all_valid(frs_to_usize(
+                    self.estimated_record_count(),
+                )));
             }
 
+            // `read_handle_at` fills the whole window or returns an error, so
+            // a success here means exactly `extent_bytes` bytes landed.
             if verbose && i < 3 {
-                tracing::info!(volume = %self.volume, extent_index = i, bytes_read, "Read MFT bitmap extent bytes");
-                if i == 0 && bytes_read > 0 {
-                    let sample_end = buffer_offset + 32.min(u32_as_usize(bytes_read));
+                tracing::info!(
+                    volume = %self.volume,
+                    extent_index = i,
+                    bytes_read = extent_bytes,
+                    "Read MFT bitmap extent bytes"
+                );
+                if i == 0 && extent_bytes > 0 {
+                    let sample_end = buffer_offset + 32.min(extent_bytes);
                     let sample: Vec<String> = buffer
                         .get(buffer_offset..sample_end)
                         .unwrap_or(&[])
@@ -1635,7 +1627,7 @@ impl VolumeHandle {
                 }
             }
 
-            buffer_offset += u32_as_usize(bytes_read);
+            buffer_offset += extent_bytes;
         }
 
         if verbose {

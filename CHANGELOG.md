@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.41] - 2026-09-19
+
+### Fixed
+
+- mft: read the MFT bitmap and boot sector through the bounded overlapped path
+- iocp: bound every completion wait and fail instead of stalling forever
+- mft: stop logging the MFT layout from the extent-map constructor
+- client: make the async RPC deadline cover the whole round trip
+- broker: restart after a kill, and keep the service's own log
+- logging: bound the daemon and MCP log files
+- deps: take rustls 0.23.45 for RUSTSEC-2026-0285
+
 ## [0.6.40] - 2026-08-31
 
 ### Changed
@@ -2845,7 +2857,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.40...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.41...HEAD
+[0.6.41]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.40...v0.6.41
 [0.6.40]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.38...v0.6.40
 [0.6.38]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.37...v0.6.38
 [0.6.37]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.36...v0.6.37
