@@ -1037,6 +1037,34 @@ criteria = "safe-to-deploy"
 delta = "0.23.40 -> 0.23.43"
 notes = "No new or changed unsafe code; no new dependencies or features in Cargo.toml (Cargo.lock gains dev-only entries such as defmt and jiff-core that do not affect dependents). Main feature is RFC 9149 ticket_request support: new public ClientConfig::send_ticket_request (default None) and ServerConfig::max_tls13_tickets (default 0), both off by default so behavior is unchanged unless opted in; wire handling is two u8 counts each way. Handshake-critical hardening: the client now rejects a ServerHello cipher suite unless it was actually offered in its own ClientHello (tracked via offered_cipher_suites) and is usable for the current protocol, and supports_version/find_cipher_suite now take a Protocol parameter so QUIC connections only accept TLS 1.3 on both client and server (server-side error-ordering for QUIC adjusted accordingly). Panic-avoidance fixes: aws-lc-rs ticketer decrypt uses checked_sub so truncated ciphertexts return None instead of underflowing, PSK binder length computations use saturating_sub, and session-ticket age uses a checked u32 conversion. Remaining changes are cfg(read_buf) nightly BorrowedCursor<'_, u8> signature updates, a const fn annotation, and cosmetic cleanups; certificate verification code is untouched. Nothing suspicious observed; capability surface (I/O, network, process, env) is unchanged."
 
+[[audits.rustls]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "0.23.43 -> 0.23.45"
+notes = """
+Security bump taken to clear RUSTSEC-2026-0285 (GHSA-2mjx-qc3c-rqvc), which
+`cargo deny` flagged on 0.23.43: rustls accepted TLS 1.3 handshake messages
+sent at the wrong encryption level when they followed a key-changing message
+in the same record, contrary to RFC 8446 section 5.1.
+
+Reviewed the diff (661 changed lines across 29 files) and located the fix in
+src/msgs/deframer/handshake.rs: `is_aligned` changes from "there is no partial
+fragment of a handshake message" to `!self.is_active()`, i.e. a complete but
+still-pending handshake message now also counts as unaligned, so an
+`EncryptedExtensions` packed into the same record as `ServerHello` is rejected
+instead of accepted.
+
+The rest is hardening in the same vein rather than new surface: additional
+`PeerMisbehaved` rejections (`CipherSuiteDifferedOnRetry`,
+`MissingPskExtensionInSecondClientHello`,
+`SignedHandshakeWithUnadvertisedSigScheme`) and a type-level `NonEmpty`
+parameter on `PayloadU24` so an empty OCSP response cannot be constructed.
+
+No unsafe added, no build.rs, no new `std::fs` / `net` / `process` / `env`
+access, and no new dependencies — only the existing `webpki` 0.103.5 ->
+0.103.14 and `zeroize`-family minimums move.
+"""
+
 [[audits.rustls-native-certs]]
 who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
 criteria = "safe-to-deploy"
