@@ -53,6 +53,7 @@ impl MftReader {
             }]
         });
         let extent_map = MftExtentMap::new(extents, volume_data.bytes_per_cluster, record_size);
+        extent_map.log_layout();
 
         let drive_type = detect_drive_type(self.volume);
         let chunk_size = match drive_type {
@@ -329,6 +330,7 @@ fn plan_iocp_capture_chunks(
     });
 
     let extent_map = MftExtentMap::new(extents, volume_data.bytes_per_cluster, record_size);
+    extent_map.log_layout();
     let drive_type = detect_drive_type(volume);
     let chunk_size = drive_type.optimal_chunk_size();
     let chunks = generate_read_chunks(&extent_map, None, chunk_size);

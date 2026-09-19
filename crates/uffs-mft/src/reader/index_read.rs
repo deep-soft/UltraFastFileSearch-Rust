@@ -388,6 +388,7 @@ impl MftReader {
 
         // Create extent map
         let extent_map = MftExtentMap::new(extents, volume_data.bytes_per_cluster, record_size);
+        extent_map.log_layout();
         let total_records = extent_map.total_records();
         info!(total_records, "Total MFT records to read");
 
@@ -982,6 +983,7 @@ impl MftReader {
         let vd = vh.volume_data();
         let extents = vh.get_mft_extents()?;
         let extent_map = crate::io::MftExtentMap::new(extents, vd.bytes_per_cluster, record_size);
+        extent_map.log_layout();
         let reader = crate::io::ParallelMftReader::new_optimized(
             extent_map,
             vh.get_mft_bitmap().ok(),
@@ -1040,6 +1042,7 @@ impl MftReader {
         let vd = vh.volume_data();
         let extents = vh.get_mft_extents()?;
         let extent_map = crate::io::MftExtentMap::new(extents, vd.bytes_per_cluster, record_size);
+        extent_map.log_layout();
         crate::io::readers::offset_fallback::read_mft_via_offset_reads(
             vh.raw_handle(),
             &extent_map,
