@@ -17,7 +17,7 @@ Searches that would normally take 60+ seconds to load data complete in
 ```
 ┌─────────┐                          ┌─────────────┐
 │ uffs CLI ├──── JSON-RPC over ──────┤ uffs-daemon  │
-│ uffs_tui │     local IPC socket    │  (in-memory  │
+│ uffs-tui │     local IPC socket    │  (in-memory  │
 │ uffs --mcp │                         │   MFT index) │
 └─────────┘                          └─────────────┘
 ```
