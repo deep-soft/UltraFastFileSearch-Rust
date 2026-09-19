@@ -245,12 +245,12 @@ serde_json = "1.0.151"
 # tier overrides + adaptive-TTL knobs in `uffs-daemon::config`.
 # Pinned to v1.1.2 to match the supply-chain exemption already on
 # the transitive copy pulled by other deps; no new vet entry needed.
-toml = "1.1.4"
+toml = "1.1.6"
 
 # ───── Data Structures ─────
-bitflags = "2.13.1"
+bitflags = "2.13.2"
 bytemuck = { version = "1.25.2", features = ["derive"] }
-smallvec = "1.15.2"
+smallvec = "1.16.1"
 zerocopy = { version = "0.8.56", features = ["derive"] }
 
 # ───── Error Handling ─────
@@ -258,7 +258,7 @@ thiserror = "2.0.20"
 anyhow = "1.0.104"
 
 # ───── MCP (Model Context Protocol) ─────
-rmcp = { version = "3.1.4", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "3.4.0", features = ["server", "transport-io", "macros"] }
 schemars = "1.2.2"
 
 # ───── HTTP / Tower (for MCP Streamable HTTP gateway) ─────
@@ -275,7 +275,7 @@ tracing-subscriber = { version = "0.3.23", features = [
 tracing-appender = "0.2.5"
 
 # ───── CLI ─────
-clap = { version = "4.6.6", features = [
+clap = { version = "4.6.7", features = [
   "derive",
   "env",
   "unicode",
@@ -347,7 +347,7 @@ reqwest = { version = "0.12.28", default-features = false, features = [
 
 # ───── Parallelism ─────
 rayon = "1.12.0"
-crossbeam-channel = "0.5.16"
+crossbeam-channel = "0.5.17"
 
 # ───── Memory ─────
 mimalloc = "0.1.52"
@@ -363,7 +363,7 @@ hostname = "0.4.2"
 num_cpus = "1.17.0"
 # Random unique identifiers.  Only the `v4` (random) feature is enabled
 # workspace-wide; consumers that need v1/v5/v7 etc. re-add the feature.
-uuid = { version = "1.26.0", features = ["v4"] }
+uuid = { version = "1.26.1", features = ["v4"] }
 
 # ───── Security / Crypto ─────
 aes-gcm = "0.11.1"
