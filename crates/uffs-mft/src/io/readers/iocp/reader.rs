@@ -222,11 +222,10 @@ impl IocpMftReader {
         F: FnMut(u64, u64),
     {
         // SAFETY: caller's invariant: `iocp` drives every in-flight op.
-        let Some((slot_idx, mut op, bytes_transferred)) =
-            (unsafe { iocp_wait_for_completion(iocp, in_flight) })
-        else {
-            return Ok(());
-        };
+        // A wait failure now propagates instead of being swallowed as a
+        // no-op completion, which is what kept the read loop from advancing.
+        let (slot_idx, mut op, bytes_transferred) =
+            unsafe { iocp_wait_for_completion(iocp, in_flight) }?;
 
         // SAFETY: the `Pin<Box<_>>` is still pinned in this scope; we only
         // project a mutable reference without moving the allocation.
@@ -425,9 +424,15 @@ unsafe fn iocp_prime_initial_reads(
 /// Block on `GetQueuedCompletionStatus` for `iocp` and pull the matching
 /// pinned [`OverlappedRead`] out of `in_flight`.
 ///
-/// Returns `Some((slot_idx, op, bytes_transferred))` for a normal
-/// completion or `None` when the wait failed / the completion does not
-/// match a tracked slot (caller should `continue` the event loop).
+/// Returns `(slot_idx, op, bytes_transferred)` for a normal completion.
+///
+/// # Errors
+///
+/// [`MftError::WaitFailed`] when no completion arrives within
+/// [`IOCP_WAIT_COMPLETION_DEADLINE`], when the wait itself fails, or when the
+/// completion matches no tracked slot.  Every one of those used to be
+/// reported as "no completion this round", which stalled the read loop
+/// permanently instead of ending it.
 ///
 /// # Safety
 ///
@@ -440,30 +445,69 @@ unsafe fn iocp_prime_initial_reads(
 unsafe fn iocp_wait_for_completion(
     iocp: &IoCompletionPort,
     in_flight: &mut [Option<core::pin::Pin<Box<OverlappedRead>>>],
-) -> Option<(usize, core::pin::Pin<Box<OverlappedRead>>, u32)> {
+) -> Result<(usize, core::pin::Pin<Box<OverlappedRead>>, u32)> {
+    use std::time::Instant;
+
+    use windows::Win32::Foundation::GetLastError;
     use windows::Win32::System::IO::GetQueuedCompletionStatus;
+
+    use crate::platform::{
+        IOCP_WAIT_COMPLETION_DEADLINE, IOCP_WAIT_POLL_INTERVAL_MS, WAIT_TIMEOUT_ERROR_CODE,
+        classify_wait_error_code, wait_deadline_exceeded,
+    };
+
+    /// Operation name carried on a wait failure from this reader.
+    const WAIT_OPERATION: &str = "iocp_wait_for_completion";
 
     let mut bytes_transferred: u32 = 0;
     let mut completion_key: usize = 0;
     let mut overlapped_ptr: *mut windows::Win32::System::IO::OVERLAPPED = core::ptr::null_mut();
 
-    // SAFETY: `iocp.raw_handle()` is a valid IOCP handle (caller's
-    // invariant); the four out-parameters are exclusive mutable
-    // references to local variables that live for the call.
-    let wait_result = unsafe {
-        GetQueuedCompletionStatus(
-            iocp.raw_handle(),
-            &raw mut bytes_transferred,
-            &raw mut completion_key,
-            &raw mut overlapped_ptr,
-            u32::MAX,
-        )
-    };
-
-    if wait_result.is_err() {
-        let err = std::io::Error::last_os_error();
-        warn!(error = %err, "GetQueuedCompletionStatus failed");
-        return None;
+    // Poll until a completion arrives or the stall deadline expires — never
+    // an INFINITE wait.
+    //
+    // The previous version waited forever and, on failure, returned `None`,
+    // which the caller turned into `Ok(())` WITHOUT incrementing
+    // `completed_count`. The read loop therefore never advanced and the next
+    // wait parked forever on a port with no pending I/O: zero CPU, zero
+    // bytes, no error — and, had it ever returned, a silently truncated
+    // index. Both failure modes are now errors.
+    let started_waiting_at = Instant::now();
+    loop {
+        // SAFETY: `iocp.raw_handle()` is a valid IOCP handle (caller's
+        // invariant); the four out-parameters are exclusive mutable
+        // references to local variables that live for the call.
+        let wait_result = unsafe {
+            GetQueuedCompletionStatus(
+                iocp.raw_handle(),
+                &raw mut bytes_transferred,
+                &raw mut completion_key,
+                &raw mut overlapped_ptr,
+                IOCP_WAIT_POLL_INTERVAL_MS,
+            )
+        };
+        if wait_result.is_ok() {
+            break;
+        }
+        // SAFETY: `GetLastError` reads the calling thread's last-error slot
+        // and does not dereference any Rust pointers.
+        let last_error = unsafe { GetLastError() };
+        if last_error.0 == WAIT_TIMEOUT_ERROR_CODE {
+            let stalled_for = started_waiting_at.elapsed();
+            if stalled_for >= IOCP_WAIT_COMPLETION_DEADLINE {
+                return Err(wait_deadline_exceeded(
+                    WAIT_OPERATION,
+                    stalled_for,
+                    String::from("GetQueuedCompletionStatus observed no IOCP completion"),
+                ));
+            }
+            continue;
+        }
+        return Err(classify_wait_error_code(
+            WAIT_OPERATION,
+            last_error.0,
+            String::from("GetQueuedCompletionStatus failed while awaiting an IOCP completion"),
+        ));
     }
 
     let mut completed_slot: Option<usize> = None;
@@ -476,8 +520,28 @@ unsafe fn iocp_wait_for_completion(
         }
     }
 
-    let slot_idx = completed_slot?;
-    let op_slot = in_flight.get_mut(slot_idx)?;
-    let op = op_slot.take()?;
-    Some((slot_idx, op, bytes_transferred))
+    // A completion whose OVERLAPPED matches no in-flight slot means the port
+    // and the slot table have diverged. Silently returning here used to stall
+    // the loop forever; surface it instead.
+    let Some(slot_idx) = completed_slot else {
+        return Err(MftError::WaitFailed {
+            operation: WAIT_OPERATION,
+            reason: String::from(
+                "GetQueuedCompletionStatus returned an OVERLAPPED that matches no in-flight read",
+            ),
+        });
+    };
+    let Some(op_slot) = in_flight.get_mut(slot_idx) else {
+        return Err(MftError::WaitFailed {
+            operation: WAIT_OPERATION,
+            reason: format!("completed IOCP slot {slot_idx} is out of range"),
+        });
+    };
+    let Some(op) = op_slot.take() else {
+        return Err(MftError::WaitFailed {
+            operation: WAIT_OPERATION,
+            reason: format!("completed IOCP slot {slot_idx} was already taken"),
+        });
+    };
+    Ok((slot_idx, op, bytes_transferred))
 }

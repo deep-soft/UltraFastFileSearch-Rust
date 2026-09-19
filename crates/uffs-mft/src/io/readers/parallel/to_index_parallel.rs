@@ -104,9 +104,18 @@ impl ParallelMftReader {
         use alloc::sync::Arc;
         use core::pin::Pin;
         use core::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Instant;
 
         use crossbeam_channel::bounded;
         use windows::Win32::Foundation::{ERROR_IO_PENDING, GetLastError};
+
+        use crate::platform::{
+            IOCP_WAIT_COMPLETION_DEADLINE, IOCP_WAIT_POLL_INTERVAL_MS, WAIT_TIMEOUT_ERROR_CODE,
+            classify_wait_error_code, wait_deadline_exceeded,
+        };
+
+        /// Operation name carried on a wait failure from this reader.
+        const WAIT_OPERATION: &str = "read_all_sliding_window_iocp_to_index_parallel";
         use windows::Win32::Storage::FileSystem::ReadFile;
         use windows::Win32::System::IO::GetQueuedCompletionStatus;
 
@@ -334,7 +343,7 @@ impl ParallelMftReader {
         drop(rx);
 
         // IOCP reading (producer)
-        let read_start = std::time::Instant::now();
+        let read_start = Instant::now();
         let iocp = IoCompletionPort::new(0)?;
         iocp.associate(overlapped_handle, 0)?;
 
@@ -414,6 +423,10 @@ impl ParallelMftReader {
         }
 
         // Process completions and send to workers
+        // Stall clock for the bounded wait below: reset on every real
+        // completion, so the deadline measures "no progress at all",
+        // never "this read is slow".
+        let mut last_completion_at = Instant::now();
         while completed_count < total_io_ops {
             let mut bytes_transferred: u32 = 0;
             let mut completion_key: usize = 0;
@@ -428,15 +441,49 @@ impl ParallelMftReader {
                     &raw mut bytes_transferred,
                     &raw mut completion_key,
                     &raw mut overlapped_ptr,
-                    u32::MAX,
+                    // Poll, never INFINITE. An infinite wait here could not be
+                    // distinguished from a healthy slow read, and the error
+                    // branch below used to `continue` WITHOUT clearing or
+                    // re-issuing the failed slot: the in-flight count fell to
+                    // zero while `completed_count < total_io_ops` stayed true,
+                    // so the next wait parked forever on a port with no
+                    // pending I/O — zero CPU, zero reads, no error, no end.
+                    IOCP_WAIT_POLL_INTERVAL_MS,
                 )
             };
 
             if result.is_err() {
-                let err = std::io::Error::last_os_error();
-                warn!(error = %err, "GetQueuedCompletionStatus failed");
-                continue;
+                // SAFETY: `GetLastError` reads the calling thread's last-error
+                // slot and does not dereference any Rust pointers.
+                let last_error = unsafe { GetLastError() };
+                if last_error.0 == WAIT_TIMEOUT_ERROR_CODE {
+                    // Nothing completed in this poll window. That is normal;
+                    // only a total absence of progress is fatal.
+                    let stalled_for = last_completion_at.elapsed();
+                    if stalled_for >= IOCP_WAIT_COMPLETION_DEADLINE {
+                        return Err(wait_deadline_exceeded(
+                            WAIT_OPERATION,
+                            stalled_for,
+                            format!(
+                                "GetQueuedCompletionStatus observed no IOCP completions after {completed_count} of {total_io_ops} reads"
+                            ),
+                        ));
+                    }
+                    continue;
+                }
+
+                // A real wait failure. Returning is the whole point: the old
+                // `continue` turned a recoverable error into a permanent hang.
+                return Err(classify_wait_error_code(
+                    WAIT_OPERATION,
+                    last_error.0,
+                    format!(
+                        "GetQueuedCompletionStatus failed after {completed_count} of {total_io_ops} reads completed"
+                    ),
+                ));
             }
+
+            last_completion_at = Instant::now();
 
             // Find completed slot
             let mut completed_slot = None;
@@ -564,7 +611,7 @@ impl ParallelMftReader {
         drop(tx);
 
         // Collect parse results from workers and merge using unified pipeline
-        let merge_start = std::time::Instant::now();
+        let merge_start = Instant::now();
         let mut merger = MftRecordMerger::with_capacity(total_records);
 
         for handle in worker_handles {
