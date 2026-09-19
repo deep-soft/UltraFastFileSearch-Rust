@@ -196,6 +196,7 @@ impl MftReader {
 
         // Create extent map
         let extent_map = MftExtentMap::new(extents, volume_data.bytes_per_cluster, record_size);
+        extent_map.log_layout();
 
         let total_records = extent_map.total_records();
         info!(total_records, "Total MFT records to read");

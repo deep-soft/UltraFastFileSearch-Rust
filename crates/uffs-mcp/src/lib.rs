@@ -131,14 +131,35 @@ pub fn init_mcp_tracing(
         if let Some(parent) = resolved.parent() {
             let _ignore = std::fs::create_dir_all(parent);
         }
-        let file_appender = tracing_appender::rolling::never(
-            resolved
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(".")),
-            resolved
-                .file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new("uffs_mcp.log")),
-        );
+        // Daily rotation with bounded retention — NOT `rolling::never`,
+        // which appends forever with no size cap and no pruning. The daemon
+        // used `never` and one production log reached 305 MB; the MCP server
+        // is equally long-lived, so it gets the same bound rather than
+        // waiting its turn to be the one that fills a disk.
+        let parent_dir = resolved
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let stem = resolved
+            .file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("uffs_mcp");
+        let extension = resolved
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("log");
+        let built = tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix(stem)
+            .filename_suffix(extension)
+            .max_log_files(KEPT_MCP_LOG_FILES)
+            .build(parent_dir);
+        let Ok(file_appender) = built else {
+            let _ignore = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_target(false)
+                .try_init();
+            return None;
+        };
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
         let _ignore = tracing_subscriber::fmt()
             .with_env_filter(filter)
@@ -157,6 +178,12 @@ pub fn init_mcp_tracing(
         None
     }
 }
+
+/// Daily MCP log files kept before the oldest is pruned.
+///
+/// Matches the daemon's retention so both halves of an incident cover the
+/// same window.
+const KEPT_MCP_LOG_FILES: usize = 7;
 
 /// Default log file path for MCP diagnostic sessions.
 ///

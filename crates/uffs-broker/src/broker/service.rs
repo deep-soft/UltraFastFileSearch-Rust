@@ -44,7 +44,7 @@ fn wide(text: &str) -> Vec<u16> {
 /// `sc.exe` writes most of its diagnostics to **stdout**, not stderr, so a
 /// stderr-only message comes out empty (as seen on a failed `sc create`).
 #[cfg(windows)]
-fn sc_output(output: &std::process::Output) -> String {
+pub(super) fn sc_output(output: &std::process::Output) -> String {
     // AUDIT-OK(bytes): operator-facing diagnostic text only — the combined
     // output is formatted into an error message, never parsed or matched.
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -154,6 +154,17 @@ pub(super) fn install_service() -> anyhow::Result<()> {
     }
     println!("ok");
 
+    // Recovery actions, applied immediately after registration.  Without
+    // them the SCM's response to a killed broker is to log event 7034 and
+    // do nothing at all — which on 2026-09-04 left the box without a broker
+    // for seven hours.  A failure here is reported but NOT fatal: a broker
+    // that is installed and running without a restart ladder is strictly
+    // better than no broker, and `--repair` can add the ladder later.
+    match super::recovery::configure_recovery_actions(SERVICE_NAME) {
+        Ok(()) => println!("  restart-on-failure configured (5s / 10s / 60s)"),
+        Err(err) => println!("  note: could not set recovery actions: {err:#}"),
+    }
+
     // Start it now so the broker is usable immediately — the whole point
     // is "no future UAC", which only holds once the service is running.
     // `start= auto` also brings it back on every boot.
@@ -181,6 +192,48 @@ pub(super) fn install_service() -> anyhow::Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+/// Re-apply the SCM restart ladder to an **already installed** service.
+///
+/// `--install` sets recovery actions at registration time, but a broker
+/// installed before that existed has none — which is the state the 2026-09-04
+/// incident found it in.  Reinstalling would mean a stop/delete/create cycle
+/// (and a window with no broker at all) purely to change two SCM settings, so
+/// this applies them in place instead.
+///
+/// Idempotent: running it against a service that already has the ladder is a
+/// no-op success.
+///
+/// # Errors
+///
+/// Returns an error if the service is not installed, if the caller is not
+/// elevated, or if `sc.exe` rejects either configuration call.
+#[cfg(windows)]
+#[expect(
+    clippy::print_stdout,
+    reason = "CLI admin command — stdout is the user-visible result channel"
+)]
+pub(super) fn repair_service() -> anyhow::Result<()> {
+    if !uffs_winsvc::is_installed(SERVICE_NAME) {
+        anyhow::bail!(
+            "the broker service is not installed — run `uffs-broker --install` \
+             from an elevated terminal instead."
+        );
+    }
+    if !super::is_elevated() {
+        anyhow::bail!(
+            "repairing the broker service requires Administrator.\n\
+             Open an elevated terminal and re-run:\n    uffs-broker --repair"
+        );
+    }
+    super::recovery::configure_recovery_actions(SERVICE_NAME)?;
+    println!(
+        "Restart-on-failure configured for the UFFS Access Broker.\n\
+         It will now restart automatically (after 5s, then 10s, then 60s) if it \
+         is killed or crashes, instead of staying down until someone notices."
+    );
     Ok(())
 }
 
@@ -298,7 +351,7 @@ extern "system" fn service_main(_argc: u32, _argv: *mut windows::core::PWSTR) {
     use core::sync::atomic::Ordering;
 
     use windows::Win32::System::Services::{
-        RegisterServiceCtrlHandlerW, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STOPPED,
+        RegisterServiceCtrlHandlerW, SERVICE_RUNNING, SERVICE_START_PENDING,
     };
     use windows::core::PCWSTR;
 
@@ -312,15 +365,136 @@ extern "system" fn service_main(_argc: u32, _argv: *mut windows::core::PWSTR) {
     STATUS_HANDLE.store(handle.0, Ordering::Relaxed);
 
     report_status(SERVICE_START_PENDING, 0);
-    super::init_tracing();
-    tracing::info!("uffs-broker starting (service mode)");
+    // File logging, not stdout: a service has no console, so the previous
+    // `super::init_tracing()` wrote every line into the void.  When the
+    // broker was killed on 2026-09-04 its own side of the story did not
+    // exist — the whole timeline had to be reconstructed from the Windows
+    // Security log.  Hold the guard until `service_main` returns so the
+    // non-blocking writer is flushed on the way out.
+    let _log_guard = init_service_tracing();
+    tracing::info!(
+        pid = std::process::id(),
+        version = %uffs_version::version_short!("uffs-broker"),
+        "uffs-broker starting (service mode)"
+    );
     report_status(SERVICE_RUNNING, accepted_controls());
 
-    if let Err(err) = super::serve_pipe_requests() {
-        tracing::error!(error = %err, "broker serve loop exited with error");
+    // A serve loop that returns `Err` used to be logged and then reported as
+    // a CLEAN stop, which tells the SCM the service ended on purpose — so no
+    // recovery action ran and the broker stayed down until a human noticed.
+    // Report the failure as a service-specific error instead; together with
+    // the failure flag set by `recovery::configure_recovery_actions`, that is
+    // what actually gets the broker restarted.
+    let serve_result = super::serve_pipe_requests();
+    let failed = match serve_result {
+        Ok(()) => false,
+        Err(err) => {
+            tracing::error!(error = %err, "broker serve loop exited with error");
+            true
+        }
+    };
+    tracing::info!(failed, "uffs-broker stopped (service mode)");
+    report_stopped(failed);
+}
+
+/// Initialise tracing for the SCM-dispatched service, writing to
+/// `<log-dir>/uffs-broker.log`.
+///
+/// Mirrors the daemon's `log_init`, with one deliberate difference: the
+/// broker rotates **daily and keeps a bounded number of files**.  `uffsd`
+/// uses `rolling::never` and one production log reached 305 MB; a service
+/// that nobody ever looks at until an incident must not be the thing that
+/// fills the disk.
+///
+/// Returns the writer guard, which the caller must hold for the lifetime of
+/// the service — dropping it flushes buffered lines.  Returns `None` when the
+/// log directory cannot be created, in which case the broker degrades to a
+/// stdout subscriber (harmless, just invisible) rather than failing to start.
+#[cfg(windows)]
+fn init_service_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    /// Log files kept by the daily rotation before the oldest is pruned.
+    const KEPT_LOG_FILES: usize = 7;
+
+    let dir = uffs_security::log_dir::log_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        // No console to complain to; fall back to a stdout subscriber so a
+        // foreground/debug invocation still shows something.
+        let fallback = tracing_subscriber::fmt()
+            .with_target(false)
+            .with_max_level(tracing::Level::INFO)
+            .try_init();
+        drop(fallback);
+        return None;
     }
-    tracing::info!("uffs-broker stopped (service mode)");
-    report_status(SERVICE_STOPPED, 0);
+    let built = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("uffs-broker")
+        .filename_suffix("log")
+        .max_log_files(KEPT_LOG_FILES)
+        .build(&dir);
+    let Ok(appender) = built else {
+        let fallback = tracing_subscriber::fmt()
+            .with_target(false)
+            .with_max_level(tracing::Level::INFO)
+            .try_init();
+        drop(fallback);
+        return None;
+    };
+    let (non_blocking, guard) = tracing_appender::non_blocking(appender);
+    let init_result = tracing_subscriber::fmt()
+        .with_target(false)
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
+        .with_writer(non_blocking)
+        .try_init();
+    drop(init_result);
+    Some(guard)
+}
+
+/// Report `SERVICE_STOPPED`, carrying a service-specific error when the serve
+/// loop failed so the SCM's recovery actions apply.
+///
+/// `ERROR_SERVICE_SPECIFIC_ERROR` (1066) in `dwWin32ExitCode` is the
+/// documented way to say "this service failed for its own reason"; the detail
+/// goes in `dwServiceSpecificExitCode`.
+#[cfg(windows)]
+#[expect(unsafe_code, reason = "FFI: SetServiceStatus")]
+fn report_stopped(failed: bool) {
+    use core::sync::atomic::Ordering;
+
+    use windows::Win32::System::Services::{
+        SERVICE_STATUS, SERVICE_STATUS_HANDLE, SERVICE_STOPPED, SERVICE_WIN32_OWN_PROCESS,
+        SetServiceStatus,
+    };
+
+    /// `ERROR_SERVICE_SPECIFIC_ERROR` — "the service has returned a
+    /// service-specific error code".
+    const ERROR_SERVICE_SPECIFIC_ERROR: u32 = 1066;
+    /// Our one service-specific code: the serve loop exited with an error.
+    const SERVE_LOOP_FAILED: u32 = 1;
+
+    let raw = STATUS_HANDLE.load(Ordering::Relaxed);
+    if raw.is_null() {
+        return;
+    }
+    let status = SERVICE_STATUS {
+        dwServiceType: SERVICE_WIN32_OWN_PROCESS,
+        dwCurrentState: SERVICE_STOPPED,
+        dwControlsAccepted: 0,
+        dwWin32ExitCode: if failed {
+            ERROR_SERVICE_SPECIFIC_ERROR
+        } else {
+            0
+        },
+        dwServiceSpecificExitCode: if failed { SERVE_LOOP_FAILED } else { 0 },
+        dwCheckPoint: 0,
+        dwWaitHint: 0,
+    };
+    // SAFETY: `raw` is the handle stored by `service_main`; `status` is fully
+    // initialised and valid for the duration of the call.
+    if let Err(err) = unsafe { SetServiceStatus(SERVICE_STATUS_HANDLE(raw), &raw const status) } {
+        tracing::debug!(err = ?err, "SetServiceStatus(STOPPED) failed");
+    }
 }
 
 /// SCM control handler: on STOP / SHUTDOWN flag the accept loop to exit and
