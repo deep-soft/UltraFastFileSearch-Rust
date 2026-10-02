@@ -250,15 +250,15 @@ toml = "1.1.6"
 # ───── Data Structures ─────
 bitflags = "2.13.2"
 bytemuck = { version = "1.25.2", features = ["derive"] }
-smallvec = "1.16.1"
+smallvec = "1.16.2"
 zerocopy = { version = "0.8.56", features = ["derive"] }
 
 # ───── Error Handling ─────
-thiserror = "2.0.20"
+thiserror = "2.0.21"
 anyhow = "1.0.104"
 
 # ───── MCP (Model Context Protocol) ─────
-rmcp = { version = "3.4.0", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "3.5.0", features = ["server", "transport-io", "macros"] }
 schemars = "1.2.2"
 
 # ───── HTTP / Tower (for MCP Streamable HTTP gateway) ─────
@@ -354,7 +354,7 @@ mimalloc = "0.1.52"
 memmap2 = "0.9.11"
 
 # ───── System ─────
-libc = "0.2.189"
+libc = "0.2.190"
 hostname = "0.4.2"
 # CPU-core count detection.  `std::thread::available_parallelism` is the
 # modern alternative, but `num_cpus` handles cgroup / container quotas more
@@ -367,7 +367,7 @@ uuid = { version = "1.26.1", features = ["v4"] }
 
 # ───── Security / Crypto ─────
 aes-gcm = "0.11.1"
-rand = "0.10.2"
+rand = "0.10.3"
 rand_chacha = "0.10.0"
 security-framework = "3.7.0"
 
