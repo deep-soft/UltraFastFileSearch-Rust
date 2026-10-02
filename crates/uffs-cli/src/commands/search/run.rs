@@ -126,9 +126,7 @@ pub(crate) fn run_search(args: &[String]) -> Result<()> {
         .any(|arg| arg == "--out" || arg.starts_with("--out="));
     let daemon_wrote_file = has_out && response.payload.is_empty();
 
-    // Phase 3.1 NUL fast path: `--no-output` (explicit or auto-injected
-    // for NUL stdout) skips every client-side stdout write.
-    let suppress_stdout = args_owned.iter().any(|arg| arg == "--no-output");
+    let suppress_stdout = should_suppress_stdout(&args_owned);
 
     if !daemon_wrote_file && !suppress_stdout {
         write_search_payload_to_stdout(response.payload, args)?;
@@ -150,6 +148,25 @@ pub(crate) fn run_search(args: &[String]) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Whether every client-side stdout write for a search should be skipped.
+///
+/// Two flags opt out of output:
+///
+/// * `--no-output` — the Phase 3.1 NUL fast path, given explicitly or
+///   auto-injected when stdout is a null device (`uffs *.dll > NUL`).
+/// * `--benchmark` — documented in `args_help.rs` as "Measure only, skip
+///   output".  Until this helper existed only `--no-output` was honoured, so a
+///   benchmark against a wide query printed every matching row and the timing
+///   line scrolled straight off the terminal (reported in #626).  The profile
+///   summary is printed separately and is unaffected: that is the benchmark's
+///   actual output.
+///
+/// Pure so the decision is unit-testable without a daemon.
+fn should_suppress_stdout(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg == "--no-output" || arg == "--benchmark")
 }
 
 /// Write the daemon's search payload to stdout, picking the fastest
@@ -239,6 +256,32 @@ fn write_search_payload_to_stdout(payload: SearchPayload, args: &[String]) -> Re
 #[cfg(test)]
 mod tests {
     use uffs_client::protocol::SearchParams;
+
+    use super::should_suppress_stdout;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
+    /// `--benchmark` is documented as "Measure only, skip output"; before
+    /// #626 only `--no-output` was honoured, so a benchmark flooded the
+    /// terminal with every matching row.  Both flags must suppress rows, and
+    /// an ordinary search must not.
+    #[test]
+    fn benchmark_and_no_output_both_suppress_stdout() {
+        assert!(should_suppress_stdout(&args(&["*.rs", "--benchmark"])));
+        assert!(should_suppress_stdout(&args(&["*.rs", "--no-output"])));
+        assert!(should_suppress_stdout(&args(&[
+            "--benchmark",
+            "*.rs",
+            "--drive",
+            "C"
+        ])));
+        assert!(!should_suppress_stdout(&args(&["*.rs"])));
+        assert!(!should_suppress_stdout(&args(&["*.rs", "--profile"])));
+        // A value that merely contains the flag text is not the flag.
+        assert!(!should_suppress_stdout(&args(&["--benchmark-results.txt"])));
+    }
 
     #[test]
     fn from_cli_args_basic_search() {
