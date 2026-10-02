@@ -726,7 +726,17 @@ jobs:
           # warning and ship the engine bundles WITHOUT the demo — a
           # demo-repo hiccup must never block an engine release.
           mkdir -p demo
-          DEMO_ASSET="uffs_tui-demo-${PLAT}${EXT}"
+          # Asset name is HYPHENATED (`uffs-tui-demo-…`). uffs-products
+          # commit 2997eee7 (2026-09-07, released as demo v0.1.17) renamed
+          # the binaries `uffs_tui`/`uffs_gui` -> `uffs-tui`/`uffs-gui` and
+          # its CHANGELOG spells out that the release asset names moved with
+          # them. This file was not updated, so from v0.6.41 the download
+          # below silently missed — and because the miss is non-fatal by
+          # design, the engine shipped without the demo and nothing failed.
+          # The damage surfaced one step later: the WinGet manifest still
+          # declared `uffs-tui.exe` as a NestedInstallerFile, so Microsoft's
+          # validation rejected the PR for a file that was not in the zip.
+          DEMO_ASSET="uffs-tui-demo-${PLAT}${EXT}"
           DEMO_BIN=""
           if gh release download --repo githubrobbi/uffs-demo \
                --pattern "$DEMO_ASSET" --dir demo --clobber; then

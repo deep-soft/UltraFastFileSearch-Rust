@@ -655,7 +655,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1052,7 +1052,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1799,9 +1799,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "libm"
@@ -2066,13 +2066,13 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "quick-xml",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reqwest",
  "ring",
  "serde",
  "serde_json",
  "serde_urlencoded",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "url",
@@ -2309,7 +2309,7 @@ dependencies = [
  "polars-config",
  "polars-error",
  "polars-utils",
- "rand 0.10.2",
+ "rand 0.10.3",
  "slotmap",
  "tokio",
 ]
@@ -2346,7 +2346,7 @@ dependencies = [
  "polars-buffer",
  "polars-error",
  "polars-utils",
- "rand 0.10.2",
+ "rand 0.10.3",
  "serde",
  "strength_reduce",
  "strum_macros",
@@ -2392,7 +2392,7 @@ dependencies = [
  "polars-row",
  "polars-schema",
  "polars-utils",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rand_distr",
  "rayon",
  "regex",
@@ -2454,7 +2454,7 @@ dependencies = [
  "polars-row",
  "polars-time",
  "polars-utils",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rayon",
  "recursive",
  "regex",
@@ -2499,7 +2499,7 @@ dependencies = [
  "polars-schema",
  "polars-time",
  "polars-utils",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rayon",
  "regex",
  "reqwest",
@@ -2597,7 +2597,7 @@ dependencies = [
  "polars-error",
  "polars-io",
  "polars-utils",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rand_distr",
  "thread_local",
  "tokio",
@@ -2866,7 +2866,7 @@ dependencies = [
  "num-traits",
  "polars-config",
  "polars-error",
- "rand 0.10.2",
+ "rand 0.10.3",
  "raw-cpuid",
  "rayon",
  "regex",
@@ -3018,7 +3018,7 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "socket2",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "web-time",
@@ -3033,14 +3033,14 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rand_pcg",
  "ring",
  "rustc-hash",
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tinyvec",
  "tracing",
  "web-time",
@@ -3057,7 +3057,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3093,9 +3093,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.2"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -3144,7 +3144,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4d431c2703ccf129de4d45253c03f49ebb22b97d6ad79ee3ecfc7e3f4862c1d8"
 dependencies = [
  "num-traits",
- "rand 0.10.2",
+ "rand 0.10.3",
 ]
 
 [[package]]
@@ -3342,9 +3342,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.4.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b23c62fe489ac1d401ab32688cfacac3737a8978dc3343e5361464c7724fd3cb"
+checksum = "fae7019994ae0fe4ada40b732f798f3ff26f0f04facb1477f1bf37eb4f18a2d3"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3357,13 +3357,13 @@ dependencies = [
  "indexmap",
  "pastey",
  "pin-project-lite",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rmcp-macros",
  "schemars",
  "serde",
  "serde_json",
  "sse-stream",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -3374,9 +3374,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "3.4.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd740c45d66ceb87e5579082abc27bd771665e464e9660a17a048c721b2a6025"
+checksum = "c7e66877136e969d5a2d561ee5841b17717a0619aebd64abb47a2a2f46e34683"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -3420,7 +3420,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3761,9 +3761,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.16.1"
+version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
+checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
 name = "snap"
@@ -3958,7 +3958,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3988,11 +3988,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
- "thiserror-impl 2.0.20",
+ "thiserror-impl 2.0.21",
 ]
 
 [[package]]
@@ -4008,9 +4008,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4259,7 +4259,7 @@ checksum = "050686193eb999b4bb3bc2acfa891a13da00f79734704c4b8b4ef1a10b368a3c"
 dependencies = [
  "crossbeam-channel",
  "symlink",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "time",
  "tracing-subscriber",
 ]
@@ -4329,7 +4329,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "uffs-bench"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "chrono",
  "clap",
@@ -4338,7 +4338,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "toml",
  "uffs-version",
  "winresource",
@@ -4346,12 +4346,12 @@ dependencies = [
 
 [[package]]
 name = "uffs-broker"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -4365,14 +4365,14 @@ dependencies = [
 
 [[package]]
 name = "uffs-broker-protocol"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "uffs-ci-pipeline"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4391,7 +4391,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-cli"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4414,7 +4414,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-client"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "dirs-next",
  "libc",
@@ -4422,7 +4422,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "uffs-broker-protocol",
@@ -4434,7 +4434,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-core"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4451,7 +4451,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "uffs-format",
@@ -4465,7 +4465,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-daemon"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "clap",
@@ -4475,11 +4475,11 @@ dependencies = [
  "libmimalloc-sys",
  "mimalloc",
  "proptest",
- "rand 0.10.2",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "toml",
  "tracing",
@@ -4498,7 +4498,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-diag"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4513,7 +4513,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-fetch"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "hex",
@@ -4524,7 +4524,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-format"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "chrono",
  "itoa",
@@ -4535,7 +4535,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-gen-hooks"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "clap",
@@ -4547,7 +4547,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-gen-workflow"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "clap",
@@ -4560,7 +4560,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-manifest-audit"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "clap",
@@ -4572,7 +4572,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-mcp"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "axum",
@@ -4581,7 +4581,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tower-service",
  "tracing",
@@ -4596,7 +4596,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-mft"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -4611,7 +4611,7 @@ dependencies = [
  "indicatif",
  "libc",
  "proptest",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rand_chacha 0.10.0",
  "rayon",
  "rustc-hash",
@@ -4620,7 +4620,7 @@ dependencies = [
  "sha2",
  "smallvec",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "tracing-appender",
@@ -4637,20 +4637,20 @@ dependencies = [
 
 [[package]]
 name = "uffs-polars"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "polars",
 ]
 
 [[package]]
 name = "uffs-security"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "aes-gcm",
  "dirs-next",
  "libc",
  "memmap2",
- "rand 0.10.2",
+ "rand 0.10.3",
  "security-framework",
  "tempfile",
  "tracing",
@@ -4659,22 +4659,22 @@ dependencies = [
 
 [[package]]
 name = "uffs-statusfmt"
-version = "0.6.41"
+version = "0.6.42"
 
 [[package]]
 name = "uffs-text"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "bytemuck",
 ]
 
 [[package]]
 name = "uffs-time"
-version = "0.6.41"
+version = "0.6.42"
 
 [[package]]
 name = "uffs-update"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "dirs-next",
@@ -4691,11 +4691,11 @@ dependencies = [
 
 [[package]]
 name = "uffs-version"
-version = "0.6.41"
+version = "0.6.42"
 
 [[package]]
 name = "uffs-vss-requestor"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "cc",
@@ -4707,7 +4707,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-watchdog"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "dirs-next",
@@ -4716,7 +4716,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-winsvc"
-version = "0.6.41"
+version = "0.6.42"
 dependencies = [
  "anyhow",
  "windows",
@@ -5026,7 +5026,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

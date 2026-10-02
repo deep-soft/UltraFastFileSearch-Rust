@@ -258,7 +258,7 @@ dim gray border.
 Switch to the Emacs preset with:
 
 ```
-uffs_tui --keys emacs
+uffs-tui --keys emacs
 ```
 
 The Emacs preset changes text-editing keys to Emacs conventions. Toggle,
@@ -296,8 +296,8 @@ Keybindings are stored in a TOML config file that is created on first launch.
 ### 5.2 Switching Presets
 
 ```bash
-uffs_tui --keys windows   # overwrite config with Windows preset
-uffs_tui --keys emacs     # overwrite config with Emacs preset
+uffs-tui --keys windows   # overwrite config with Windows preset
+uffs-tui --keys emacs     # overwrite config with Emacs preset
 ```
 
 ### 5.3 Editing the Config File

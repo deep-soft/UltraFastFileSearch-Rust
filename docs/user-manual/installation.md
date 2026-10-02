@@ -225,7 +225,7 @@ cargo build --release
 | Binary | Location | Purpose |
 |--------|----------|---------|
 | `uffs` | `target/release/uffs` | CLI search tool |
-| `uffs_tui` | `target/release/uffs_tui` | Terminal UI |
+| `uffs-tui` | `target/release/uffs-tui` | Terminal UI |
 
 ### Using just (recommended)
 

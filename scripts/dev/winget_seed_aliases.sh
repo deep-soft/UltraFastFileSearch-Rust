@@ -72,9 +72,39 @@ if grep -q $'\r$' "$MANIFEST"; then
   cr=$'\r'
 fi
 
+# Read the actual zip contents so we can enforce the HARD PRECONDITION that
+# `packaging/winget/nested-aliases.yaml` states: only an entry whose binary is
+# really in the archive may be seeded.
+#
+# This is not hypothetical. The bundled demo TUI is fetched from a separate
+# repository by `release.yml`, and that fetch is deliberately non-fatal — a
+# demo-repo hiccup must never block an engine release. When the upstream asset
+# was renamed (uffs-products 2997eee7, 2026-09-07) the download began missing
+# silently, v0.6.41 shipped a zip with no `uffs-tui.exe`, and this script
+# seeded the alias anyway. Microsoft's validation then rejected the PR for
+# declaring a file that did not exist (microsoft/winget-pkgs#437613).
+#
+# Degradable on purpose: if the archive cannot be fetched or listed, we warn
+# and fall back to the previous behaviour rather than blocking a submission on
+# a network hiccup.
+zip_listing=''
+installer_url="$(sed -n 's/^[[:space:]]*InstallerUrl:[[:space:]]*//p' "$MANIFEST" | head -1 | tr -d '\r')"
+if [[ -n "$installer_url" ]] && command -v unzip >/dev/null 2>&1; then
+  zip_tmp="$(mktemp -d)"
+  trap 'rm -rf "$zip_tmp"' EXIT
+  if curl -fsSL "$installer_url" -o "$zip_tmp/installer.zip" 2>/dev/null \
+     && zip_listing="$(unzip -Z1 "$zip_tmp/installer.zip" 2>/dev/null)"; then
+    echo "🔍 Verifying aliases against $(printf '%s' "$zip_listing" | wc -l | tr -d ' ') archive entries."
+  else
+    zip_listing=''
+    echo "::warning title=Zip verification skipped::Could not fetch or list ${installer_url}; seeding without archive verification."
+  fi
+fi
+
 # Parse (RelativeFilePath, PortableCommandAlias) pairs from the canonical
 # list. The two keys always appear on consecutive lines per entry.
 added=0
+absent=0
 skipped=0
 rel=''
 while IFS= read -r line; do
@@ -86,6 +116,15 @@ while IFS= read -r line; do
     *PortableCommandAlias:*)
       alias="$(printf '%s' "$line" | sed -E 's/.*PortableCommandAlias:[[:space:]]*//')"
       [[ -z "$rel" || -z "$alias" ]] && continue
+
+      # Not in the archive? Never declare it — winget validates every
+      # NestedInstallerFile against the zip and fails the whole PR.
+      if [[ -n "$zip_listing" ]] && ! printf '%s\n' "$zip_listing" | grep -qxF "$rel"; then
+        echo "⚠️  ${alias} (${rel}) is NOT in the archive — skipping (would fail validation)."
+        absent=$((absent + 1))
+        rel=''
+        continue
+      fi
 
       # Already seeded? (match on the relative path, which is unique).
       if grep -qF "$rel" "$MANIFEST"; then
@@ -131,7 +170,10 @@ if grep -qE '^Scope:' "$MANIFEST"; then
 fi
 
 echo
-echo "Done: ${added} added, ${skipped} already present, ${scope_removed} scope removed in $MANIFEST"
+echo "Done: ${added} added, ${skipped} already present, ${absent} absent from archive, ${scope_removed} scope removed in $MANIFEST"
+if (( absent > 0 )); then
+  echo "::warning title=Alias skipped::${absent} canonical alias(es) are missing from the release archive — check the bundling step in release.yml."
+fi
 if (( added > 0 || scope_removed > 0 )); then
   echo "Review the diff, commit, and push to the winget-pkgs PR branch."
 fi
