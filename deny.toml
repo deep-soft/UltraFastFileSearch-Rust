@@ -109,9 +109,6 @@ skip-tree = [
   { crate = "thiserror@1", reason = "transitive deps use thiserror 1.x, some use 2.x" },
   { crate = "thiserror-impl@1", reason = "follows thiserror 1.x vs 2.x split" },
 
-  # signal-hook has version fragmentation (0.3 vs 0.4)
-  { crate = "signal-hook@0.3", reason = "crossterm pins to 0.3.x, others use 0.4.x" },
-
   # getrandom version fragmentation from polars transitive deps
   { crate = "getrandom@0.3", reason = "polars deps use different versions" },
 ]
