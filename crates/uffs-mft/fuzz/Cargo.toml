@@ -40,4 +40,3 @@ path = "fuzz_targets/fuzz_apply_fixup.rs"
 test = false
 doc = false
 bench = false
-

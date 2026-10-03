@@ -2,51 +2,51 @@
 # Auto-split from test-definitions.toml
 
 [[test]]
-id          = "T25"
-group       = "time"
-name        = "T25 --newer 7d"
-title       = "T25 --newer 7d"
-short_desc  = "Files modified in last 7 days — may return 0 on stale/offline index"
-cli_args    = ["*.log", "--newer", "7d", "--limit", "10"]
+id = "T25"
+group = "time"
+name = "T25 --newer 7d"
+title = "T25 --newer 7d"
+short_desc = "Files modified in last 7 days — may return 0 on stale/offline index"
+cli_args = ["*.log", "--newer", "7d", "--limit", "10"]
 expect_min_rows = 0
 expect_max_rows = 10
 
 [[test.column_checks]]
 column = "Name"
-op     = "ends_with"
-value  = ".log"
-case   = "lower"
+op = "ends_with"
+value = ".log"
+case = "lower"
 
 [test.api_checks]
 result_has_key = ["rows", "records_scanned"]
 
 [[test]]
-id          = "T26"
-group       = "time"
-name        = "T26 --older 365d"
-title       = "T26 --older 365d"
-short_desc  = "Files modified more than 365d ago"
-cli_args    = ["*.doc", "--older", "365d", "--limit", "10"]
+id = "T26"
+group = "time"
+name = "T26 --older 365d"
+title = "T26 --older 365d"
+short_desc = "Files modified more than 365d ago"
+cli_args = ["*.doc", "--older", "365d", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
 [[test.column_checks]]
 column = "Name"
-op     = "ends_with"
-value  = ".doc"
-case   = "lower"
+op = "ends_with"
+value = ".doc"
+case = "lower"
 
 [test.api_checks]
 result_has_key = ["rows", "records_scanned"]
 total_count_min = 1
 
 [[test]]
-id          = "T27"
-group       = "time"
-name        = "T27 --newer-created 30d"
-title       = "T27 --newer-created 30d"
-short_desc  = "Files created in last 30 days — active system should have many"
-cli_args    = ["*", "--newer-created", "30d", "--files-only", "--limit", "10"]
+id = "T27"
+group = "time"
+name = "T27 --newer-created 30d"
+title = "T27 --newer-created 30d"
+short_desc = "Files created in last 30 days — active system should have many"
+cli_args = ["*", "--newer-created", "30d", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -54,12 +54,12 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T36"
-group       = "time"
-name        = "T36 --older-created 365d"
-title       = "T36 --older-created 365d"
-short_desc  = "Files created more than 1 year ago — most files on large system"
-cli_args    = ["*", "--older-created", "365d", "--files-only", "--limit", "10"]
+id = "T36"
+group = "time"
+name = "T36 --older-created 365d"
+title = "T36 --older-created 365d"
+short_desc = "Files created more than 1 year ago — most files on large system"
+cli_args = ["*", "--older-created", "365d", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -67,12 +67,12 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T43"
-group       = "time"
-name        = "T43 --newer-accessed 7d"
-title       = "T43 --newer-accessed 7d"
-short_desc  = "Files accessed in last 7 days"
-cli_args    = ["*", "--newer-accessed", "7d", "--files-only", "--limit", "10"]
+id = "T43"
+group = "time"
+name = "T43 --newer-accessed 7d"
+title = "T43 --newer-accessed 7d"
+short_desc = "Files accessed in last 7 days"
+cli_args = ["*", "--newer-accessed", "7d", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -80,12 +80,12 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T44"
-group       = "time"
-name        = "T44 --newer today"
-title       = "T44 --newer today"
-short_desc  = "Files modified today — narrow range, may return 0 on stale data"
-cli_args    = ["*", "--newer", "today", "--files-only", "--limit", "10"]
+id = "T44"
+group = "time"
+name = "T44 --newer today"
+title = "T44 --newer today"
+short_desc = "Files modified today — narrow range, may return 0 on stale data"
+cli_args = ["*", "--newer", "today", "--files-only", "--limit", "10"]
 expect_min_rows = 0
 expect_max_rows = 10
 
@@ -93,12 +93,12 @@ expect_max_rows = 10
 result_has_key = ["rows", "records_scanned", "total_count"]
 
 [[test]]
-id          = "T45"
-group       = "time"
-name        = "T45 --newer yesterday"
-title       = "T45 --newer yesterday"
-short_desc  = "Files modified since yesterday — slightly wider than today"
-cli_args    = ["*", "--newer", "yesterday", "--files-only", "--limit", "10"]
+id = "T45"
+group = "time"
+name = "T45 --newer yesterday"
+title = "T45 --newer yesterday"
+short_desc = "Files modified since yesterday — slightly wider than today"
+cli_args = ["*", "--newer", "yesterday", "--files-only", "--limit", "10"]
 expect_min_rows = 0
 expect_max_rows = 10
 
@@ -106,12 +106,12 @@ expect_max_rows = 10
 result_has_key = ["rows", "records_scanned", "total_count"]
 
 [[test]]
-id          = "T46"
-group       = "time"
-name        = "T46 --newer this_week"
-title       = "T46 --newer this_week"
-short_desc  = "Files modified this week — should have results on active system"
-cli_args    = ["*", "--newer", "this_week", "--files-only", "--limit", "10"]
+id = "T46"
+group = "time"
+name = "T46 --newer this_week"
+title = "T46 --newer this_week"
+short_desc = "Files modified this week — should have results on active system"
+cli_args = ["*", "--newer", "this_week", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -119,12 +119,12 @@ expect_max_rows = 10
 total_count_min = 1
 
 [[test]]
-id          = "T47"
-group       = "time"
-name        = "T47 --newer last_7d"
-title       = "T47 --newer last_7d"
-short_desc  = "Files modified in last 7 days — equivalent to this_week but rolling"
-cli_args    = ["*", "--newer", "last_7d", "--files-only", "--limit", "10"]
+id = "T47"
+group = "time"
+name = "T47 --newer last_7d"
+title = "T47 --newer last_7d"
+short_desc = "Files modified in last 7 days — equivalent to this_week but rolling"
+cli_args = ["*", "--newer", "last_7d", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -132,12 +132,12 @@ expect_max_rows = 10
 total_count_min = 1
 
 [[test]]
-id          = "T48"
-group       = "time"
-name        = "T48 --newer last_30d"
-title       = "T48 --newer last_30d"
-short_desc  = "Files modified in last 30 days — must return results on active system"
-cli_args    = ["*", "--newer", "last_30d", "--files-only", "--limit", "10"]
+id = "T48"
+group = "time"
+name = "T48 --newer last_30d"
+title = "T48 --newer last_30d"
+short_desc = "Files modified in last 30 days — must return results on active system"
+cli_args = ["*", "--newer", "last_30d", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -145,12 +145,12 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T49"
-group       = "time"
-name        = "T49 --newer this_month"
-title       = "T49 --newer this_month"
-short_desc  = "Files modified this month"
-cli_args    = ["*", "--newer", "this_month", "--files-only", "--limit", "10"]
+id = "T49"
+group = "time"
+name = "T49 --newer this_month"
+title = "T49 --newer this_month"
+short_desc = "Files modified this month"
+cli_args = ["*", "--newer", "this_month", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -158,12 +158,12 @@ expect_max_rows = 10
 total_count_min = 1
 
 [[test]]
-id          = "T50"
-group       = "time"
-name        = "T50 --newer this_year"
-title       = "T50 --newer this_year"
-short_desc  = "Files modified this year — wide range, many results expected"
-cli_args    = ["*", "--newer", "this_year", "--files-only", "--limit", "10"]
+id = "T50"
+group = "time"
+name = "T50 --newer this_year"
+title = "T50 --newer this_year"
+short_desc = "Files modified this year — wide range, many results expected"
+cli_args = ["*", "--newer", "this_year", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -171,12 +171,12 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T51"
-group       = "time"
-name        = "T51 --older last_year"
-title       = "T51 --older last_year"
-short_desc  = "Files older than last year — large dataset guarantees results"
-cli_args    = ["*", "--older", "last_year", "--files-only", "--limit", "10"]
+id = "T51"
+group = "time"
+name = "T51 --older last_year"
+title = "T51 --older last_year"
+short_desc = "Files older than last year — large dataset guarantees results"
+cli_args = ["*", "--older", "last_year", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -184,12 +184,12 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T52"
-group       = "time"
-name        = "T52 --newer last_90d"
-title       = "T52 --newer last_90d"
-short_desc  = "Files modified in last 90 days"
-cli_args    = ["*", "--newer", "last_90d", "--files-only", "--limit", "10"]
+id = "T52"
+group = "time"
+name = "T52 --newer last_90d"
+title = "T52 --newer last_90d"
+short_desc = "Files modified in last 90 days"
+cli_args = ["*", "--newer", "last_90d", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -197,12 +197,12 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T53"
-group       = "time"
-name        = "T53 --newer last_365d"
-title       = "T53 --newer last_365d"
-short_desc  = "Files modified in last year — broadest recent range"
-cli_args    = ["*", "--newer", "last_365d", "--files-only", "--limit", "10"]
+id = "T53"
+group = "time"
+name = "T53 --newer last_365d"
+title = "T53 --newer last_365d"
+short_desc = "Files modified in last year — broadest recent range"
+cli_args = ["*", "--newer", "last_365d", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -210,12 +210,12 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T54"
-group       = "time"
-name        = "T54 --newer-created today"
-title       = "T54 --newer-created today"
-short_desc  = "Files created today — may return 0 on stale index"
-cli_args    = ["*", "--newer-created", "today", "--files-only", "--limit", "10"]
+id = "T54"
+group = "time"
+name = "T54 --newer-created today"
+title = "T54 --newer-created today"
+short_desc = "Files created today — may return 0 on stale index"
+cli_args = ["*", "--newer-created", "today", "--files-only", "--limit", "10"]
 expect_min_rows = 0
 expect_max_rows = 10
 
@@ -223,12 +223,19 @@ expect_max_rows = 10
 result_has_key = ["rows", "records_scanned", "total_count"]
 
 [[test]]
-id          = "T55"
-group       = "time"
-name        = "T55 --newer-accessed this_week"
-title       = "T55 --newer-accessed this_week"
-short_desc  = "Files accessed this week"
-cli_args    = ["*", "--newer-accessed", "this_week", "--files-only", "--limit", "10"]
+id = "T55"
+group = "time"
+name = "T55 --newer-accessed this_week"
+title = "T55 --newer-accessed this_week"
+short_desc = "Files accessed this week"
+cli_args = [
+  "*",
+  "--newer-accessed",
+  "this_week",
+  "--files-only",
+  "--limit",
+  "10",
+]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -236,12 +243,21 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T56"
-group       = "time"
-name        = "T56 bounded time range (last_week)"
-title       = "T56 bounded time range (last_week)"
-short_desc  = "Bounded range: newer=last_week AND older=this_week — exactly last week's files"
-cli_args    = ["*", "--newer", "last_week", "--older", "this_week", "--files-only", "--limit", "10"]
+id = "T56"
+group = "time"
+name = "T56 bounded time range (last_week)"
+title = "T56 bounded time range (last_week)"
+short_desc = "Bounded range: newer=last_week AND older=this_week — exactly last week's files"
+cli_args = [
+  "*",
+  "--newer",
+  "last_week",
+  "--older",
+  "this_week",
+  "--files-only",
+  "--limit",
+  "10",
+]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -250,12 +266,12 @@ result_has_key = ["rows", "records_scanned"]
 total_count_min = 1
 
 [[test]]
-id          = "T57"
-group       = "time"
-name        = "T57 --newer 2025-01-01"
-title       = "T57 --newer 2025-01-01"
-short_desc  = "Absolute date cutoff — all files modified since 2025-01-01"
-cli_args    = ["*", "--newer", "2025-01-01", "--files-only", "--limit", "10"]
+id = "T57"
+group = "time"
+name = "T57 --newer 2025-01-01"
+title = "T57 --newer 2025-01-01"
+short_desc = "Absolute date cutoff — all files modified since 2025-01-01"
+cli_args = ["*", "--newer", "2025-01-01", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -263,27 +279,45 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T77"
-group       = "time"
-name        = "T77 hidden + --newer last_30d"
-title       = "T77 hidden + --newer last_30d"
-short_desc  = "T77 hidden + --newer last_30d"
-cli_args    = ["*", "--attr", "hidden", "--newer", "last_30d", "--files-only", "--limit", "10", "--columns", "all"]
+id = "T77"
+group = "time"
+name = "T77 hidden + --newer last_30d"
+title = "T77 hidden + --newer last_30d"
+short_desc = "T77 hidden + --newer last_30d"
+cli_args = [
+  "*",
+  "--attr",
+  "hidden",
+  "--newer",
+  "last_30d",
+  "--files-only",
+  "--limit",
+  "10",
+  "--columns",
+  "all",
+]
 expect_min_rows = 1
 expect_columns_all = true
 
 [[test.column_checks]]
 column = "Hidden"
-op     = "eq"
-value  = "1"
+op = "eq"
+value = "1"
 
 [[test]]
-id          = "T81"
-group       = "time"
-name        = "T81 --newer-created this_year"
-title       = "T81 --newer-created this_year"
-short_desc  = "Files created this year — wide range on active system"
-cli_args    = ["*", "--newer-created", "this_year", "--files-only", "--limit", "10"]
+id = "T81"
+group = "time"
+name = "T81 --newer-created this_year"
+title = "T81 --newer-created this_year"
+short_desc = "Files created this year — wide range on active system"
+cli_args = [
+  "*",
+  "--newer-created",
+  "this_year",
+  "--files-only",
+  "--limit",
+  "10",
+]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -291,12 +325,19 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T82"
-group       = "time"
-name        = "T82 --newer-accessed last_week"
-title       = "T82 --newer-accessed last_week"
-short_desc  = "Files accessed in last week"
-cli_args    = ["*", "--newer-accessed", "last_week", "--files-only", "--limit", "10"]
+id = "T82"
+group = "time"
+name = "T82 --newer-accessed last_week"
+title = "T82 --newer-accessed last_week"
+short_desc = "Files accessed in last week"
+cli_args = [
+  "*",
+  "--newer-accessed",
+  "last_week",
+  "--files-only",
+  "--limit",
+  "10",
+]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -304,12 +345,12 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T86"
-group       = "time"
-name        = "T86 --older-accessed 365d"
-title       = "T86 --older-accessed 365d"
-short_desc  = "Files last accessed over 1 year ago — many on large system"
-cli_args    = ["*", "--older-accessed", "365d", "--files-only", "--limit", "10"]
+id = "T86"
+group = "time"
+name = "T86 --older-accessed 365d"
+title = "T86 --older-accessed 365d"
+short_desc = "Files last accessed over 1 year ago — many on large system"
+cli_args = ["*", "--older-accessed", "365d", "--files-only", "--limit", "10"]
 expect_min_rows = 1
 expect_max_rows = 10
 
@@ -317,25 +358,42 @@ expect_max_rows = 10
 total_count_min = 10
 
 [[test]]
-id          = "T88"
-group       = "time"
-name        = "T88 name-only + hide-system + newer"
-title       = "T88 name-only + hide-system + newer"
-short_desc  = "T88 name-only + hide-system + newer"
-cli_args    = ["config", "--name-only", "--hide-system", "--newer", "last_90d", "--files-only", "--limit", "10"]
+id = "T88"
+group = "time"
+name = "T88 name-only + hide-system + newer"
+title = "T88 name-only + hide-system + newer"
+short_desc = "T88 name-only + hide-system + newer"
+cli_args = [
+  "config",
+  "--name-only",
+  "--hide-system",
+  "--newer",
+  "last_90d",
+  "--files-only",
+  "--limit",
+  "10",
+]
 expect_min_rows = 1
-validator   = "T88"
+validator = "T88"
 
 [[test]]
-id          = "T113"
-group       = "time"
-name        = "T113 --month jan + --newer last_365d"
-title       = "T113 --month jan + --newer last_365d"
-short_desc  = "Combined: January files modified in last year — intersection filter"
-cli_args    = ["*", "--month", "jan", "--newer", "last_365d", "--files-only", "--limit", "10"]
+id = "T113"
+group = "time"
+name = "T113 --month jan + --newer last_365d"
+title = "T113 --month jan + --newer last_365d"
+short_desc = "Combined: January files modified in last year — intersection filter"
+cli_args = [
+  "*",
+  "--month",
+  "jan",
+  "--newer",
+  "last_365d",
+  "--files-only",
+  "--limit",
+  "10",
+]
 expect_min_rows = 1
 expect_max_rows = 10
 
 [test.api_checks]
 total_count_min = 10
-
