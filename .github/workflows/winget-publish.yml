@@ -32,13 +32,23 @@
 #
 # ── Required secret ──────────────────────────────────────────────────
 # `WINGET_TOKEN` — a **classic** Personal Access Token with the
-# `public_repo` scope (fine-grained tokens that can fork + push to
-# microsoft/winget-pkgs also work).  The default `GITHUB_TOKEN` CANNOT
+# `public_repo` AND `workflow` scopes.  The default `GITHUB_TOKEN` CANNOT
 # be used: it has no permission to fork an external repo or push the
 # manifest branch.  Create it under the maintainer account that owns the
 # winget-pkgs fork (the same account that hand-submitted PR
 # microsoft/winget-pkgs#378294 for v0.5.102), then add it at
 # Settings → Secrets and variables → Actions → New repository secret.
+#
+# Why `workflow` too (field failure 2026-10-03, v0.6.43): the fork sync
+# below fast-forwards githubrobbi/winget-pkgs over whatever upstream
+# merged since the last release.  Whenever that span touches a file
+# under `.github/workflows/` — which microsoft/winget-pkgs does every
+# few weeks — GitHub rejects the fast-forward for a PAT without the
+# `workflow` scope ("refusing to allow a Personal Access Token to
+# create or update workflow").  The fork then stays stale and komac
+# fails with the misleading `CreateRef` permissions error.  A classic
+# PAT's scopes can be edited in place at https://github.com/settings/tokens
+# (no rotation needed).
 
 name: 📦 WinGet Publish
 
@@ -122,13 +132,19 @@ jobs:
       # winget-pkgs moves constantly and nothing else ever pushes to the
       # fork.  Syncing here makes the submission self-healing.
       #
-      # `continue-on-error`: a sync hiccup must not block the submission —
-      # if the fork happens to be current, komac proceeds fine regardless.
-      # The `||` fallback keeps the step green while still surfacing the
-      # reason in the log.
+      # Second field failure 2026-10-03 (v0.6.43): the sync itself was
+      # refused — upstream had merged a `.github/workflows/` change and
+      # GitHub will not let a PAT without the `workflow` scope fast-forward
+      # over it.  The step was `continue-on-error` with a `||` warning, so
+      # the refusal scrolled past as a warning, the fork stayed 81 commits
+      # behind, and komac failed with the same misleading `CreateRef`
+      # message as in August.  This step therefore FAILS HARD now, with
+      # the real cause, whenever the fork is not at upstream's HEAD after
+      # the sync: komac cannot succeed from a stale base, so letting it
+      # try only buries the diagnosis.  A fork that was already current
+      # never reaches the sync call.
       - name: Sync winget-pkgs fork with upstream
         if: steps.token.outputs.present == 'true'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
           FORK_USER: githubrobbi
@@ -137,16 +153,31 @@ jobs:
           set -uo pipefail
           before="$(gh api "repos/${FORK_USER}/winget-pkgs/commits/master" --jq .sha 2>/dev/null || echo unknown)"
           upstream="$(gh api repos/microsoft/winget-pkgs/commits/master --jq .sha 2>/dev/null || echo unknown)"
-          if [[ "$before" == "$upstream" && "$before" != unknown ]]; then
+          if [[ "$upstream" == unknown ]]; then
+            echo "::error title=Fork sync failed::Cannot read microsoft/winget-pkgs master with WINGET_TOKEN."
+            exit 1
+          fi
+          if [[ "$before" == "$upstream" ]]; then
             echo "Fork already in sync at ${before}."
             exit 0
           fi
           echo "Fork ${before} behind upstream ${upstream} — fast-forwarding."
-          gh api -X POST "repos/${FORK_USER}/winget-pkgs/merge-upstream" \
-            -f branch=master --jq '.message' \
-            || echo "::warning title=Fork sync failed::Could not fast-forward ${FORK_USER}/winget-pkgs; komac may fail to create its manifest branch."
+          if ! sync_out="$(gh api -X POST "repos/${FORK_USER}/winget-pkgs/merge-upstream" -f branch=master 2>&1)"; then
+            echo "$sync_out"
+            if grep -q "refusing to allow a Personal Access Token to create or update workflow" <<<"$sync_out"; then
+              echo "::error title=WINGET_TOKEN lacks the workflow scope::Upstream winget-pkgs changed a .github/workflows file and GitHub refuses to fast-forward the fork with a PAT that lacks the \`workflow\` scope. Fix: edit the classic PAT at https://github.com/settings/tokens to add \`workflow\` (no rotation needed), or sync once by hand with a token that has it: gh api -X POST repos/${FORK_USER}/winget-pkgs/merge-upstream -f branch=master — then re-run this workflow for ${{ inputs.release-tag }}."
+            else
+              echo "::error title=Fork sync failed::Could not fast-forward ${FORK_USER}/winget-pkgs (see output above). komac cannot cut its manifest branch from a stale fork, so the submission stops here."
+            fi
+            exit 1
+          fi
+          echo "$sync_out" | jq -r '.message' 2>/dev/null || echo "$sync_out"
           after="$(gh api "repos/${FORK_USER}/winget-pkgs/commits/master" --jq .sha 2>/dev/null || echo unknown)"
           echo "Fork now at ${after} (upstream ${upstream})."
+          if [[ "$after" != "$upstream" ]]; then
+            echo "::error title=Fork still behind upstream::${FORK_USER}/winget-pkgs is at ${after}, upstream is ${upstream}. komac would fail with a misleading CreateRef permissions error; sync the fork and re-run."
+            exit 1
+          fi
 
       - name: Submit manifest to winget-pkgs
         if: steps.token.outputs.present == 'true'
