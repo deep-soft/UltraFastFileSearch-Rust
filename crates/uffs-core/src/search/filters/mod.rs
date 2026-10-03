@@ -22,6 +22,9 @@ mod time_parsing;
 // own doc comment for why a downstream crate needs to call it directly.
 // The `apply::*` glob below stays `pub(crate)`: everything else in
 // `apply` (e.g. `row_passes_filters`) is an internal helper.
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
+
 pub use apply::apply_search_filters;
 pub(crate) use apply::*;
 pub use attr_parsing::*;
@@ -170,7 +173,31 @@ pub struct SearchFilters {
     /// column so downstream tooling can spot/round-trip corrupt entries.
     /// `false` = default lossy rendering (matches the reference C++ tool).
     pub normalize_malformed: bool,
+
+    /// Cooperative cancellation handle for the scan that consumes these
+    /// filters.  `None` (the default) means the scan runs to completion.
+    ///
+    /// The daemon sets this before it hands a search to the blocking
+    /// pool and raises the flag when the search's scan budget expires:
+    /// every per-drive scan polls it on its hot loop (see
+    /// [`Self::cancelled_at`]) and stops instead of running the
+    /// remaining records to the end for a result nobody will read.
+    /// Before this existed a timed-out `*.*` over 43 M records kept its
+    /// rayon workers busy for the full scan after the daemon had already
+    /// answered the client (2026-10-03 benchmark run).
+    ///
+    /// Travels with the per-drive `clone()` so rayon workers share the
+    /// one flag.  Not a filter: [`Self::is_empty`] ignores it.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
+
+/// Records a hot loop processes between two cancellation polls.
+///
+/// A power of two so the stride test is a mask.  One relaxed atomic
+/// load per 4 096 records is below measurement noise on every scan path
+/// while still bounding the overrun after a cancel to a few microseconds
+/// per worker.
+pub const CANCEL_CHECK_STRIDE: usize = 4096;
 
 impl SearchFilters {
     /// The [`crate::compact::MalformedRender`] mode implied by
@@ -182,6 +209,27 @@ impl SearchFilters {
         } else {
             crate::compact::MalformedRender::Lossy
         }
+    }
+
+    /// `true` once the owning search has been cancelled (see
+    /// [`Self::cancel`]).  Cheap enough for per-drive granularity; hot
+    /// per-record loops use [`Self::cancelled_at`] instead.
+    #[inline]
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
+
+    /// `true` when `ordinal` sits on a [`CANCEL_CHECK_STRIDE`] boundary
+    /// *and* the search has been cancelled.  Folds the stride test and
+    /// the atomic load into one `if` so a hot loop pays a single mask
+    /// compare per record and the load only every 4 096th.
+    #[inline]
+    #[must_use]
+    pub fn cancelled_at(&self, ordinal: usize) -> bool {
+        ordinal & (CANCEL_CHECK_STRIDE - 1) == 0 && self.is_cancelled()
     }
 }
 
@@ -420,6 +468,9 @@ impl SearchFilters {
             // Display-only; the daemon sets it from the request's
             // `normalize_malformed` flag, so it defaults off here.
             normalize_malformed: false,
+            // Search-time state the daemon attaches per search, never a
+            // parsed parameter.
+            cancel: None,
         }
     }
 

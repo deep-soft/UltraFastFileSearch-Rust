@@ -214,8 +214,13 @@ fn scan_ext_fast_path(
     cfg: DriveScanCfg,
     state: &mut DriveTopN,
 ) {
+    let mut visited = 0_usize;
     for &ext_id in &filters.resolved_ext_ids {
         for &rec_idx_u32 in drive.records_with_ext(ext_id).iter() {
+            if filters.cancelled_at(visited) {
+                return;
+            }
+            visited += 1;
             let rec_idx = rec_idx_u32 as usize;
             let Some(rec) = drive.records.get(rec_idx) else {
                 continue;
@@ -281,6 +286,9 @@ fn scan_full_records(
 ) -> u64 {
     let mut filtered = 0_u64;
     for (rec_idx, rec) in drive.records.iter().enumerate() {
+        if filters.cancelled_at(rec_idx) {
+            break;
+        }
         if !full_scan_record_passes(
             rec,
             drive,
@@ -530,6 +538,11 @@ fn scan_all_drives_parallel<D: AsRef<DriveCompactIndex> + Sync>(
         .enumerate()
         .map(|(drive_idx, drive_ref)| {
             let drive = drive_ref.as_ref();
+            // A drive whose turn comes after the search was cancelled
+            // is not scanned at all.
+            if search_filters.is_cancelled() {
+                return (Vec::new(), 0_u64);
+            }
             let t_drive = std::time::Instant::now();
             // Per-worker clone so `resolve_ext_ids_for_drive` writes
             // into a local copy, never a shared `&mut`.  See struct

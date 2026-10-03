@@ -14,8 +14,8 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use super::dispatch::{
-    apply_dispatch_safety_nets, dispatch_match_all, dispatch_regex, dispatch_trigram_or_tree,
-    pick_mode_label,
+    apply_dispatch_safety_nets, discard_if_cancelled, dispatch_match_all, dispatch_regex,
+    dispatch_trigram_or_tree, pick_mode_label,
 };
 use crate::compact::DriveCompactIndex;
 use crate::search::field::FieldId;
@@ -713,20 +713,22 @@ pub fn search_index(
         )
     };
 
+    let final_rows = discard_if_cancelled(rows, search_filters, pattern);
+
     let scanned = active_drives.iter().map(|dr| dr.records.len()).sum();
     let wall_ms = start.elapsed().as_millis();
     let mode = pick_mode_label(is_match_all, is_regex, is_path, is_prefix);
     tracing::debug!(
         target: "cache_profile",
         wall_ms = %wall_ms,
-        rows = rows.len(),
+        rows = final_rows.len(),
         scanned,
         mode,
         "search_index_total"
     );
 
     SearchResult {
-        rows,
+        rows: final_rows,
         duration: start.elapsed(),
         records_scanned: scanned,
         phase_timings,

@@ -45,6 +45,10 @@ pub(crate) enum DiffError {
         /// The underlying load failure.
         source: anyhow::Error,
     },
+    /// Setup succeeded but the search over the baseline did not complete
+    /// (scan budget expired, search slots saturated, or the scan task
+    /// panicked).
+    Search(super::search::SearchFailure),
 }
 
 impl IndexManager {
@@ -55,8 +59,9 @@ impl IndexManager {
     /// # Errors
     ///
     /// [`DiffError::NoDrive`] when no drive is given,
-    /// [`DiffError::DriveNotLoaded`] when it has no live index, or
-    /// [`DiffError::BaselineLoad`] when the baseline path cannot be loaded.
+    /// [`DiffError::DriveNotLoaded`] when it has no live index,
+    /// [`DiffError::BaselineLoad`] when the baseline path cannot be loaded,
+    /// or [`DiffError::Search`] when the search itself fails after setup.
     pub(crate) async fn diff_search(
         &self,
         params: &SearchParams,
@@ -114,6 +119,8 @@ impl IndexManager {
         let index = Arc::new(DriveIndex {
             drives: vec![Arc::new(baseline)],
         });
-        Ok(self.run_search_over(params, Some(index)).await)
+        self.run_search_over(params, Some(index))
+            .await
+            .map_err(DiffError::Search)
     }
 }

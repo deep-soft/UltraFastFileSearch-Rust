@@ -47,7 +47,7 @@ async fn search_with_include_rows_false_suppresses_rows_but_counts() {
         ..uffs_client::protocol::SearchParams::default()
     };
 
-    let response = mgr.search(&params).await;
+    let response = mgr.search(&params).await.expect("search completes");
 
     // `include_rows = false` must leave the payload as `Empty` —
     // any other variant (InlineRows, blob, shmem) would mean the
@@ -81,7 +81,7 @@ async fn search_with_include_rows_true_returns_rows() {
         ..uffs_client::protocol::SearchParams::default()
     };
 
-    let response = mgr.search(&params).await;
+    let response = mgr.search(&params).await.expect("search completes");
 
     // The happy path delivers `InlineRows` — the small-manager
     // fixture never breaches the `SHMEM_THRESHOLD` (100 K rows) or

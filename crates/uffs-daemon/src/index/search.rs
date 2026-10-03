@@ -12,7 +12,7 @@
 //! Search execution: query dispatch, profile construction, and drive info.
 
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use uffs_client::protocol::response::{
@@ -25,13 +25,23 @@ use uffs_core::search::backend::{
 use uffs_core::search::field::FieldId;
 
 use super::IndexManager;
+pub(crate) use super::search_failure::SearchFailure;
 
 impl IndexManager {
     /// Execute a live search query over the registry snapshot (updates perf
     /// counters). Snapshot-diff searches (`params.diff_baseline`) are routed by
     /// the handler to [`Self::diff_search`] instead, so they can surface setup
     /// errors (missing baseline / unloaded drive) as JSON-RPC errors.
-    pub(crate) async fn search(&self, params: &SearchParams) -> SearchResponse {
+    ///
+    /// # Errors
+    ///
+    /// A [`SearchFailure`] when the scan did not complete — budget expired,
+    /// search slots saturated, or the scan task panicked.  Never a
+    /// success-shaped empty response.
+    pub(crate) async fn search(
+        &self,
+        params: &SearchParams,
+    ) -> Result<SearchResponse, SearchFailure> {
         self.run_search_over(params, None).await
     }
 
@@ -44,6 +54,10 @@ impl IndexManager {
     ///
     /// When `params.profile` is `true`, populates `SearchResponse::profile`
     /// with a per-phase timing breakdown so the CLI can print it.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::search`].
     #[expect(
         clippy::too_many_lines,
         reason = "search orchestration with multi-drive merge, sorting, and response formatting"
@@ -56,7 +70,7 @@ impl IndexManager {
         &self,
         params: &SearchParams,
         snapshot_override: Option<Arc<DriveIndex>>,
-    ) -> SearchResponse {
+    ) -> Result<SearchResponse, SearchFailure> {
         let is_diff = snapshot_override.is_some();
         // Acquire a concurrency permit — blocks if too many searches
         // are already in flight.  The effective cap is
@@ -68,11 +82,9 @@ impl IndexManager {
         // the `UFFS_SEARCH_MAX_CONCURRENCY` env var.
         let Some(_permit) = self.acquire_search_permit().await else {
             // Permit acquisition timed out — the global concurrency
-            // cap is saturated.  Return a no-payload response with
-            // the remaining metadata fields at their zero defaults
-            // so the client still sees a valid (if empty) shape.
-            // Rejected before any promote was attempted.
-            return empty_response(0, None);
+            // cap is saturated.  Rejected before any promote was
+            // attempted; the client gets an error, not "0 results".
+            return Err(SearchFailure::Saturated);
         };
 
         let query_start = Instant::now();
@@ -240,6 +252,12 @@ impl IndexManager {
         let match_path = effective_params.match_path;
         let drives = effective_params.drives.clone();
         let agg_snapshot = snapshot.clone();
+        // Cooperative cancellation: the flag travels inside `filters`
+        // into every per-drive scan loop; raised below if the budget
+        // expires, so the rayon workers stop instead of finishing a
+        // scan nobody will read.
+        let cancel = Arc::new(AtomicBool::new(false));
+        filters.cancel = Some(Arc::clone(&cancel));
         let search_handle = tokio::task::spawn_blocking(move || {
             search_index(
                 &snapshot,
@@ -259,26 +277,36 @@ impl IndexManager {
             )
         });
 
+        let budget_secs = crate::cache::policy::search_scan_budget_secs();
         let search_outcome =
-            tokio::time::timeout(core::time::Duration::from_secs(30), search_handle).await;
+            tokio::time::timeout(core::time::Duration::from_secs(budget_secs), search_handle).await;
 
         let result = match search_outcome {
             Ok(Ok(res)) => res,
             Ok(Err(_join_err)) => {
-                tracing::error!("search task panicked");
-                // Promotion already happened; report what it cost even
-                // though the scan then failed.
-                return empty_response(0, Some(promotion_ms));
+                tracing::error!(
+                    pattern = %effective_params.pattern,
+                    promotion_ms,
+                    "search task panicked"
+                );
+                return Err(SearchFailure::Panicked { promotion_ms });
             }
             Err(_timeout) => {
+                // Stop the workers; the dropped JoinHandle alone cannot
+                // (`spawn_blocking` is not abortable).  The promotion
+                // cost is reported alongside because a timeout that
+                // follows an idle stretch is usually a warm-up story.
+                cancel.store(true, Ordering::Release);
                 tracing::warn!(
                     pattern = %effective_params.pattern,
-                    "search timed out after 30s"
+                    budget_secs,
+                    promotion_ms,
+                    "search exceeded its scan budget; scan cancelled, error returned to client"
                 );
-                // A timeout that spent most of its budget paging the
-                // index in is a different diagnosis from one that spent
-                // it scanning — say which.
-                return empty_response(30_000, Some(promotion_ms));
+                return Err(SearchFailure::TimedOut {
+                    budget_secs,
+                    promotion_ms,
+                });
             }
         };
         let search_us = if profiling {
@@ -405,7 +433,7 @@ impl IndexManager {
                     } else {
                         None
                     };
-                    return SearchResponse {
+                    return Ok(SearchResponse {
                         // File-sink path: the daemon already streamed
                         // the rows to `output_path`, so the response
                         // carries no payload — only the `rows_written`
@@ -423,7 +451,7 @@ impl IndexManager {
                         response_mode: None,
                         projected_rows: None,
                         aggregations: vec![],
-                    };
+                    });
                 }
                 Err(err) => {
                     tracing::error!(
@@ -569,7 +597,7 @@ impl IndexManager {
             SearchPayload::InlineRows(rows)
         };
 
-        SearchResponse {
+        Ok(SearchResponse {
             payload,
             total_count,
             records_scanned: result.records_scanned,
@@ -582,7 +610,7 @@ impl IndexManager {
             response_mode: Some(response_mode),
             projected_rows,
             aggregations: agg_results,
-        }
+        })
     }
 
     /// Build the `SearchProfile` for `--profile` output.
@@ -677,27 +705,6 @@ impl IndexManager {
             path_build_row_ns,
             drives: drive_profiles,
         }
-    }
-}
-
-/// A response carrying no rows — the shape every early-out path returns
-/// (permit exhaustion, scan panic, scan timeout).  Factored out because
-/// the three literals differed in two fields, so every new
-/// `SearchResponse` field had to be threaded through all of them.
-const fn empty_response(duration_ms: u64, promotion_ms: Option<u64>) -> SearchResponse {
-    SearchResponse {
-        payload: SearchPayload::Empty,
-        total_count: 0,
-        records_scanned: 0,
-        duration_ms,
-        promotion_ms,
-        truncated: false,
-        profile: None,
-        applied_sorts: Vec::new(),
-        applied_projection: Vec::new(),
-        response_mode: None,
-        projected_rows: None,
-        aggregations: Vec::new(),
     }
 }
 

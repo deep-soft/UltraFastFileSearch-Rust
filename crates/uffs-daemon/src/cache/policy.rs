@@ -142,6 +142,21 @@ pub(crate) const PARKED_TO_COLD_IDLE_ENV: &str = "UFFS_PARKED_TO_COLD_IDLE_SECS"
 /// Env var that overrides [`USN_REFRESH_INTERVAL_SECS`].
 pub(crate) const USN_REFRESH_INTERVAL_ENV: &str = "UFFS_USN_REFRESH_INTERVAL_SECS";
 
+/// Default per-search scan budget, in seconds (see
+/// [`search_scan_budget_secs`]).
+///
+/// A scan that outlives it is cancelled cooperatively (every per-drive
+/// loop polls `SearchFilters::cancel`) and the client gets a JSON-RPC
+/// `ERR_SEARCH_TIMEOUT` error — never a success-shaped empty result.
+/// 30 s covers a full `*.*` over ~45 M records on the reference box
+/// with headroom; the budget is deliberately below the client's own
+/// 60 s `UFFS_CLIENT_TIMEOUT_SECS` deadline so the error reaches the
+/// client instead of the client giving up first and orphaning the scan.
+pub(crate) const SEARCH_SCAN_BUDGET_SECS: u64 = 30;
+
+/// Env var that overrides [`SEARCH_SCAN_BUDGET_SECS`].
+pub(crate) const SEARCH_SCAN_BUDGET_ENV: &str = "UFFS_SEARCH_TIMEOUT_SECS";
+
 /// Read a positive `u64` seconds value from `env_name`, falling back
 /// to `default` on any parse error or non-positive value.  Logs a
 /// single startup line per override so the effective policy is
@@ -158,7 +173,7 @@ fn read_env_secs(env_name: &str, default: u64) -> u64 {
             env_var = env_name,
             override_secs = effective,
             default_secs = default,
-            "idle-threshold override active",
+            "policy override active",
         );
     } else {
         tracing::warn!(
@@ -166,10 +181,19 @@ fn read_env_secs(env_name: &str, default: u64) -> u64 {
             env_var = env_name,
             raw = %raw,
             default_secs = default,
-            "idle-threshold env var unparseable; using default",
+            "policy env var unparseable; using default",
         );
     }
     effective
+}
+
+/// Effective per-search scan budget (env override or default), in
+/// seconds.  Read once; the first search caches it for the daemon's
+/// lifetime like the idle thresholds.
+#[must_use]
+pub(crate) fn search_scan_budget_secs() -> u64 {
+    static CACHED: OnceLock<u64> = OnceLock::new();
+    *CACHED.get_or_init(|| read_env_secs(SEARCH_SCAN_BUDGET_ENV, SEARCH_SCAN_BUDGET_SECS))
 }
 
 /// Effective `Hot` → `Warm` idle threshold (env override or default).
