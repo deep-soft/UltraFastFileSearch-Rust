@@ -611,7 +611,11 @@ impl ShardRegistry {
                 }
             })
             .collect();
-        tracing::info!(
+        // Warm → Warm with a fresher body is a body swap, not a tier
+        // transition; it fires on every USN apply tick, so it stays
+        // below INFO and leaves the `shard.transition` INFO stream to
+        // real demotes and promotes.
+        tracing::debug!(
             target: "shard.transition",
             letter = %letter,
             from = %from_state,
