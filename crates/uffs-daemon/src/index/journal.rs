@@ -356,7 +356,11 @@ impl IndexManager {
         *guard = Arc::new(new_registry);
         drop(guard);
         self.bump_index_version();
-        tracing::info!(
+        // Per-tick housekeeping, not a tier change: every 2-3 s per
+        // warm drive on a busy box (159 lines in one 2026-10-03
+        // session).  Operators follow transitions at INFO; the tick
+        // itself is a DEBUG event.
+        tracing::debug!(
             target: "shard.journal",
             drive = %letter,
             reason,

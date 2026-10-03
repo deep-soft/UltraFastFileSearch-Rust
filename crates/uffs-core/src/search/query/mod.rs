@@ -193,19 +193,19 @@ pub(crate) fn search_compact_drive_regex(
     let mut filter_buf: Vec<u8> = Vec::with_capacity(256);
 
     let t_match = std::time::Instant::now();
-    let match_indices: Vec<u32> = drive
-        .records
-        .iter()
-        .enumerate()
-        .filter(|(_, rec)| {
-            let name = rec.name(&drive.names);
-            !name.is_empty()
-                && compiled_re.is_match(name)
-                && local_filters.matches_record(rec, &drive.names, &mut filter_buf, drive.fold)
-        })
-        .take(limit)
-        .map(|(idx, _)| uffs_mft::len_to_u32(idx))
-        .collect();
+    let mut match_indices: Vec<u32> = Vec::new();
+    for (idx, rec) in drive.records.iter().enumerate() {
+        if match_indices.len() >= limit || local_filters.cancelled_at(idx) {
+            break;
+        }
+        let name = rec.name(&drive.names);
+        if !name.is_empty()
+            && compiled_re.is_match(name)
+            && local_filters.matches_record(rec, &drive.names, &mut filter_buf, drive.fold)
+        {
+            match_indices.push(uffs_mft::len_to_u32(idx));
+        }
+    }
     let match_ms = t_match.elapsed().as_millis();
     let match_count = match_indices.len();
 
@@ -318,7 +318,7 @@ fn collect_match_indices(
         None => {
             let mut out = Vec::new();
             for (idx, rec) in drive.records.iter().enumerate() {
-                if out.len() >= limit {
+                if out.len() >= limit || filters.cancelled_at(idx) {
                     break;
                 }
                 let name = rec.name(&drive.names);
@@ -330,8 +330,8 @@ fn collect_match_indices(
         }
         Some(candidate_indices) => {
             let mut out = Vec::with_capacity(candidate_indices.len().min(limit));
-            for &idx in &candidate_indices {
-                if out.len() >= limit {
+            for (ordinal, &idx) in candidate_indices.iter().enumerate() {
+                if out.len() >= limit || filters.cancelled_at(ordinal) {
                     break;
                 }
                 let Some(rec) = drive.records.get(idx as usize) else {
@@ -541,6 +541,13 @@ pub(crate) fn search_compact_drive_tree(
     };
     let mut filter_buf: Vec<u8> = Vec::with_capacity(256);
 
+    // The tree walk is one indivisible traversal; a cancellation that
+    // lands before it starts skips the drive, one that lands during it
+    // is honoured by the row-building pass below.
+    if local_filters.is_cancelled() {
+        return Vec::new();
+    }
+
     let t_tree = std::time::Instant::now();
     let match_indices = tree::tree_search(drive, pattern_lower, scan_limit);
     let tree_ms = t_tree.elapsed().as_millis();
@@ -551,7 +558,9 @@ pub(crate) fn search_compact_drive_tree(
     let mut mal_cache = tree::malformed_cache_with_capacity(256);
     let rows: Vec<DisplayRow> = match_indices
         .iter()
-        .filter_map(|&record_idx| {
+        .enumerate()
+        .take_while(|&(ordinal, _)| !local_filters.cancelled_at(ordinal))
+        .filter_map(|(_, &record_idx)| {
             let rec = drive.records.get(record_idx as usize)?;
             let name = rec.name(&drive.names);
             if name.is_empty() {

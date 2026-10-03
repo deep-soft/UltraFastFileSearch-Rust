@@ -8,6 +8,95 @@
 //! and renders it to stderr, with no I/O or daemon knowledge of its
 //! own.
 
+/// What producing the output cost on the client, measured around the
+/// full formatting + write pass.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OutputCost {
+    /// Wall-clock milliseconds for the whole output pass.
+    pub(crate) ms: u128,
+    /// Bytes the pass produced.  Exact for the benchmark sink (it
+    /// counts every byte); for a real stdout the count is what the
+    /// payload carried, not what the terminal consumed.
+    pub(crate) bytes: u64,
+    /// Where the bytes went: `"sink"` under `--benchmark` (formatted and
+    /// discarded, so only the terminal is excluded), `"stdout"` otherwise.
+    pub(crate) target: &'static str,
+}
+
+/// Which transport the daemon picked for the payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PayloadKind {
+    /// No rows (no match, `--no-output`, or `--out` written by the daemon).
+    Empty,
+    /// Typed rows inline in the JSON envelope.
+    InlineRows,
+    /// Typed rows in a shared-memory file.
+    ShmemRows,
+    /// Pre-rendered text inline in the envelope.
+    InlineBlob,
+    /// Pre-rendered bytes in a shared-memory file.
+    ShmemBlob,
+}
+
+/// What the profile needs to know about the payload, captured **before**
+/// the output pass consumes it — the profile prints after the output so
+/// it can report the output cost, and cloning a 40 M-row payload to keep
+/// it around would be its own benchmark.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PayloadSummary {
+    /// Transport variant.
+    pub(crate) kind: PayloadKind,
+    /// Row count from the cheapest authoritative source for the variant
+    /// (see [`Self::of`]).
+    pub(crate) row_count: usize,
+}
+
+impl PayloadSummary {
+    /// Summarise `payload`, resolving the row count from the cheapest
+    /// authoritative source per variant:
+    ///
+    /// 1. `ShmemBlob` → mmap'd file; counting newlines would read every page
+    ///    just to discard the count, so use the daemon's pre-computed
+    ///    `total_count` instead.
+    /// 2. `InlineBlob` → inline string already in memory; scanning for `\n` is
+    ///    ~5 GB/s, cheap.
+    /// 3. Rows variants (`InlineRows`, `ShmemRows`) → `row_count_hint()` is
+    ///    O(1) — `Vec::len` or the daemon's pre-computed count.
+    /// 4. `Empty` → zero rows, nothing to count.
+    pub(crate) fn of(
+        payload: &uffs_client::protocol::response::SearchPayload,
+        total_count: u64,
+    ) -> Self {
+        use uffs_client::protocol::response::SearchPayload;
+        match payload {
+            SearchPayload::ShmemBlob(_) => Self {
+                kind: PayloadKind::ShmemBlob,
+                // `try_from` instead of `as` to preserve correctness on
+                // hypothetical 32-bit targets where `u64` would truncate
+                // (clippy::cast_possible_truncation).  `usize::MAX` is a
+                // strictly larger fallback than any realistic row count.
+                row_count: usize::try_from(total_count).unwrap_or(usize::MAX),
+            },
+            SearchPayload::InlineBlob(blob) => Self {
+                kind: PayloadKind::InlineBlob,
+                row_count: blob.bytes().filter(|byte| *byte == b'\n').count(),
+            },
+            SearchPayload::InlineRows(_) => Self {
+                kind: PayloadKind::InlineRows,
+                row_count: payload.row_count_hint().unwrap_or(0),
+            },
+            SearchPayload::ShmemRows { .. } => Self {
+                kind: PayloadKind::ShmemRows,
+                row_count: payload.row_count_hint().unwrap_or(0),
+            },
+            SearchPayload::Empty => Self {
+                kind: PayloadKind::Empty,
+                row_count: 0,
+            },
+        }
+    }
+}
+
 /// Packaging these into a struct keeps `run_search` under the
 /// `clippy::too-many-lines` cap and lets the profile helper take one
 /// argument instead of six.
@@ -25,16 +114,11 @@ pub(crate) struct ClientProfile<'a> {
     /// back in before the scan.  `0` on a warm index; tens of seconds
     /// on a cold one, where it is the entire wall-clock story.
     pub(crate) promotion_ms: u64,
-    /// Payload delivery channel the daemon picked for this response.
-    /// Used by [`print_client_profile`] to show the transport name
-    /// and to pick the cheapest authoritative row-count source.
-    pub(crate) payload: &'a uffs_client::protocol::response::SearchPayload,
-    /// Total row count reported by the daemon, independent of which
-    /// transport carries the payload.  Used to display the "Total
-    /// matches:" line when the transport is a shmem blob — counting
-    /// newlines in the mmap would consume the file before the stdout
-    /// write and double the syscall cost.
-    pub(crate) total_count: u64,
+    /// Payload delivery channel the daemon picked for this response
+    /// plus its row count, captured before the output pass consumed
+    /// the payload.  Used by [`print_client_profile`] to show the
+    /// transport name and the count.
+    pub(crate) payload: PayloadSummary,
     /// Daemon-side `profile` object from the response envelope.  When
     /// populated, its `scan_ms` / `sort_ms` / `path_resolve_ms` /
     /// `write_ms` fields are rendered as a sub-phase breakdown inside
@@ -42,6 +126,10 @@ pub(crate) struct ClientProfile<'a> {
     /// per-query cost sits (scan vs sort vs path resolution vs disk
     /// write).
     pub(crate) daemon_profile: Option<&'a uffs_client::protocol::response::SearchProfile>,
+    /// Client-side output cost, when an output pass ran (`None` under
+    /// `--no-output`, where neither the daemon nor the client produces
+    /// rows).
+    pub(crate) output: Option<OutputCost>,
 }
 
 /// Print the `--profile` / `--benchmark` client-side timing block to
@@ -51,8 +139,6 @@ pub(crate) struct ClientProfile<'a> {
     reason = "intentional --profile output to stderr"
 )]
 pub(crate) fn print_client_profile(prof: &ClientProfile<'_>) {
-    use uffs_client::protocol::response::SearchPayload;
-
     eprintln!("=== PROFILE: Client → Daemon ===");
     eprintln!("  Connect:         {:>6} ms", prof.connect_ms);
     eprintln!("  Await ready:     {:>6} ms", prof.ready_ms);
@@ -62,6 +148,12 @@ pub(crate) fn print_client_profile(prof: &ClientProfile<'_>) {
     );
     // Printed only when it happened: a warm index promotes nothing, and
     // a zero line every run would train the eye to skip it.
+    if let Some(output) = prof.output {
+        eprintln!(
+            "  Output ({:<6}): {:>6} ms  ({} bytes formatted)",
+            output.target, output.ms, output.bytes
+        );
+    }
     if prof.promotion_ms > 0 {
         eprintln!(
             "  Index warm-up:   {:>6} ms  (paged parked/cold drives back in)",
@@ -115,55 +207,35 @@ pub(crate) fn print_client_profile(prof: &ClientProfile<'_>) {
             );
         }
     }
-    // Row count resolution — pick the cheapest authoritative source
-    // depending on which payload variant the daemon used:
-    // 1. `ShmemBlob` → mmap'd file; counting newlines would read every page just to
-    //    discard the count, so use the daemon's pre- computed `total_count`
-    //    instead.
-    // 2. `InlineBlob` → inline string already in memory; scanning for `\n` is ~5
-    //    GB/s, cheap.
-    // 3. Rows variants (`InlineRows`, `ShmemRows`) → `row_count_hint()` is O(1) —
-    //    `Vec::len` or the daemon's pre-computed count.
-    // 4. `Empty` → zero rows, nothing to count.
-    let row_count = match prof.payload {
-        SearchPayload::ShmemBlob(_) => {
-            // `try_from` instead of `as` to preserve correctness on
-            // hypothetical 32-bit targets where `u64` would truncate
-            // (clippy::cast_possible_truncation).  `u64::MAX` is a
-            // strictly larger fallback than any realistic row count.
-            usize::try_from(prof.total_count).unwrap_or(usize::MAX)
-        }
-        SearchPayload::InlineBlob(blob) => blob.bytes().filter(|byte| *byte == b'\n').count(),
-        SearchPayload::InlineRows(_) | SearchPayload::ShmemRows { .. } | SearchPayload::Empty => {
-            prof.payload.row_count_hint().unwrap_or(0)
-        }
-    };
+    // Row count resolution lives in `PayloadSummary::of` (captured before
+    // the output pass consumed the payload).
+    let row_count = prof.payload.row_count;
     // Label the count by what it actually measures per transport: blob
     // variants carry rendered text (newline count includes header/footer
     // lines) or the daemon's pre-limit total, NOT the post-`--limit` page
     // (2026-06-12 dry run: `--limit 5` printed "Rows returned: 7").
-    match prof.payload {
-        SearchPayload::ShmemBlob(_) => {
+    match prof.payload.kind {
+        PayloadKind::ShmemBlob => {
             eprintln!("  Total matches:   {row_count:>6}");
         }
-        SearchPayload::InlineBlob(_) => {
+        PayloadKind::InlineBlob => {
             eprintln!("  Output lines:    {row_count:>6}");
         }
-        SearchPayload::InlineRows(_) | SearchPayload::ShmemRows { .. } | SearchPayload::Empty => {
+        PayloadKind::InlineRows | PayloadKind::ShmemRows | PayloadKind::Empty => {
             eprintln!("  Rows returned:   {row_count:>6}");
         }
     }
-    match prof.payload {
-        SearchPayload::ShmemBlob(_) => {
+    match prof.payload.kind {
+        PayloadKind::ShmemBlob => {
             eprintln!("  Transport:       shmem_blob (mmap + write_all, binary)");
         }
-        SearchPayload::InlineBlob(_) => {
+        PayloadKind::InlineBlob => {
             eprintln!("  Transport:       inline_blob (single write_all)");
         }
-        SearchPayload::ShmemRows { .. } => {
+        PayloadKind::ShmemRows => {
             eprintln!("  Transport:       shmem_rows (mmap + per-row format)");
         }
-        SearchPayload::InlineRows(_) | SearchPayload::Empty => {
+        PayloadKind::InlineRows | PayloadKind::Empty => {
             // inline_rows is the default — no extra line needed.
             // empty responses skip the transport line entirely.
         }

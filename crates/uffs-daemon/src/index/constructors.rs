@@ -210,7 +210,7 @@ impl IndexManager {
     /// full memory-tiering lifecycle plus the parsed config.  Phase 5
     /// tasks 5.8 / 5.9 / 5.10 inject counting / recording /
     /// controllable fakes here so the demote-batch, promote-on-search,
-    /// and pressure-cascade assertions can run deterministically
+    /// and pressure-observation assertions can run deterministically
     /// without touching the process's actual working set, kernel page
     /// cache, or OS pressure-notification API; Phase 6 Commit C tests
     /// pass an explicit `Arc<Config>` so per-drive `min_tier` overrides

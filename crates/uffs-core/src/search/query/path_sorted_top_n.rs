@@ -151,10 +151,12 @@ fn walk_tree_path_sorted<D: AsRef<DriveCompactIndex>>(
         let mut dir_cache = tree::dir_cache_with_capacity(256);
         let mut mal_cache = tree::malformed_cache_with_capacity(256);
         let mut stack: Vec<u32> = roots.into_iter().rev().collect();
+        let mut visited = 0_usize;
         while let Some(idx) = stack.pop() {
-            if path_results.len() >= limit {
+            if path_results.len() >= limit || search_filters.cancelled_at(visited) {
                 return path_results;
             }
+            visited += 1;
             let Some(rec) = drive.records.get(idx as usize) else {
                 continue;
             };

@@ -265,7 +265,7 @@ uffs --daemon forget C --force            # evict + delete on-disk caches
 
 ### Memory tiering at a glance
 
-The daemon keeps each drive's compact index in one of four tiers, demoted automatically by an idle TTL ladder + memory-pressure cascade and promoted on first search:
+The daemon keeps each drive's compact index in one of four tiers, demoted automatically by an idle TTL ladder and promoted on first search (kernel memory pressure is logged, never acted on):
 
 | Tier | RAM cost | Source-of-truth | When |
 |---|---|---|---|

@@ -225,21 +225,19 @@ pub(crate) struct ShardEntry {
     parked_body: Option<Arc<ParkedBody>>,
     /// Tier-pin expiry as Unix-millis.
     ///
-    /// `0` means "not pinned" (the demote controllers may demote on
-    /// idle / pressure cascade).  Non-zero means "do not demote
-    /// before this Unix-millis timestamp" — the idle-demote tick
-    /// (`@/Users/.../uffs-daemon/src/index/transitions.rs::demote_idle_shards`)
-    /// and the pressure-cascade loop
-    /// (`@/Users/.../uffs-daemon/src/index/transitions.
-    /// rs::cascade_demote_one_step`) both consult [`Self::is_pinned`]
-    /// before taking action. Hibernate (Phase 8-B) explicitly clears the
+    /// `0` means "not pinned" (the idle-demote controller may demote
+    /// once the TTL elapses).  Non-zero means "do not demote before
+    /// this Unix-millis timestamp" — the idle-demote tick
+    /// (`index/transitions.rs::demote_idle_shards`) consults
+    /// [`Self::is_pinned`] before taking action.  Hibernate (Phase 8-B)
+    /// explicitly clears the
     /// pin by virtue of rebuilding the shard as `Cold` (the new
     /// `ShardEntry` starts with `pin_until_ms = 0`).
     ///
     /// Phase 8-C — operator-driven `preload <drive>` arms this
     /// timestamp via [`Self::pin_until`] after the Cold → Warm → Hot
-    /// promote sequence completes.  Atomic so the pressure-cascade
-    /// subscriber can read it without holding the registry lock.
+    /// promote sequence completes.  Atomic so a reader can check it
+    /// without holding the registry lock.
     pin_until_ms: AtomicU64,
 }
 

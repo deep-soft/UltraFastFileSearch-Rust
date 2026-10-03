@@ -19,12 +19,11 @@
 //!   (Phase 4 task 4.11).
 //! * [`idle_demote`] — `demote_idle_shards` TTL-driven cascade and round-trip
 //!   query stats (state-ladder behaviour only).
-//! * [`idle_demote_tracing`] — `shard.transition` tracing-event contract,
-//!   pressure-cascade single-event regression, and the PR-f promote anti-thrash
-//!   invariant.
-//! * [`lifecycle_hooks`] — Phase 5 task 5.8 / 5.9 / 5.10 `WorkingSetTrim` +
-//!   `Prefetch` + `PressureSignal` injection tests, plus the `drives` RPC
-//!   tier-marker enumeration.
+//! * [`idle_demote_tracing`] — `shard.transition` tracing-event contract and
+//!   the PR-f promote anti-thrash invariant.
+//! * [`lifecycle_hooks`] — Phase 5 task 5.8 / 5.9 `WorkingSetTrim` + `Prefetch`
+//!   injection tests, the observe-only `PressureSignal` subscriber contract,
+//!   plus the `drives` RPC tier-marker enumeration.
 //! * [`tracing_capture`] — shared `tracing::Subscriber` scaffold (`EventLog` /
 //!   `CapturedEvent`) used by [`idle_demote_tracing`] and other
 //!   observability-contract tests.

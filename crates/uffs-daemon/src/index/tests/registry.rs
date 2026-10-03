@@ -131,7 +131,7 @@ async fn shard_registry_search_two_drives_returns_rows_from_each() {
         limit: Some(50),
         ..Default::default()
     };
-    let resp = mgr.search(&params).await;
+    let resp = mgr.search(&params).await.expect("search completes");
     assert!(
         resp.total_count >= 2,
         "two-drive '*' search must return at least 2 rows; got {}",
@@ -181,7 +181,7 @@ async fn search_records_query_on_every_active_shard() {
     // Three searches.  Suffix the loop bound to avoid the implicit i32
     // fallback flagged by clippy::default_numeric_fallback.
     for _ in 0_u32..3_u32 {
-        drop(mgr.search(&params).await);
+        drop(mgr.search(&params).await.expect("search completes"));
     }
 
     let after = mgr.shard_query_totals_for_test().await;

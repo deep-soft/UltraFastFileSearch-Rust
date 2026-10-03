@@ -15,7 +15,7 @@
 //! | Windows     | Named pipe via `std::fs::OpenOptions` (no Winsock) |
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::io::{BufRead as _, BufReader, Read, Write};
+use std::io::{self, BufRead as _, BufReader, Read, Write};
 
 use crate::connect_sync_autostart::auto_start_daemon;
 use crate::daemon_ctl::{pid_file_path, socket_path};
@@ -392,10 +392,19 @@ impl UffsClientSync {
         // Arm the Windows deadline guard, if present.  `_disarmer`
         // guarantees disarm on every exit path, including `?`.
         #[cfg(windows)]
-        let _disarmer = self.deadline_guard.as_ref().map(|guard| {
+        let deadline_guard = self.deadline_guard.as_ref();
+        #[cfg(windows)]
+        let _disarmer = deadline_guard.map(|guard| {
             guard.arm();
             DisarmOnDrop { guard }
         });
+        // Classify a failed read/write: the deadline firing is a
+        // `Timeout`, everything else is a transport `Io` error.
+        #[cfg(windows)]
+        let transport_error =
+            move |err: io::Error| crate::connect_sync_errors::transport_error(deadline_guard, &err);
+        #[cfg(not(windows))]
+        let transport_error = |err: io::Error| crate::connect_sync_errors::classify_io_error(&err);
 
         let id = self.next_id;
         self.next_id += 1;
@@ -408,13 +417,9 @@ impl UffsClientSync {
 
         self.writer
             .write_all(req.as_bytes())
-            .map_err(|err| ClientError::Io(err.to_string()))?;
-        self.writer
-            .write_all(b"\n")
-            .map_err(|err| ClientError::Io(err.to_string()))?;
-        self.writer
-            .flush()
-            .map_err(|err| ClientError::Io(err.to_string()))?;
+            .map_err(transport_error)?;
+        self.writer.write_all(b"\n").map_err(transport_error)?;
+        self.writer.flush().map_err(transport_error)?;
 
         // Read lines until we get a response with matching id.
         // Skip notifications (no `id` field).
@@ -423,7 +428,7 @@ impl UffsClientSync {
             let bytes_read = self
                 .reader
                 .read_line(&mut raw_line)
-                .map_err(|err| ClientError::Io(err.to_string()))?;
+                .map_err(transport_error)?;
             if bytes_read == 0 {
                 return Err(ClientError::ConnectionClosed);
             }
@@ -775,7 +780,3 @@ impl Drop for DisarmOnDrop<'_> {
         self.guard.disarm();
     }
 }
-
-// Auto-start daemon helpers (`auto_start_daemon`, `is_process_alive`,
-// `is_daemon_process`) live in the sibling [`crate::connect_sync_autostart`]
-// module to keep this file under the 800-LOC policy ceiling.

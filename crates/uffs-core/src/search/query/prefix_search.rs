@@ -61,7 +61,10 @@ pub(crate) fn search_compact_drive_prefix(
             drive.fold.fold_into(prefix, &mut fold_buf).to_owned()
         };
 
-        for rec_idx in candidate_indices {
+        for (ordinal, rec_idx) in candidate_indices.into_iter().enumerate() {
+            if local_filters.cancelled_at(ordinal) {
+                break;
+            }
             let Some(rec) = drive.records.get(rec_idx as usize) else {
                 continue;
             };

@@ -18,13 +18,10 @@
 //!    `[shards.per_drive."X:"].min_tier` floor (plan tasks 6.4, 6.6).  Every
 //!    demote evaluation emits a `shard.ttl` tracing event with the chosen TTL,
 //!    the live rate, and a structured reason (plan task 6.7).
-//! 2. [`IndexManager::cascade_demote_one_step`] (+
-//!    [`IndexManager::subscribe_pressure`]) — Phase 5 task 5.6
-//!    pressure-cascade.  Picks the LRU Warm shard, demotes it Warm → Parked,
-//!    and trims the working set; the subscriber loop in `lib.rs` calls this in
-//!    a tight loop while [`crate::cache::pressure::PressureLevel`] reports
-//!    `Critical`, yielding between calls so the cascade stops as soon as the
-//!    pressure clears.
+//! 2. [`IndexManager::subscribe_pressure`] — the watch channel the `lib.rs`
+//!    pressure subscriber logs from.  The pressure cascade that used to demote
+//!    LRU Warm shards from here was removed on 2026-10-03 (owner ruling): the
+//!    idle ladder above is the only demote driver.
 //!
 //! Phase 7 activation moved the third (USN-refresh) controller out
 //! of this module: the deleted `refresh_usn_for_warm_shards` global
@@ -152,112 +149,18 @@ impl IndexManager {
         }
     }
 
-    /// Subscribe to memory-pressure transitions (Phase 5 task 5.6).
+    /// Subscribe to memory-pressure transitions.
     ///
     /// Returns a [`tokio::sync::watch::Receiver`] carrying the
     /// current [`PressureLevel`] and waking on every transition.
     /// The daemon's `spawn_pressure_subscriber` (in `lib.rs`) is
-    /// the sole production consumer; the Phase 5 task 5.10 test
-    /// uses [`IndexManager::cascade_demote_one_step`] directly without
-    /// going through the watch channel.
+    /// the sole production consumer, and it only logs what it sees.
     ///
     /// [`PressureLevel`]: crate::cache::pressure::PressureLevel
     pub(crate) fn subscribe_pressure(
         &self,
     ) -> tokio::sync::watch::Receiver<crate::cache::pressure::PressureLevel> {
         self.pressure.subscribe()
-    }
-
-    /// Cascade-demote one LRU Warm shard to Parked (Phase 5 task 5.6).
-    ///
-    /// Picks the Warm shard with the **oldest**
-    /// `DriveStats::last_query_at_ms` and demotes it one tier
-    /// (Warm → Parked).  Returns `Some((letter, ShardState::Parked))`
-    /// when work was done, `None` when no Warm shards remain (the
-    /// caller stops the cascade).
-    ///
-    /// **LRU contract** (closes the deferred Phase 3 task 3.6).  The
-    /// per-shard `last_query_at_ms` already exists from Phase 3; the
-    /// "LRU bookkeeping" task 3.6 alluded to is just a sort at
-    /// demote-time — no separate ordering data structure is needed,
-    /// since the cascade fires rarely (only on Windows pressure
-    /// transitions) and the Warm subset is small (one shard per
-    /// loaded drive, capped at the indexed-drive count).
-    ///
-    /// **Working-set trim**.  Each cascade step calls
-    /// [`WorkingSetTrim::trim`] once.  Unlike the idle-demote
-    /// batch — where one trim per batch coalesces N shards — the
-    /// cascade is one shard per call by design (the subscriber
-    /// loop yields between calls so a `High` transition can stop
-    /// the cascade promptly), so there's no batch to coalesce.
-    ///
-    /// [`WorkingSetTrim::trim`]: crate::cache::working_set::WorkingSetTrim::trim
-    pub(crate) async fn cascade_demote_one_step(
-        &self,
-    ) -> Option<(uffs_mft::platform::DriveLetter, ShardState)> {
-        // ── Phase 1: read-lock detect (LRU pick) ────────────────────
-        // Enumerate Warm shards and keep the one with the oldest
-        // `last_query_at_ms`.  `min_by_key` returns `None` when no
-        // Warm shards exist; the caller stops the cascade.
-        //
-        // Phase 8-C — pinned shards (operator-driven `preload`)
-        // are excluded from the LRU pick.  This means a sustained
-        // memory-pressure cascade can run out of demote candidates
-        // even when total RAM remains tight; the pressure
-        // subscriber loop in `lib.rs` handles that case by yielding
-        // and waking on the next pressure transition.  Operators
-        // who explicitly pinned a shard accepted that trade-off.
-        let now_ms = crate::cache::unix_now_ms();
-        let pick: Option<(uffs_mft::platform::DriveLetter, u64)> = {
-            let guard = self.index.read().await;
-            guard
-                .iter()
-                .filter(|shard| shard.state() == ShardState::Warm)
-                .filter(|shard| !shard.is_pinned(now_ms))
-                .map(|shard| (shard.drive, shard.stats.last_query_at_ms()))
-                .min_by_key(|&(_, ts)| ts)
-        };
-        let (letter, _last_query_at_ms) = pick?;
-
-        // ── Phase 2: write-lock atomic single-shard demote ─────────
-        // Re-check inside the write lock — a concurrent promote
-        // could have moved the picked shard back to Hot/Warm
-        // between the read-lock and the write-lock acquisition.
-        // `demote_letter_with_reason` returns `None` for an illegal
-        // transition, in which case we skip and the next cascade
-        // tick re-picks.  The `PressureCascade` reason flows into
-        // the canonical `shard.transition` event so operators can
-        // distinguish cascade demotes from TTL idle demotes by
-        // grepping `reason="pressure-cascade"` (Phase 5 G4
-        // follow-up — the cascade no longer emits its own
-        // duplicate event of the same demote).
-        let target = ShardState::Parked;
-        let mut guard = self.index.write().await;
-        let new_registry = guard.demote_letter_with_reason(
-            letter,
-            target,
-            crate::cache::registry::DemoteReason::PressureCascade,
-        )?;
-        *guard = Arc::new(new_registry);
-        drop(guard);
-        self.bump_index_version();
-
-        // ── Phase 3: working-set trim (Phase 5 task 5.4 reuse) ────
-        // One trim per cascade step (vs once per idle-demote batch)
-        // — see method-level docs for the rationale.  Best-effort:
-        // any I/O error is logged at `target: "shard.transition"`
-        // and the daemon continues.
-        if let Err(err) = self.working_set_trim.trim() {
-            tracing::warn!(
-                target: "shard.transition",
-                drive = %letter,
-                error = %err,
-                reason = "pressure-cascade",
-                "WorkingSetTrim::trim failed; daemon continues",
-            );
-        }
-
-        Some((letter, target))
     }
 }
 

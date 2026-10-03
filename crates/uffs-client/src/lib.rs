@@ -132,6 +132,14 @@ pub mod connect_sync;
 /// `is_daemon_process`) — split off `connect_sync` to keep that file
 /// under the 800-LOC policy ceiling.
 pub(crate) mod connect_sync_autostart;
+/// Platform-specific `platform_connect` impls and the `rpc_deadline` helper.
+///
+/// Split `impl` blocks live on [`connect_sync::UffsClientSync`];
+/// callers see no change.  Also hosts the env-override regression
+/// tests for `rpc_deadline`.
+/// Transport-error classification for the sync client: the client's own
+/// deadline surfaces as `ClientError::Timeout`, never as a raw `Io`.
+pub(crate) mod connect_sync_errors;
 /// Memory-tiering RPC helpers (`hibernate`, `preload`).
 ///
 /// Phase 8-B / 8-C — split off `connect_sync` so the tiering cluster
@@ -139,12 +147,8 @@ pub(crate) mod connect_sync_autostart;
 /// exception.  Same precedent as the daemon-state types in
 /// [`protocol::response_status`].
 pub(crate) mod connect_sync_journal;
-/// Platform-specific `platform_connect` impls and the `rpc_deadline` helper.
-///
-/// Split `impl` blocks live on [`connect_sync::UffsClientSync`];
-/// callers see no change.  Also hosts the env-override regression
-/// tests for `rpc_deadline`.
 pub(crate) mod connect_sync_platform;
+pub use connect_sync_platform::rpc_deadline;
 /// Wire-protocol unit tests for [`connect_sync::UffsClientSync`].
 ///
 /// Exercises the JSON-RPC request/response path via in-memory

@@ -429,7 +429,10 @@ impl RequestHandler {
             ..Default::default()
         };
 
-        let response = self.index.search(&search_params).await;
+        let response = match self.index.search(&search_params).await {
+            Ok(response) => response,
+            Err(failure) => return diff_handler::search_failure_json(id, &failure),
+        };
 
         // Extract the first aggregation result.
         let (values, next_cursor, total_distinct) = response.aggregations.first().map_or_else(

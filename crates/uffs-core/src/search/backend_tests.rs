@@ -2798,3 +2798,89 @@ fn search_index_bloom_skips_all_drives_when_no_ext_matches_any() {
         "no drives scanned → no matching rows"
     );
 }
+
+// ── Cooperative cancellation ────────────────────────────────────────
+
+/// A search whose `cancel` flag is raised must come back with **no**
+/// rows on every dispatch path — never a partial subset dressed up as
+/// the answer.  The daemon raises the flag when its scan budget
+/// expires and discards whatever comes back; what this pins is that
+/// the scan honours the flag and that nothing half-collected leaks.
+/// The uncancelled twin of each query is asserted non-empty first so
+/// an empty result cannot pass by accident.
+#[test]
+fn cancelled_search_returns_no_rows_on_every_dispatch_path() {
+    let index = build_two_drive_index();
+    // (pattern, sort) — match-all numeric, match-all tree (Path sort),
+    // match-all path_only, regex, trigram/substring, prefix.
+    let cases: [(&str, FieldId); 6] = [
+        ("*", FieldId::Modified),
+        ("*", FieldId::Path),
+        ("*", FieldId::PathOnly),
+        (">.*", FieldId::Modified),
+        ("report", FieldId::Modified),
+        ("repo*", FieldId::Modified),
+    ];
+    for (pattern, sort) in cases {
+        let mut live = super::super::filters::SearchFilters::default();
+        let live_rows = search_index(
+            &index,
+            SearchRequest::new(pattern, &mut live),
+            sort,
+            true,
+            &[],
+        )
+        .rows;
+        assert!(
+            !live_rows.is_empty(),
+            "fixture must match `{pattern}` (sort {sort:?}) when not cancelled"
+        );
+
+        let cancel = Arc::new(core::sync::atomic::AtomicBool::new(true));
+        let mut cancelled = super::super::filters::SearchFilters {
+            cancel: Some(cancel),
+            ..Default::default()
+        };
+        let result = search_index(
+            &index,
+            SearchRequest::new(pattern, &mut cancelled),
+            sort,
+            true,
+            &[],
+        );
+        assert!(
+            result.rows.is_empty(),
+            "`{pattern}` (sort {sort:?}) must return no rows once cancelled; got {}",
+            result.rows.len()
+        );
+    }
+}
+
+/// The cancel handle is search-time state, not a filter: a filter set
+/// that carries only a cancel flag is still "empty" for every
+/// fast-path decision, and the flag survives the per-drive clone the
+/// rayon workers take.
+#[test]
+fn cancel_handle_is_not_a_filter_and_survives_clone() {
+    let flag = Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let filters = super::super::filters::SearchFilters {
+        cancel: Some(Arc::clone(&flag)),
+        ..Default::default()
+    };
+    assert!(
+        filters.is_empty(),
+        "a cancel handle alone must not count as a filter"
+    );
+    assert!(!filters.is_cancelled());
+    let worker_copy = filters.clone();
+    flag.store(true, core::sync::atomic::Ordering::Relaxed);
+    assert!(filters.is_cancelled(), "the original must observe the flag");
+    assert!(
+        worker_copy.is_cancelled(),
+        "the clone must observe the shared flag"
+    );
+    assert!(
+        worker_copy.cancelled_at(0) && !worker_copy.cancelled_at(1),
+        "cancelled_at polls only on the stride boundary"
+    );
+}
