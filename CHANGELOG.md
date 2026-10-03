@@ -14,6 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.44] - 2026-10-03
+
+### Added
+
+- cli: make --benchmark measure output production; -v shows the rows
+
+### Changed
+
+- daemon: never force a tier change on memory pressure
+
+### Fixed
+
+- client: report the client's own deadline as Timeout, never as a warm-up retry
+- daemon: surface search timeouts as errors and cancel the orphaned scan
+- daemon: log the per-tick USN refresh at debug, not info
+
 ## [0.6.43] - 2026-10-03
 
 ### Added
@@ -2880,7 +2896,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.43...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.44...HEAD
+[0.6.44]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.43...v0.6.44
 [0.6.43]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.42...v0.6.43
 [0.6.42]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.41...v0.6.42
 [0.6.41]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.40...v0.6.41
