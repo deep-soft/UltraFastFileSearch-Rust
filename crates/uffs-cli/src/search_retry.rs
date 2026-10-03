@@ -11,6 +11,14 @@
 //! primitive ([`uffs-mft`'s `read_handle_at`]) already retries that transient;
 //! this is the client-side belt-and-suspenders so a user never sees a raw I/O
 //! error for a recoverable warm-up hiccup — and gets a "warming" note instead.
+//!
+//! Only an error the **daemon** reported is a candidate for the retry.  The
+//! client's own per-RPC deadline (`UFFS_CLIENT_TIMEOUT_SECS`, enforced on
+//! Windows through `CancelSynchronousIo`, which also yields os error 995 on
+//! the cancelled read) surfaces as [`ClientError::Timeout`] and is never
+//! retried: the daemon is still executing that search, and re-sending it
+//! would only queue another full scan behind the first — the 2026-10-03
+//! benchmark run did exactly that, five `*.*` scans for three invocations.
 
 // Each helper is used exactly once on the search path; this is cohesion, not a
 // smell — the `single_call_fn` restriction lint is relaxed for the module.
@@ -28,10 +36,12 @@ const WARM_RETRY_MAX: u32 = 5;
 const WARM_RETRY_BACKOFF: core::time::Duration = core::time::Duration::from_millis(400);
 
 /// Run `search_cli_raw`, transparently retrying the one transient a search can
-/// hit while the daemon re-warms parked drives: Windows
+/// hit while the daemon re-warms parked drives: a daemon-reported Windows
 /// `ERROR_OPERATION_ABORTED` (os error 995).
 ///
-/// Bounded + back-off so a genuine, persistent failure still fails fast.
+/// Bounded + back-off so a genuine, persistent failure still fails fast.  A
+/// [`ClientError::Timeout`] is returned as-is on the first occurrence — see the
+/// module docs for why the client's own deadline must never trigger a retry.
 pub(crate) fn search_cli_with_warm_retry(
     client: &mut UffsClientSync,
     args: &[String],
@@ -50,13 +60,20 @@ pub(crate) fn search_cli_with_warm_retry(
     }
 }
 
-/// `true` if `err` is the transient `ERROR_OPERATION_ABORTED` (os error 995) a
-/// search hits when it races a parked-drive re-warm. Matched on the stable OS
-/// error code in the rendered message — the daemon's typed I/O error is
-/// flattened to a string across the JSON-RPC boundary, so the code is the only
-/// portable signal left.
+/// `true` if `err` is a **daemon-reported** transient `ERROR_OPERATION_ABORTED`
+/// (os error 995) — what a search hits when it races a parked-drive re-warm.
+/// Matched on the stable OS error code in the rendered message — the daemon's
+/// typed I/O error is flattened to a string across the JSON-RPC boundary, so
+/// the code is the only portable signal left.
+///
+/// A client-side transport error never qualifies, whatever its text: the only
+/// client-side source of os error 995 is the deadline watchdog cancelling our
+/// own read, and the sync client already reports that as
+/// [`ClientError::Timeout`].
 fn is_index_warming_abort(err: &ClientError) -> bool {
-    let message = err.to_string();
+    let ClientError::DaemonError { message, .. } = err else {
+        return false;
+    };
     message.contains("os error 995") || message.contains("operation has been aborted")
 }
 
@@ -78,24 +95,45 @@ mod tests {
 
     use super::is_index_warming_abort;
 
-    /// Only a transient `ERROR_OPERATION_ABORTED` (os error 995) — what a
-    /// search hits while racing a parked-drive re-warm — should be retried;
-    /// real errors must surface immediately.
+    /// Only a daemon-reported transient `ERROR_OPERATION_ABORTED` (os error
+    /// 995) — what a search hits while racing a parked-drive re-warm — should
+    /// be retried; real errors must surface immediately.
     #[test]
-    fn warming_abort_matches_only_995() {
-        assert!(is_index_warming_abort(&ClientError::Io(
-            "The I/O operation has been aborted because of either a thread exit \
-             or an application request. (os error 995)"
-                .to_owned()
-        )));
+    fn warming_abort_matches_only_daemon_reported_995() {
         assert!(is_index_warming_abort(&ClientError::DaemonError {
             code: -32000,
             message: "I/O error: ... (os error 995)".to_owned(),
         }));
+        assert!(is_index_warming_abort(&ClientError::DaemonError {
+            code: -32000,
+            message: "The I/O operation has been aborted because of either a thread exit \
+                      or an application request."
+                .to_owned(),
+        }));
         // Real failures are NOT retried.
+        assert!(!is_index_warming_abort(&ClientError::DaemonError {
+            code: -32000,
+            message: "permission denied (os error 5)".to_owned(),
+        }));
         assert!(!is_index_warming_abort(&ClientError::Io(
             "permission denied (os error 5)".to_owned()
         )));
         assert!(!is_index_warming_abort(&ClientError::ConnectionClosed));
+    }
+
+    /// The client's own deadline is not a warm-up transient.  On Windows the
+    /// watchdog's `CancelSynchronousIo` makes our blocked read fail with the
+    /// same os error 995 the daemon transient carries; the sync client maps
+    /// that to `Timeout`, and a raw client-side `Io` 995 (a thread-exit
+    /// cancellation outside the guard) must not be retried either — the
+    /// daemon is still running the search we just abandoned.
+    #[test]
+    fn client_side_cancellation_is_never_retried() {
+        assert!(!is_index_warming_abort(&ClientError::Timeout));
+        assert!(!is_index_warming_abort(&ClientError::Io(
+            "The I/O operation has been aborted because of either a thread exit \
+             or an application request. (os error 995)"
+                .to_owned()
+        )));
     }
 }
