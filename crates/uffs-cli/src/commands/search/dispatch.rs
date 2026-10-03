@@ -6,12 +6,12 @@
 //! Extracts format/column/separator settings from raw CLI args and
 //! delegates to the output module for formatting.
 
-use std::io::Write as _;
+use std::io::Write;
 
 use anyhow::Result;
 use uffs_client::format::extract_drive_letter;
 
-use super::super::output::write_native_results;
+use super::super::output::{render_native_results_into, write_native_results};
 
 // ── Thin-client output helpers ─────────────────────────────────────────
 //
@@ -47,6 +47,108 @@ fn default_format(out_is_console: bool) -> &'static str {
     }
 }
 
+/// Output settings resolved from the raw CLI args — the one place
+/// `--format` / `--columns` / `--sep` / drive targets are read, shared
+/// by the console path ([`write_rows`]) and the benchmark sink
+/// ([`write_rows_into`]) so both render byte-for-byte the same output.
+struct OutputSettings<'a> {
+    /// `--out` destination (`console` when absent).
+    out: &'a str,
+    /// Resolved `--format`.
+    format: &'a str,
+    /// `--columns`, or `parity` when `--parity-compat` is set.
+    columns: &'a str,
+    /// `--sep`.
+    sep: &'a str,
+    /// `--quotes`.
+    quotes: &'a str,
+    /// `--header` (default on).
+    header: bool,
+    /// `--pos` parity boolean string.
+    pos: &'a str,
+    /// `--neg` parity boolean string.
+    neg: &'a str,
+    /// `--tz-offset` in hours.
+    tz_offset: Option<i32>,
+    /// Drive letters for the footer.
+    targets: Vec<uffs_mft::platform::DriveLetter>,
+    /// The search pattern (first positional).
+    pattern: &'a str,
+}
+
+impl<'a> OutputSettings<'a> {
+    /// Read every output-affecting flag from `args`.
+    fn from_args(args: &'a [String]) -> Self {
+        let out = arg_val(args, "--out").unwrap_or("console");
+        let format = arg_val(args, "--format")
+            .or_else(|| arg_val(args, "-f"))
+            .unwrap_or_else(|| default_format(out == "console"));
+        // --parity-compat implies --columns parity (matches legacy OutputConfig
+        // behaviour).
+        let parity_compat = args.iter().any(|arg| arg == "--parity-compat");
+        let columns = if parity_compat {
+            "parity"
+        } else {
+            arg_val(args, "--columns").unwrap_or("")
+        };
+        let sep = arg_val(args, "--sep").unwrap_or(",");
+        let quotes = arg_val(args, "--quotes").unwrap_or("\"");
+        let header = arg_val(args, "--header").is_none_or(|val| val != "false" && val != "0");
+        let pos = arg_val(args, "--pos").unwrap_or("1");
+        let neg = arg_val(args, "--neg").unwrap_or("0");
+        let tz_offset = arg_val(args, "--tz-offset").and_then(|val| val.parse::<i32>().ok());
+
+        // Extract drive targets for footer.
+        let drive = arg_val(args, "--drive").or_else(|| arg_val(args, "-d"));
+        let drives_str = arg_val(args, "--drives");
+        let mft_str = arg_val(args, "--mft-file");
+        let mut targets: Vec<uffs_mft::platform::DriveLetter> = Vec::new();
+        if let Some(drive_val) = drive {
+            if let Some(letter) = drive_val
+                .chars()
+                .next()
+                .and_then(|ch| uffs_mft::platform::DriveLetter::parse(ch).ok())
+            {
+                targets.push(letter);
+            }
+        } else if let Some(drives_val) = drives_str {
+            for part in drives_val.split(',') {
+                let trimmed = part.trim();
+                let stripped = trimmed.strip_suffix(':').unwrap_or(trimmed);
+                if let Some(letter) = stripped
+                    .chars()
+                    .next()
+                    .and_then(|ch| uffs_mft::platform::DriveLetter::parse(ch).ok())
+                {
+                    targets.push(letter);
+                }
+            }
+        } else if let Some(mft_val) = mft_str {
+            for part in mft_val.split(',') {
+                if let Some(letter) = extract_drive_letter(part.trim()) {
+                    targets.push(letter);
+                }
+            }
+        }
+
+        let pattern = args.first().map_or("*", String::as_str);
+
+        Self {
+            out,
+            format,
+            columns,
+            sep,
+            quotes,
+            header,
+            pos,
+            neg,
+            tz_offset,
+            targets,
+            pattern,
+        }
+    }
+}
+
 /// Write search result rows to console using format extracted from raw
 /// CLI args.
 ///
@@ -57,74 +159,49 @@ fn default_format(out_is_console: bool) -> &'static str {
 ///
 /// Returns an error if writing fails.
 pub fn write_rows(rows: &[serde_json::Value], args: &[String]) -> Result<()> {
-    let out = arg_val(args, "--out").unwrap_or("console");
-    let format = arg_val(args, "--format")
-        .or_else(|| arg_val(args, "-f"))
-        .unwrap_or_else(|| default_format(out == "console"));
-    // --parity-compat implies --columns parity (matches legacy OutputConfig
-    // behaviour).
-    let parity_compat = args.iter().any(|arg| arg == "--parity-compat");
-    let columns = if parity_compat {
-        "parity"
-    } else {
-        arg_val(args, "--columns").unwrap_or("")
-    };
-    let sep = arg_val(args, "--sep").unwrap_or(",");
-    let quotes = arg_val(args, "--quotes").unwrap_or("\"");
-    let header = arg_val(args, "--header").is_none_or(|val| val != "false" && val != "0");
-    let pos = arg_val(args, "--pos").unwrap_or("1");
-    let neg = arg_val(args, "--neg").unwrap_or("0");
-    let tz_offset = arg_val(args, "--tz-offset").and_then(|val| val.parse::<i32>().ok());
-
-    // Extract drive targets for footer.
-    let drive = arg_val(args, "--drive").or_else(|| arg_val(args, "-d"));
-    let drives_str = arg_val(args, "--drives");
-    let mft_str = arg_val(args, "--mft-file");
-    let mut targets: Vec<uffs_mft::platform::DriveLetter> = Vec::new();
-    if let Some(drive_val) = drive {
-        if let Some(letter) = drive_val
-            .chars()
-            .next()
-            .and_then(|ch| uffs_mft::platform::DriveLetter::parse(ch).ok())
-        {
-            targets.push(letter);
-        }
-    } else if let Some(drives_val) = drives_str {
-        for part in drives_val.split(',') {
-            let trimmed = part.trim();
-            let stripped = trimmed.strip_suffix(':').unwrap_or(trimmed);
-            if let Some(letter) = stripped
-                .chars()
-                .next()
-                .and_then(|ch| uffs_mft::platform::DriveLetter::parse(ch).ok())
-            {
-                targets.push(letter);
-            }
-        }
-    } else if let Some(mft_val) = mft_str {
-        for part in mft_val.split(',') {
-            if let Some(letter) = extract_drive_letter(part.trim()) {
-                targets.push(letter);
-            }
-        }
-    }
-
-    let pattern = args.first().map_or("*", String::as_str);
-
+    let cfg = OutputSettings::from_args(args);
     write_native_results(
         rows,
-        format,
-        out,
-        columns,
-        sep,
-        quotes,
-        header,
-        pos,
-        neg,
-        tz_offset,
-        &targets,
+        cfg.format,
+        cfg.out,
+        cfg.columns,
+        cfg.sep,
+        cfg.quotes,
+        cfg.header,
+        cfg.pos,
+        cfg.neg,
+        cfg.tz_offset,
+        &cfg.targets,
         core::time::Duration::ZERO,
-        pattern,
+        cfg.pattern,
+    )
+}
+
+/// Render search result rows with the same settings as [`write_rows`],
+/// but into `writer` instead of the console — the `--benchmark` sink.
+///
+/// # Errors
+///
+/// Returns an error if formatting or the write fails.
+pub(crate) fn write_rows_into<W: Write>(
+    writer: &mut W,
+    rows: &[serde_json::Value],
+    args: &[String],
+) -> Result<()> {
+    let cfg = OutputSettings::from_args(args);
+    render_native_results_into(
+        writer,
+        rows,
+        cfg.format,
+        cfg.columns,
+        cfg.sep,
+        cfg.quotes,
+        cfg.header,
+        cfg.pos,
+        cfg.neg,
+        cfg.tz_offset,
+        &cfg.targets,
+        cfg.pattern,
     )
 }
 
