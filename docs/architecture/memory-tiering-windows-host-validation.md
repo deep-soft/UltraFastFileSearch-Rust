@@ -79,6 +79,22 @@ close each gate.
 
 ## 1. Phase 5 operator gates — 4 captures, ~75 minutes wall-clock
 
+> **Retired 2026-10-03 — pressure cascade removed.**  The kernel-`Low`
+> → cascade-demote behaviour that G1 and the G4 cascade assertions
+> validate no longer exists.  By owner ruling the daemon never forces a
+> tier change on memory pressure: `spawn_pressure_subscriber` logs the
+> `Pressure transition observed level=…` line and stops there; a shard
+> goes Parked → Hot when a search needs it and only the idle TTL ladder
+> retires it.  `reason="pressure-cascade"`, `cascade_demote_one_step`
+> and `PressureLevel::requires_cascade_demote` are gone.  The captures
+> below are kept as the historical record of v0.5.86–v0.6.42; on a
+> current build G1 produces the `Pressure transition observed` line and
+> **no** `shard.transition` demote lines, and that is the pass
+> criterion.  Trigger for the removal: the 2026-10-03 benchmark run on
+> a memory-starved host, where the cascade parked all six drives
+> 2.5 min after start and turned the next `*.*` into a four-minute MFT
+> re-read.
+
 ### G1 — Low-pressure stress: kernel notification → cache.pressure → cascade demote
 
 **Duration:** ~5 min wall-clock.

@@ -7,10 +7,11 @@
 //! [`MEMORY_RESOURCE_NOTIFICATION_TYPE`][win32-mem]:
 //! `LowMemoryResourceNotification` fires when free RAM drops below the
 //! kernel's threshold; `HighMemoryResourceNotification` fires when it
-//! rises back above.  The daemon's subscriber loop translates `Low`
-//! into a cascade demote of LRU Warm shards
-//! (see [`crate::index::IndexManager::cascade_demote_one_step`])
-//! until either the registry has no Warm shards left or `High` arrives.
+//! rises back above.  The daemon's subscriber loop (`lib.rs::
+//! spawn_pressure_subscriber`) logs each transition for operators and
+//! takes no action: a shard is promoted when a search needs it and
+//! retired by the idle TTL ladder alone (owner ruling 2026-10-03; the
+//! former `Low` → cascade-demote behaviour is gone).
 //!
 //! On Windows, [`PlatformPressureSignal::new`] spawns a dedicated
 //! kernel thread (`uffs-pressure`) that owns the two notification
@@ -35,8 +36,8 @@
 //! `Arc<dyn PressureSignal>`.  Production wires
 //! [`PlatformPressureSignal`]; the Phase 5 unit tests inject
 //! `tests::ControllablePressureSignal` so the test can `set(Low)` /
-//! `set(High)` and assert the cascade behaviour deterministically
-//! without any real OS pressure.
+//! `set(High)` and assert the subscriber's observe-only contract
+//! deterministically without any real OS pressure.
 //!
 //! The signal is delivered as a [`tokio::sync::watch::Receiver`]
 //! returned by [`PressureSignal::subscribe`].  `watch` is the right
@@ -64,21 +65,14 @@ use tokio::sync::watch;
 /// builds expose only `Normal`: there is no portable process-wide
 /// memory-resource-notification API on those targets, and the
 /// kernel handles reclaim itself — demotion is TTL-driven via
-/// [`crate::index::IndexManager::demote_idle_shards`] alone.
-///
-/// Consumers that want to react to `Low` should use
-/// [`Self::requires_cascade_demote`] rather than pattern-matching
-/// the variant directly — the method has platform-specific
-/// implementations that compile cleanly on Mac/Linux production
-/// builds (where `Low` does not exist) and short-circuit to the
-/// correct answer (`false`).
+/// [`crate::index::IndexManager::demote_idle_shards`] on every
+/// platform.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PressureLevel {
-    /// No pressure signal yet, or steady state.  Subscriber takes no
-    /// action.
+    /// No pressure signal yet, or steady state.
     Normal,
     /// Free RAM has fallen below the kernel's low-memory threshold.
-    /// Subscriber cascade-demotes LRU Warm shards.
+    /// Logged by the subscriber; nothing is demoted.
     ///
     /// Only present on Windows production builds (constructed by
     /// `windows_handles::watcher_loop`) and under `cfg(test)`
@@ -86,37 +80,13 @@ pub(crate) enum PressureLevel {
     #[cfg(any(target_os = "windows", test))]
     Low,
     /// Free RAM has risen back above the kernel's high-memory
-    /// threshold; pressure cleared.  Subscriber stops the cascade.
+    /// threshold; pressure cleared.
     ///
     /// Only present on Windows production builds (constructed by
     /// `windows_handles::watcher_loop`) and under `cfg(test)`
     /// (constructed by `tests::ControllablePressureSignal`).
     #[cfg(any(target_os = "windows", test))]
     High,
-}
-
-impl PressureLevel {
-    /// Returns `true` when this level should drive the daemon's
-    /// cascade-demote loop.
-    ///
-    /// On Windows production / under `cfg(test)`: returns `true`
-    /// for `Self::Low` and `false` otherwise.  On Mac/Linux
-    /// production builds the only constructible variant is
-    /// [`Self::Normal`], so this method always returns `false`
-    /// — the platform-gated `match` arm below evaluates only
-    /// when `Self::Low` exists.
-    ///
-    /// Used by `lib.rs::spawn_pressure_subscriber` so the
-    /// subscriber loop body stays portable across every target
-    /// without spreading `#[cfg]` gates through the daemon's main
-    /// runtime path.
-    pub(crate) const fn requires_cascade_demote(self) -> bool {
-        match self {
-            #[cfg(any(target_os = "windows", test))]
-            Self::Low => true,
-            _ => false,
-        }
-    }
 }
 
 /// Process-level memory-pressure subscriber.
@@ -150,8 +120,7 @@ pub(crate) trait PressureSignal: Send + Sync + 'static {
 /// `changed()` never returns.
 ///
 /// Phase 5 task 5.3 — paired with the Phase 5 dogfood gate
-/// "stress test … daemon log shows `cache.pressure { level: \"Low\" }`
-/// and demotion cascade".
+/// "stress test … daemon log shows `cache.pressure { level: \"Low\" }`".
 pub(crate) struct PlatformPressureSignal {
     /// The watch sender held internally.  On Mac/Linux nothing ever
     /// `send`s on this; on Windows the watcher thread does.
@@ -200,9 +169,9 @@ impl PlatformPressureSignal {
     /// "never-fires" (equivalent to the Mac/Linux stub) and a
     /// warn-level log line is emitted.  This keeps the daemon
     /// resilient against stripped Windows editions or transient
-    /// resource exhaustion at startup — the cascade demote is a
-    /// *best-effort optimisation* on top of the always-available
-    /// TTL-driven demotion path.
+    /// resource exhaustion at startup — the signal is observability
+    /// only; the always-available TTL-driven demotion path does not
+    /// depend on it.
     #[must_use]
     pub(crate) fn new() -> Self {
         let (sender, _initial_rx) = watch::channel(PressureLevel::Normal);
@@ -636,8 +605,8 @@ pub(crate) mod tests {
 
     /// Phase 5 task 5.10 fake.  Holds the watch sender so tests can
     /// broadcast pressure transitions deterministically and assert
-    /// the daemon's cascade-demote behaviour without any real OS
-    /// pressure.
+    /// the daemon's observe-only subscriber contract without any real
+    /// OS pressure.
     ///
     /// `set(level)` is a thin wrapper over [`watch::Sender::send_replace`]
     /// (rather than [`watch::Sender::send`]) so the stored value is

@@ -54,15 +54,16 @@ The daemon's index is a per-drive collection of shards, each transitioning betwe
 |---|---|---|---|---|
 | `Unknown` | – | – | – | initial discovery |
 | `Cold` | – | – | – | parked-compactor demote (from `Parked`) |
-| `Parked` | – | ✓ | ✓ | `spawn_idle_demote_controller` after TTL OR `spawn_pressure_subscriber` cascade |
+| `Parked` | – | ✓ | ✓ | `spawn_idle_demote_controller` after TTL |
 | `Warm` | mmap | ✓ | ✓ | initial load OR promote from `Parked` |
 | `Hot` | mmap + prefaulted | ✓ | ✓ | recent search activity |
 | `Evicting` | (in transit) | – | – | transient — demote in progress |
 
-Legal transitions are pinned in `ShardState::can_transition_to`.  The two demote drivers are:
+Legal transitions are pinned in `ShardState::can_transition_to`.  The automatic demote driver is:
 
   * **Idle TTL** — `spawn_idle_demote_controller` runs every 30 s and demotes `Warm`/`Hot` → `Parked` after a configurable idle-since-last-access window.
-  * **Memory-pressure cascade** — `spawn_pressure_subscriber` listens to the OS memory-pressure watch and cascades `Warm` → `Cold` one step at a time on `Low` transitions, preempted by `High`/`Normal`.  No-op on Mac/Linux (the platform `PressureSignal` never fires by design).
+
+  `spawn_pressure_subscriber` still listens to the OS memory-pressure watch but only **logs** `Low`/`High` transitions (`target: cache.pressure`).  The former cascade that parked LRU `Warm` shards on `Low` was removed on 2026-10-03 by owner ruling: a shard is promoted when a search needs it and left alone afterwards; only idle time retires it.  No-op on Mac/Linux (the platform `PressureSignal` never fires by design).
 
 ### 0.3  IPC-request lifecycle
 

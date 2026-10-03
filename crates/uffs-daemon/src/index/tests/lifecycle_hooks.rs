@@ -12,9 +12,8 @@
 //!   batch in `demote_idle_shards`).
 //! * Plan task 5.9 — `Prefetch::hint()` invocation with the freshly-loaded
 //!   body's records + names regions.
-//! * Plan task 5.10 — `cascade_demote_one_step` picks the LRU Warm shard,
-//!   drains in order, calls `WorkingSetTrim::trim()` exactly once per cascade
-//!   step.
+//! * Owner ruling 2026-10-03 — the pressure subscriber only observes: a `Low`
+//!   transition demotes nothing and trims nothing.
 
 #![expect(
     clippy::indexing_slicing,
@@ -319,366 +318,74 @@ async fn ensure_warm_for_dispatch_invokes_prefetch_with_records_and_names_region
     );
 }
 
-/// Phase 5 task **5.10** — `cascade_demote_one_step` picks the
-/// **least-recently-queried** Warm shard, demotes one shard per
-/// call (Warm → Parked), invokes [`WorkingSetTrim::trim`] exactly
-/// once per cascade step (not coalesced into a batch like the
-/// idle-demote controller), and returns `None` once no Warm shards
-/// remain so the subscriber loop stops the cascade.
+/// Owner ruling 2026-10-03 — the pressure subscriber observes, it does
+/// not act.  A kernel `Low` transition must leave every shard where it
+/// is and never call [`WorkingSetTrim::trim`]: a shard goes Parked →
+/// Hot when a search needs it and only the idle TTL ladder retires it.
+/// Pins the contract so the forced cascade cannot creep back.
 ///
-/// This pins the LRU contract that closes the deferred Phase 3
-/// task 3.6 — the `last_query_at_ms` timestamp is the LRU key, no
-/// separate ordering data structure exists.  The Phase 5 docstring
-/// on `cascade_demote_one_step` calls this out explicitly.
-///
-/// Topology: 3 drives (C, D, E) all Warm, with backdated
-/// timestamps that establish a deterministic LRU order:
-/// D = 1000 (oldest) → E = 2000 → C = 3000 (newest).  The
-/// cascade should drain in that order.
-///
-/// We inject `ControllablePressureSignal` for completeness even
-/// though the test calls `cascade_demote_one_step` directly (per
-/// the method docstring contract: "task 5.10 test uses
-/// `Self::cascade_demote_one_step` directly without going through
-/// the watch channel").  `CountingWorkingSetTrim` asserts the
-/// per-step `trim()` invocation count.
+/// Drives the timeline through the watch channel against the real
+/// [`crate::spawn_pressure_subscriber`] with a `ControllablePressureSignal`
+/// fake; a 50 ms quiescent window after each transition is far longer
+/// than the subscriber's single `borrow_and_update` + log.
 ///
 /// [`WorkingSetTrim::trim`]: crate::cache::working_set::WorkingSetTrim::trim
 #[tokio::test]
-async fn cascade_demote_one_step_picks_lru_warm_and_drains_in_order() {
-    use crate::cache::ShardState;
-    use crate::cache::pressure::tests::ControllablePressureSignal;
-    use crate::cache::working_set::tests::CountingWorkingSetTrim;
-
-    let (tx, _rx) = crate::events::event_channel();
-    let counting_trim = Arc::new(CountingWorkingSetTrim::new());
-    let pressure_fake = Arc::new(ControllablePressureSignal::new());
-    let hooks = crate::index::constructors::LifecycleHooks {
-        working_set_trim: Arc::clone(&counting_trim)
-            as Arc<dyn crate::cache::working_set::WorkingSetTrim>,
-        pressure: Arc::clone(&pressure_fake) as Arc<dyn crate::cache::pressure::PressureSignal>,
-        ..crate::index::constructors::LifecycleHooks::production()
-    };
-    let mgr = IndexManager::with_lifecycle_hooks_for_test(
-        None,
-        tx,
-        hooks,
-        Arc::new(crate::config::Config::default()),
-    );
-    mgr.add_drive(build_test_drive()).await;
-    mgr.add_drive(build_test_drive_d()).await;
-    mgr.add_drive(build_test_drive_e()).await;
-
-    // Seed the LRU order: D oldest → E middle → C newest.  `add_drive`
-    // already stamped `mark_loaded_at(unix_now_ms())` on each shard, so
-    // we backdate to known values to remove wall-clock skew from the
-    // assertion.
-    assert!(
-        mgr.backdate_last_query_at_ms_for_test(uffs_mft::platform::DriveLetter::D, 1_000)
-            .await
-    );
-    assert!(
-        mgr.backdate_last_query_at_ms_for_test(uffs_mft::platform::DriveLetter::E, 2_000)
-            .await
-    );
-    assert!(
-        mgr.backdate_last_query_at_ms_for_test(uffs_mft::platform::DriveLetter::C, 3_000)
-            .await
-    );
-
-    // Pre-cascade: trim hook never fired.
-    assert_eq!(counting_trim.calls(), 0, "no cascade yet → no trim");
-
-    // ── Step 1: pick D (oldest, ts = 1000) ──────────────────────
-    let step1 = mgr.cascade_demote_one_step().await;
-    assert_eq!(
-        step1,
-        Some((uffs_mft::platform::DriveLetter::D, ShardState::Parked)),
-        "first cascade step demotes the LRU Warm shard (D, ts=1000)",
-    );
-    assert_eq!(
-        counting_trim.calls(),
-        1,
-        "trim() fires once per cascade step (not coalesced)",
-    );
-
-    // ── Step 2: pick E (next-oldest among Warm, ts = 2000) ─────
-    let step2 = mgr.cascade_demote_one_step().await;
-    assert_eq!(
-        step2,
-        Some((uffs_mft::platform::DriveLetter::E, ShardState::Parked)),
-        "second cascade step demotes the next-LRU Warm shard (E, ts=2000)",
-    );
-    assert_eq!(counting_trim.calls(), 2);
-
-    // ── Step 3: pick C (last remaining Warm, ts = 3000) ────────
-    let step3 = mgr.cascade_demote_one_step().await;
-    assert_eq!(
-        step3,
-        Some((uffs_mft::platform::DriveLetter::C, ShardState::Parked)),
-        "third cascade step demotes the last Warm shard (C, ts=3000)",
-    );
-    assert_eq!(counting_trim.calls(), 3);
-
-    // ── Step 4: cascade exhausted ──────────────────────────────
-    // No Warm shards remain → `None` and `trim()` does NOT fire
-    // (no syscall when there's no Warm work to consolidate).
-    let step4 = mgr.cascade_demote_one_step().await;
-    assert_eq!(
-        step4, None,
-        "fourth call exhausts the cascade — no Warm shards, returns None",
-    );
-    assert_eq!(
-        counting_trim.calls(),
-        3,
-        "exhausted cascade must not re-trim — `pick?` short-circuits",
-    );
-
-    // Final state: every shard Parked (in alphabetical-by-letter
-    // order from `shard_states_for_test`).
-    let states = mgr.shard_states_for_test().await;
-    assert_eq!(states, vec![
-        (uffs_mft::platform::DriveLetter::C, ShardState::Parked),
-        (uffs_mft::platform::DriveLetter::D, ShardState::Parked),
-        (uffs_mft::platform::DriveLetter::E, ShardState::Parked),
-    ]);
-
-    // The pressure fake was never driven — this test exercises the
-    // cascade method directly, not the subscriber loop.  Asserting
-    // `receiver_count() == 0` documents that contract: the
-    // `IndexManager` does NOT auto-subscribe at construction; only
-    // `spawn_pressure_subscriber` (in `lib.rs`) does.
-    assert_eq!(
-        pressure_fake.receiver_count(),
-        0,
-        "IndexManager holds the Arc but does not auto-subscribe",
-    );
-}
-
-/// Plan task **5.10 (end-to-end)** + Phase-5 wrap-up regression — the
-/// full `spawn_pressure_subscriber` → `cascade_demote_one_step` →
-/// preempt loop must:
-///
-/// 1. Subscribe to the [`PressureSignal`] (`receiver_count` becomes 1 after
-///    spawn).
-/// 2. On `Low`, drain every Warm shard one step at a time, calling
-///    [`WorkingSetTrim::trim`] exactly once per cascade step.
-/// 3. On `High`, become a no-op — the cascade body never runs.
-/// 4. On a second `Low` after the first cascade exhausted the Warm set,
-///    terminate the inner cascade loop on the first `None` return without
-///    firing extra trim calls.
-///
-/// The existing [`cascade_demote_one_step_picks_lru_warm_and_drains_in_order`]
-/// test pins the cascade method's contract by calling it directly;
-/// this test pins the **subscriber wiring** in `lib.rs` so a future
-/// refactor of [`crate::spawn_pressure_subscriber`] can't silently
-/// drop the cascade-on-Low contract that the Win32 watcher thread
-/// depends on.
-///
-/// Test architecture mirrors §5.10's direct test (3 shards backdated
-/// for a deterministic LRU order) but drives the timeline through
-/// the watch channel instead of synchronous calls into the manager.
-/// Polling on `shard_states_for_test` plus `receiver_count` keeps
-/// the test deterministic without `tokio::time::pause` (which would
-/// require a `current_thread` runtime + `start_paused = true`).
-///
-/// [`PressureSignal`]: crate::cache::pressure::PressureSignal
-/// [`WorkingSetTrim::trim`]: crate::cache::working_set::WorkingSetTrim::trim
-#[tokio::test]
-async fn pressure_subscriber_drains_warm_cascade_on_low_and_no_ops_on_high() {
-    use pressure_subscriber_fixtures::{
-        CASCADE_DEADLINE, QUIESCENT_WINDOW, build_pressure_subscriber_fixture, poll_until,
-    };
+async fn pressure_subscriber_observes_transitions_without_demoting() {
+    use core::time::Duration;
 
     use crate::cache::ShardState;
     use crate::cache::pressure::PressureLevel;
-
-    let fixture = build_pressure_subscriber_fixture().await;
-
-    // ── Spawn the subscriber and wait for it to attach ───────────
-    let subscriber = crate::spawn_pressure_subscriber(Arc::clone(&fixture.mgr));
-    let attach_deadline = std::time::Instant::now() + CASCADE_DEADLINE;
-    while fixture.pressure_fake.receiver_count() == 0 {
-        assert!(
-            std::time::Instant::now() < attach_deadline,
-            "subscriber did not attach to the watch channel within {CASCADE_DEADLINE:?}",
-        );
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(
-        fixture.pressure_fake.receiver_count(),
-        1,
-        "exactly one subscriber attaches via spawn_pressure_subscriber",
-    );
-
-    // ── Step 1: First Low → drains all Warm in LRU order ─────────
-    assert!(
-        fixture.pressure_fake.set(PressureLevel::Low),
-        "broadcast Low must reach the attached subscriber",
-    );
-    poll_until(
-        &fixture.mgr,
-        |states| states.iter().all(|(_, s)| *s == ShardState::Parked),
-        "first Low cascade",
-    )
-    .await;
-    assert_eq!(
-        fixture.counting_trim.calls(),
-        3,
-        "trim() fires once per cascade step (3 Warm → 3 calls)",
-    );
-
-    // ── Step 2: High → no-op (no additional demotes / trim calls) ─
-    assert!(fixture.pressure_fake.set(PressureLevel::High));
-    tokio::time::sleep(QUIESCENT_WINDOW).await;
-    let post_high_states = fixture.mgr.shard_states_for_test().await;
-    assert!(
-        post_high_states
-            .iter()
-            .all(|(_, s)| *s == ShardState::Parked),
-        "High transition must not change shard state; got {post_high_states:?}",
-    );
-    assert_eq!(
-        fixture.counting_trim.calls(),
-        3,
-        "High triggers no additional demotes or trim calls",
-    );
-
-    // ── Step 3: Second Low with no Warm left → cascade returns
-    // None on first call, no extra trim fires ────────────────────
-    assert!(fixture.pressure_fake.set(PressureLevel::Low));
-    tokio::time::sleep(QUIESCENT_WINDOW).await;
-    assert_eq!(
-        fixture.counting_trim.calls(),
-        3,
-        "second Low with no Warm shards must not call trim() again",
-    );
-
-    // Clean shutdown — abort the subscriber explicitly so the test
-    // task tree winds down without waiting on the watch sender's
-    // own drop (which is racy across the Arc<IndexManager> graph).
-    subscriber.abort();
-}
-
-/// Test infrastructure for
-/// [`pressure_subscriber_drains_warm_cascade_on_low_and_no_ops_on_high`].
-///
-/// Lifted out of the test body so the test stays under clippy's
-/// 100-line ceiling without compromising on assertion coverage.
-/// Module-private; only the parent test imports its public surface.
-mod pressure_subscriber_fixtures {
-    use core::time::Duration;
-    use std::sync::Arc;
-
-    use super::{IndexManager, build_test_drive, build_test_drive_d, build_test_drive_e};
-    use crate::cache::ShardState;
-    use crate::cache::pressure::PressureSignal;
     use crate::cache::pressure::tests::ControllablePressureSignal;
     use crate::cache::working_set::tests::CountingWorkingSetTrim;
     use crate::index::constructors::LifecycleHooks;
 
-    /// Polling deadline for cascade-completion observation.  Wall-clock
-    /// bound — generous enough that a busy CI box doesn't false-fail
-    /// (cascade is microseconds of pure CPU work; 2 s is 1 000× the
-    /// observed worst case) and short enough that a real bug surfaces
-    /// fast.
-    pub(super) const CASCADE_DEADLINE: Duration = Duration::from_secs(2);
+    let (tx, _rx) = crate::events::event_channel();
+    let counting_trim = Arc::new(CountingWorkingSetTrim::new());
+    let pressure_fake = Arc::new(ControllablePressureSignal::new());
+    let hooks = LifecycleHooks {
+        working_set_trim: Arc::clone(&counting_trim)
+            as Arc<dyn crate::cache::working_set::WorkingSetTrim>,
+        pressure: Arc::clone(&pressure_fake) as Arc<dyn crate::cache::pressure::PressureSignal>,
+        ..LifecycleHooks::production()
+    };
+    let mgr = Arc::new(IndexManager::with_lifecycle_hooks_for_test(
+        None,
+        tx,
+        hooks,
+        Arc::new(crate::config::Config::default()),
+    ));
+    mgr.add_drive(build_test_drive()).await;
+    mgr.add_drive(build_test_drive_d()).await;
+    mgr.add_drive(build_test_drive_e()).await;
 
-    /// Quiescent observation window — after a non-cascade-driving
-    /// transition (`High`) we wait this long to confirm the
-    /// subscriber stays idle, then assert no Warm shards demoted and
-    /// no trim calls fired.  Tuned to be > one `tokio::task::yield_now`
-    /// scheduler pass on every supported runtime.
-    pub(super) const QUIESCENT_WINDOW: Duration = Duration::from_millis(50);
-
-    /// Bundle of the three handles the test asserts against:
-    /// the `IndexManager` under test, the controllable pressure
-    /// fake driving the watch channel, and the trim counter.
-    pub(super) struct PressureSubscriberFixture {
-        pub mgr: Arc<IndexManager>,
-        pub pressure_fake: Arc<ControllablePressureSignal>,
-        pub counting_trim: Arc<CountingWorkingSetTrim>,
+    let subscriber = crate::spawn_pressure_subscriber(&mgr);
+    let attach_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while pressure_fake.receiver_count() == 0 {
+        assert!(
+            std::time::Instant::now() < attach_deadline,
+            "subscriber did not attach to the watch channel within 2 s",
+        );
+        tokio::task::yield_now().await;
     }
 
-    /// Build the [`PressureSubscriberFixture`] preconfigured with
-    /// 3 Warm shards in deterministic LRU order (D = 1000 →
-    /// E = 2000 → C = 3000), zero trim calls, and zero subscribers
-    /// — same ordering as the §5.10 direct test so a regression
-    /// there surfaces in the subscriber test too.  Asserts the
-    /// preconditions before returning so the parent test body
-    /// can stay focused on the act / observe sequence.
-    pub(super) async fn build_pressure_subscriber_fixture() -> PressureSubscriberFixture {
-        let (tx, _rx) = crate::events::event_channel();
-        let counting_trim = Arc::new(CountingWorkingSetTrim::new());
-        let pressure_fake = Arc::new(ControllablePressureSignal::new());
-        let hooks = LifecycleHooks {
-            working_set_trim: Arc::clone(&counting_trim)
-                as Arc<dyn crate::cache::working_set::WorkingSetTrim>,
-            pressure: Arc::clone(&pressure_fake) as Arc<dyn PressureSignal>,
-            ..LifecycleHooks::production()
-        };
-        let mgr = Arc::new(IndexManager::with_lifecycle_hooks_for_test(
-            None,
-            tx,
-            hooks,
-            Arc::new(crate::config::Config::default()),
-        ));
-        mgr.add_drive(build_test_drive()).await;
-        mgr.add_drive(build_test_drive_d()).await;
-        mgr.add_drive(build_test_drive_e()).await;
+    for level in [PressureLevel::Low, PressureLevel::High, PressureLevel::Low] {
         assert!(
-            mgr.backdate_last_query_at_ms_for_test(uffs_mft::platform::DriveLetter::D, 1_000)
-                .await
+            pressure_fake.set(level),
+            "broadcast {level:?} must reach the attached subscriber",
         );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let states = mgr.shard_states_for_test().await;
         assert!(
-            mgr.backdate_last_query_at_ms_for_test(uffs_mft::platform::DriveLetter::E, 2_000)
-                .await
-        );
-        assert!(
-            mgr.backdate_last_query_at_ms_for_test(uffs_mft::platform::DriveLetter::C, 3_000)
-                .await
-        );
-        let initial_states = mgr.shard_states_for_test().await;
-        assert!(
-            initial_states.iter().all(|(_, s)| *s == ShardState::Warm),
-            "preconditions: all 3 shards Warm; got {initial_states:?}",
+            states.iter().all(|(_, state)| *state == ShardState::Warm),
+            "{level:?} must not move any shard; got {states:?}",
         );
         assert_eq!(
             counting_trim.calls(),
             0,
-            "preconditions: no trim calls before subscriber spawn",
+            "{level:?} must not trim the working set",
         );
-        assert_eq!(
-            pressure_fake.receiver_count(),
-            0,
-            "preconditions: no subscribers before spawn",
-        );
-        PressureSubscriberFixture {
-            mgr,
-            pressure_fake,
-            counting_trim,
-        }
     }
 
-    /// Poll [`IndexManager::shard_states_for_test`] until `predicate`
-    /// holds or the [`CASCADE_DEADLINE`] expires.  Panics with a
-    /// diagnostic message on timeout so a regression surfaces at the
-    /// failed assertion site, not as a hung test.
-    pub(super) async fn poll_until<F>(mgr: &IndexManager, predicate: F, label: &str)
-    where
-        F: Fn(&[(uffs_mft::platform::DriveLetter, ShardState)]) -> bool,
-    {
-        let deadline = std::time::Instant::now() + CASCADE_DEADLINE;
-        loop {
-            let states = mgr.shard_states_for_test().await;
-            if predicate(&states) {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{label} did not converge within {CASCADE_DEADLINE:?}; last states = {states:?}",
-            );
-            tokio::task::yield_now().await;
-        }
-    }
+    subscriber.abort();
 }
