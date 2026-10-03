@@ -4,7 +4,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # winget-token-expiry-check — weekly heads-up before WINGET_TOKEN dies.
 #
-# `winget-publish.yml` needs a classic PAT (`WINGET_TOKEN`, `public_repo`
+# `winget-publish.yml` needs a classic PAT (`WINGET_TOKEN`, `public_repo` + `workflow`
 # scope) to fork + push to microsoft/winget-pkgs.  When that PAT expires
 # the release-triggered WinGet submission fails — and because it runs on
 # the `release: released` event (not the PR path), nobody sees the red X
@@ -174,9 +174,27 @@ jobs:
             || fail "cannot read microsoft/winget-pkgs master"
           [[ -n "${upstream:-}" ]] || fail "upstream master SHA came back empty"
 
+          # Scope check (field failure 2026-10-03, v0.6.43): the fork sync
+          # is refused outright whenever upstream's pending commits touch
+          # `.github/workflows/` and the PAT lacks the `workflow` scope —
+          # a condition that comes and goes with upstream's activity, so
+          # the sync-then-branch probe below can pass one week and the
+          # release fail the next.  Reading the scopes is deterministic.
+          scopes="$(gh api -i user 2>/dev/null | grep -i '^x-oauth-scopes:' | cut -d: -f2- | tr -d ' \r')"
+          if [[ -n "$scopes" ]] && ! grep -qw workflow <<<"$scopes"; then
+            fail "WINGET_TOKEN lacks the workflow scope (has: ${scopes}); the fork sync is refused whenever microsoft/winget-pkgs changes a workflow file. Edit the classic PAT at https://github.com/settings/tokens to add workflow."
+          fi
+
           # Fast-forward the fork, mirroring what the publish workflow does.
-          gh api -X POST "repos/${FORK_USER}/winget-pkgs/merge-upstream" \
-            -f branch=master >/dev/null 2>&1 || true
+          if ! sync_out="$(gh api -X POST "repos/${FORK_USER}/winget-pkgs/merge-upstream" -f branch=master 2>&1)"; then
+            if grep -q "refusing to allow a Personal Access Token to create or update workflow" <<<"$sync_out"; then
+              fail "fork sync refused: WINGET_TOKEN lacks the workflow scope and upstream has pending workflow changes"
+            fi
+            fail "fork sync failed: ${sync_out}"
+          fi
+          fork_head="$(gh api "repos/${FORK_USER}/winget-pkgs/commits/master" --jq .sha 2>/dev/null || true)"
+          [[ "$fork_head" == "$upstream" ]] \
+            || fail "fork still behind after sync (fork ${fork_head:-?}, upstream ${upstream})"
 
           # The real test: create the kind of ref komac creates, then remove
           # it.  A unique name keeps concurrent runs from colliding.
@@ -277,11 +295,11 @@ jobs:
                 `Check, in this order, before assuming the token is at fault:`,
                 `1. Does the fork \`githubrobbi/winget-pkgs\` still exist and is it writable?`,
                 `2. Is it far behind \`microsoft/winget-pkgs\`? (Publishing self-heals this, but a failing sync will not.)`,
-                `3. Only then suspect the token — and note the action requires a **classic** PAT; fine-grained PATs are unsupported and cannot open the cross-fork PR.`,
+                `3. Only then suspect the token — and note the action requires a **classic** PAT with the \`public_repo\` **and** \`workflow\` scopes; without \`workflow\` the fork sync is refused whenever upstream touched a workflow file, and fine-grained PATs are unsupported (they cannot open the cross-fork PR).`,
                 ``,
               ] : []),
               `### How to rotate`,
-              `1. Create a new **classic** PAT at https://github.com/settings/tokens — scope \`public_repo\` only, ~1-year expiry.`,
+              `1. Create a new **classic** PAT at https://github.com/settings/tokens — scopes \`public_repo\` + \`workflow\`, ~1-year expiry.`,
               `2. \`gh secret set WINGET_TOKEN --repo ${owner}/${repo}\` and paste it.`,
               `3. Run the **🔑 WinGet Token Expiry Check** workflow manually (\`workflow_dispatch\`) to confirm healthy — it will auto-close this issue.`,
               ``,
