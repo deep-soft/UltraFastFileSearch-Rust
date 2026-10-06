@@ -231,6 +231,17 @@ pub const ERR_NOT_IMPLEMENTED: i32 = -3;
 /// delete cache files for a drive whose shard is still warm in RAM.
 /// Operators must `hibernate` the drive first or pass `force = true`.
 pub const ERR_DRIVE_BUSY: i32 = -4;
+/// The daemon's per-search scan budget expired before the scan finished.
+///
+/// The budget is `UFFS_SEARCH_TIMEOUT_SECS` (default 30 s).  The daemon
+/// cancels the scan and nothing is returned — the client used to receive
+/// a success-shaped response with zero rows instead, indistinguishable
+/// from "nothing matched".
+pub const ERR_SEARCH_TIMEOUT: i32 = -5;
+/// Every daemon search slot stayed busy for the whole permit wait: the
+/// concurrency cap (`UFFS_SEARCH_MAX_CONCURRENCY`) is saturated.  Nothing
+/// was scanned; retry shortly.
+pub const ERR_SEARCH_BUSY: i32 = -6;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Method parameters

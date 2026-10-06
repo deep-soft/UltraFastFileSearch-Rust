@@ -18,10 +18,6 @@
 //!   `reason` / `freed_mb` / `restored_mb` / `last_query_at_ms`
 //!   field contract on the canonical `shard.transition` event for
 //!   the demote-then-promote round-trip.
-//! * [`super::idle_demote::cascade_demote_emits_single_event_with_pressure_cascade_reason`]
-//!   — Phase 5 G4 follow-up — pins the single-canonical-event
-//!   contract for the pressure-cascade demote path (no second
-//!   redundant event from `cascade_demote_one_step`).
 //! * `crate::cache::journal_loop::tests::compact_cache_save_log` — pins the
 //!   literal `"compact-cache save"` message text the Phase 7 24-h soak harness
 //!   greps for (visibility raised to `pub(crate)` in 2026-05-13 to share the

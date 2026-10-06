@@ -533,6 +533,14 @@ criteria = "safe-to-deploy"
 delta = "0.1.34 -> 0.1.35"
 notes = "Zero changes under src/ — the jobserver FFI/syscall implementation (pipe/fifo fds on Unix, named semaphore on Windows) is byte-identical between versions. The release only raises rust-version 1.63 -> 1.85, bumps dev-dependencies (nix 0.28 -> 0.31.3, Windows-only getrandom dep to 0.4), reworks CI to use distro GNU Make instead of a vendored compile-make action, and extends tests/client.rs to run each test under both --jobserver-style=fifo and =pipe (test-harness process spawning only). No new unsafe, no build.rs, no new runtime dependencies."
 
+[[audits.libc]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "0.2.189 -> 0.2.190"
+notes = """
+Released 2026-10-02. Read the full build.rs diff: the hand-maintained ALLOWED_CFGS string list becomes a typed `Cfg` enum, and a new `validate_cfg()` asserts that every cfg is set only on the platform it belongs to (FreeBSD versions only on freebsd, musl time64 only with musl 1.2, gnu_time_bits64 only with a 64-bit off_t, and so on) — strictly more checking than before. Inputs are unchanged: the standard CARGO_CFG_* / RUST_LIBC_UNSTABLE_* environment variables, with deprecation warnings for the old musl_v1_2_3 and GNU_TIME_BITS spellings. The script spawns no process, touches no filesystem or network, and adds no `#[link]`. Scanned every added line in the 9820-line diff for #[link], include!, env!, option_env!, Command::, transmute, asm!, global_asm, proc_macro and extern crate: none present. All 64 added lines mentioning `unsafe` are FFI declaration shape — the `#[unsafe(union_default_via_zeroed)]` attribute plumbing in macros.rs, `pub unsafe fn si_*` siginfo accessors, and `unsafe extern "C" fn(` pointer types in AIX signatures (#5380). Changed source files are Fuchsia, Hermit and Apple XNU mach/i386 struct definitions; UFFS's own libc surface (stat, fstat, kill, pipe, close, geteuid, localtime_r, proc_pidpath, ucred, LOCK_NB and the pid/uid/time typedefs) is untouched.
+"""
+
 [[audits.libmimalloc-sys]]
 who = "Robert Nio <robert_nio@intuit.com>"
 criteria = "safe-to-deploy"
@@ -865,6 +873,14 @@ criteria = "safe-to-deploy"
 delta = "0.10.1 -> 0.10.2"
 notes = "Delta audit (cargo vet diff 0.10.1 -> 0.10.2, 596-line diff). Security-positive patch release: (1) distr/uniform_other.rs fixes rust-random/rand#1790 - UniformChar's serde Deserialize gains deser_sampler() range validation so a hostile serialized sampler can no longer drive char::from_u32_unchecked out of range; the sample path itself drops from_u32_unchecked for checked char::from_u32 + expect. (2) distr/slice.rs Choose::sample drops get_unchecked for checked get + expect (rust-random/rand#1791). Net unsafe count DECREASES by two blocks. (3) uniform_int.rs adds pub(crate) max() helper used by the new validation + tests. (4) seq/slice.rs partial_shuffle gains #[must_use] and a variable rename m->n; shuffle order semantics unchanged. Remainder is docs/typo churn. No new capability surface. Published by github:rust-random/rand trusted-publishing account."
 
+[[audits.rand]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "0.10.2 -> 0.10.3"
+notes = """
+Read the fix hunks (349 changed lines, 15 files, all under src/distr plus lib.rs; changelog 2026-09-20). weighted_index.rs replaces two `.unwrap()` calls on Sampler::new with `.map_err(|_| Error::Overflow)?`, so an infinite float weight sum returns an error instead of panicking (#1808), replaces direct indexing with `.get()`, and adds ExactSizeIterator for the weights iterator (#1838). uniform_float.rs moves the range-finiteness check ahead of the scale computation and inverts a mask (`gt_mask`/`any` -> `le_mask`/`all`, with `decrease_masked(!mask)`) so `0.0..=f64::MAX` no longer reports a spurious NonFinite (#1821); `f64::MIN..=f64::MAX` still correctly errors. Scanned every added line for unsafe, #[link], include!, env!, Command::, transmute, asm! and std::{fs,net,process,env}: none present. No build.rs, no dependency changes.
+"""
+
 [[audits.ref-cast]]
 who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
 criteria = "safe-to-deploy"
@@ -957,6 +973,14 @@ notes = """
 Reviewed the diff (6731 changed lines across 63 files) for supply-chain risk rather than line-by-line feature review. No `unsafe` is introduced anywhere, there is no build.rs, and the only additions touching `std::fs` / `std::process` / `std::env` are five lines inside tests/test_unix_socket_transport.rs that build a per-PID temp directory for a socket fixture and clean it up — test-only, never compiled into a dependent binary. New functionality is behind opt-in features UFFS does not enable (`auth-enterprise-managed`, the OAuth/JWT auth stack, and the streamable-HTTP client tests); UFFS builds rmcp with `server`, `transport-io` and `macros` only. The consumer-visible change we did take is the deprecation of the `ServerInfo` alias in favour of `ServerConfig` (both alias `InitializeResult`), which UFFS migrated to in the same commit rather than suppressing the warning.
 """
 
+[[audits.rmcp]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "3.4.0 -> 3.5.0"
+notes = """
+Reviewed the diff (1611 changed lines, 31 files) covering 3.4.1 and 3.5.0, and read every security-relevant and every large hunk. transport/common/mcp_headers.rs: `header_str` now returns Result and rejects a request carrying the same Mcp-* header twice (`get_all` with a second value -> Err), closing a header-smuggling shape, with tests for duplicate method, name and param headers (#1274). transport/streamable_http_server/tower.rs: the 270-line change is almost entirely a new `standard_header_init_tests` module, plus a check that an Mcp-Method header contradicting an initialize message is rejected. model/serde_impl.rs: float fields decode through serde_json::Number with an explicit "number out of range" error rather than a lossy cast (#1300). model.rs / elicitation_schema.rs carry the null-structuredContent and empty-cacheScope tolerance fixes (#1295, #1281). Scanned every added line for #[link], include!, env!, option_env!, Command::, transmute, asm!, TcpStream and std::{fs,net,process,env}: none. The six `reqwest` mentions are in streamable_http_client.rs, a client transport UFFS does not enable (we build with server, transport-io and macros only). The only dependency movement is dev-only rstest 0.26.1 -> 0.27.0. No unsafe, no build.rs, no API removals.
+"""
+
 [[audits.rmcp-macros]]
 who = "Robert Nio <50460704+githubrobbi@users.noreply.github.com>"
 criteria = "safe-to-deploy"
@@ -1005,6 +1029,14 @@ criteria = "safe-to-deploy"
 delta = "3.1.4 -> 3.4.0"
 notes = """
 Reviewed the full diff (140 changed lines across 7 files). Proc-macro crate; no unsafe, no build.rs, no fs/net/process/env access, and no dependency changes. Changes track the companion rmcp 3.1.4 -> 3.4.0 release's attribute surface; generated code remains the tool/router expansion UFFS already relies on.
+"""
+
+[[audits.rmcp-macros]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "3.4.0 -> 3.5.0"
+notes = """
+Reviewed the full diff (47 changed lines, 7 files). Proc-macro crate; no unsafe, no build.rs, no fs/net/process/env access. Changes are the companion version bump and Cargo.lock refreshes of proc-macro toolchain crates; generated tool/prompt expansion UFFS relies on is unchanged.
 """
 
 [[audits.rustc-hash]]
@@ -1163,6 +1195,14 @@ criteria = "safe-to-deploy"
 delta = "1.15.2 -> 1.16.1"
 notes = """
 Reviewed the full diff (735 changed lines across 7 files). The bulk is rustfmt re-wrapping of comments and expressions; in particular the three lines that a naive grep flags as "new unsafe" are the pre-existing `unsafe { MaybeUninit::uninit().assume_init() }` block and two `unsafe` doc/test lines moved onto different lines, with their SAFETY comments preserved verbatim and no change to what is executed. The genuine addition is the `DrainFilter` API (`drain_filter`, `keep_rest`). Dependency surface shrinks: the `debugger_visualizer` feature and its `debugger_test` / `debugger_test_parser` dev-dependencies are removed. No build.rs, no fs/net/process/env access, no new runtime dependencies.
+"""
+
+[[audits.smallvec]]
+who = "Robert M1 <50460704+githubrobbi@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "1.16.1 -> 1.16.2"
+notes = """
+Reviewed the full diff (255 changed lines; src/lib.rs and src/tests.rs). This is a substantive change: `retain` is reimplemented with a `PanicGuard` drop guard so that a predicate that panics mid-iteration can no longer double-drop or leak elements. The eight new `unsafe` blocks are the read/write-cursor algorithm std's Vec::retain uses: get_unchecked_mut bounded by original_len, drop_in_place on rejected elements with `read` advanced first so a panicking drop cannot run twice, copy_nonoverlapping into non-overlapping holes, and set_len to `write` on commit or to `write + remaining` after the guard copies the untouched tail forward on unwind. Each block carries a SAFETY comment stating its invariant and they hold under inspection. An improvement in soundness, not new surface. No build.rs, no fs/net/process/env access, no dependency changes.
 """
 
 [[audits.snap]]

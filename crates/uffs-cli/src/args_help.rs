@@ -38,7 +38,7 @@ COMMANDS:
   --status             Show combined system status
 
 COMMON OPTIONS:
-  -v, --verbose           Verbose output
+  -v, --verbose           Verbose output (with --benchmark: also print the rows)
   -d, --drive <LETTER>    Drive letter (e.g. C or C:)
   --drives <A,B,...>      Multiple drive letters
   --mft-file <PATH>       Raw MFT file(s), comma-separated
@@ -61,7 +61,12 @@ COMMON OPTIONS:
   --min-size <SIZE>       Minimum file size (e.g. 100KB, 10MB)
   --max-size <SIZE>       Maximum file size
   --profile               Show timing breakdown
-  --benchmark             Measure only, skip output
+  --benchmark             Time the whole pipeline incl. output formatting;
+                          the rows go to a sink, not the screen (add -v to see
+                          them)
+  --no-output             Match only: the daemon builds no rows, so this times
+                          'how many files match' and nothing else (auto-set
+                          when stdout is NUL)
   --help                  Print this help
   --version               Print version
 ";

@@ -2,10 +2,10 @@
 # Auto-split from test-definitions.toml
 
 [[test]]
-id          = "T40"
-group       = "error"
-name        = "T40 no results (graceful)"
-title       = "T40 no results (graceful)"
+id = "T40"
+group = "error"
+name = "T40 no results (graceful)"
+title = "T40 no results (graceful)"
 # A pattern that matches zero records must exit 0 with **empty
 # stdout** — no header, no CSV, nothing.  This keeps pipelines
 # clean: `uffs <pat> | wc -l` prints `0` on no-match rather than
@@ -13,8 +13,8 @@ title       = "T40 no results (graceful)"
 # still checks `rows == []` and `total_count == 0`, pinning the
 # "no error" invariant the test was originally written to
 # enforce.
-short_desc  = "Nonsense pattern returns 0 rows, empty stdout, exit 0"
-cli_args    = ["xyzzy_nonexistent_file_pattern_12345", "--limit", "10"]
+short_desc = "Nonsense pattern returns 0 rows, empty stdout, exit 0"
+cli_args = ["xyzzy_nonexistent_file_pattern_12345", "--limit", "10"]
 expect_min_rows = 0
 expect_max_rows = 0
 expect_exit_code = 0
@@ -25,4 +25,3 @@ stdout_not_contains = ["\"Path\"", "Name,"]
 [test.api_checks]
 result_has_key = ["rows", "records_scanned"]
 total_count_min = 0
-

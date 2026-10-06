@@ -25,6 +25,7 @@ mod predicates;
 mod projection;
 mod refresh;
 pub(crate) mod search;
+mod search_failure;
 mod search_filters_build;
 mod stats;
 mod status_drives;
@@ -227,15 +228,15 @@ pub(crate) struct IndexManager {
     /// Memory-pressure signal source (Phase 5 task 5.3).  Held so
     /// the daemon's `spawn_pressure_subscriber` (in `lib.rs`) can
     /// call [`IndexManager::subscribe_pressure`] to obtain a
-    /// [`tokio::sync::watch::Receiver`] and react to `Low` events
-    /// by cascade-demoting LRU Warm shards via
-    /// [`IndexManager::cascade_demote_one_step`] (task 5.6).  Production
-    /// wires [`crate::cache::pressure::PlatformPressureSignal`]
-    /// (Mac/Linux never-fires, Windows future watcher thread); the
-    /// Phase 5 task 5.10 tests inject
+    /// [`tokio::sync::watch::Receiver`] and log every transition.
+    /// Nothing is demoted on pressure (owner ruling 2026-10-03).
+    /// Production wires
+    /// [`crate::cache::pressure::PlatformPressureSignal`] (Mac/Linux
+    /// never-fires, Windows kernel watcher thread); the lifecycle
+    /// tests inject
     /// `crate::cache::pressure::tests::ControllablePressureSignal`
-    /// to broadcast deterministic transitions and assert the LRU
-    /// cascade order.
+    /// to broadcast deterministic transitions and assert the
+    /// observe-only contract.
     pressure: Arc<dyn crate::cache::pressure::PressureSignal>,
     /// Thread-level background-I/O priority hook (Phase 5 task 5.7).
     /// Held so [`IndexManager::handle_journal_refresh`] can wrap the

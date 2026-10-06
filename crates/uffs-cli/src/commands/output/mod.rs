@@ -8,12 +8,14 @@
 
 mod parity;
 
+mod render_into;
 use core::time::Duration;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use anyhow::{Context as _, Result};
 use parity::{write_legacy_drive_footer, write_parity};
+pub use render_into::render_native_results_into;
 use serde_json::Value;
 
 // ── Value extraction helpers ───────────────────────────────────────────
@@ -97,14 +99,7 @@ pub fn write_native_results(
         row_count: rows.len(),
     };
 
-    let parity_ctx = ParityContext {
-        pos,
-        neg,
-        tz_offset_secs: tz_offset.map_or_else(
-            || *LOCAL_TZ_OFFSET_SECS,
-            |hours| hours.saturating_mul(3_600_i32),
-        ),
-    };
+    let parity_ctx = ParityContext::new(pos, neg, tz_offset);
 
     if is_console {
         write_to_stdout(
@@ -246,6 +241,22 @@ struct ParityContext<'a> {
     neg: &'a str,
     /// Timezone offset in seconds from UTC.
     tz_offset_secs: i32,
+}
+
+impl<'a> ParityContext<'a> {
+    /// Resolve the parity context from the CLI's `--pos` / `--neg` /
+    /// `--tz-offset` (hours) settings; an absent offset uses the local
+    /// zone.
+    fn new(pos: &'a str, neg: &'a str, tz_offset: Option<i32>) -> Self {
+        Self {
+            pos,
+            neg,
+            tz_offset_secs: tz_offset.map_or_else(
+                || *LOCAL_TZ_OFFSET_SECS,
+                |hours| hours.saturating_mul(3_600_i32),
+            ),
+        }
+    }
 }
 
 /// Dispatch to the appropriate formatter.

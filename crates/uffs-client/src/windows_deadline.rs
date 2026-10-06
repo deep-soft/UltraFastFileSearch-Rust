@@ -30,8 +30,13 @@
 //!   fires at most once.
 //! * `CancelSynchronousIo` causes the blocked `ReadFile` / `WriteFile` on the
 //!   target thread to return `ERROR_OPERATION_ABORTED` (`0x4D3`), which bubbles
-//!   up through `std::io::Read` / `Write` as a regular I/O error — the caller's
-//!   existing `ClientError::Io` branch then reports it naturally.
+//!   up through `std::io::Read` / `Write` as a regular I/O error.  The watchdog
+//!   raises the [`WindowsDeadlineGuard::fired`] flag *before* it cancels, so
+//!   the owning thread can tell its own deadline cancellation apart from a
+//!   genuine transport error and report it as `ClientError::Timeout` rather
+//!   than a raw `os error 995` — the raw code used to be mistaken for the
+//!   daemon-side "index warming" transient and auto-retried, which orphaned a
+//!   still-running scan on the daemon for every retry.
 //!
 //! # Thread-affinity caveat
 //!
@@ -60,7 +65,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::io;
 use std::sync::mpsc;
@@ -121,6 +126,10 @@ pub(crate) struct WindowsDeadlineGuard {
     /// Absolute tick (`GetTickCount64`) at which the current RPC
     /// should be aborted.  `0` = [`DISARMED`].
     deadline_tick_ms: Arc<AtomicU64>,
+    /// Set by the watchdog when it cancels the in-flight RPC; cleared
+    /// by every [`Self::arm`].  Read through [`Self::fired`] by the
+    /// owning thread after a failed read/write to classify the error.
+    fired: Arc<AtomicBool>,
     /// Channel sender paired with the watchdog's
     /// [`mpsc::Receiver`].  [`Drop`] sends a single `()` on this
     /// channel to wake the watchdog immediately; dropping the
@@ -164,20 +173,28 @@ impl WindowsDeadlineGuard {
     pub(crate) fn new(duration: Duration) -> io::Result<Self> {
         let target_thread = SendHandle(duplicate_current_thread()?);
         let deadline_tick_ms = Arc::new(AtomicU64::new(DISARMED));
+        let fired = Arc::new(AtomicBool::new(false));
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
 
         let watchdog_ticks = Arc::clone(&deadline_tick_ms);
+        let watchdog_fired = Arc::clone(&fired);
         let watchdog_target = target_thread;
 
         let watchdog = thread::Builder::new()
             .name("uffs-deadline-watchdog".into())
             .spawn(move || {
-                watchdog_loop(&watchdog_ticks, &shutdown_rx, watchdog_target);
+                watchdog_loop(
+                    &watchdog_ticks,
+                    &watchdog_fired,
+                    &shutdown_rx,
+                    watchdog_target,
+                );
             })?;
 
         Ok(Self {
             duration,
             deadline_tick_ms,
+            fired,
             shutdown_tx,
             target_thread,
             watchdog: Some(watchdog),
@@ -214,7 +231,24 @@ impl WindowsDeadlineGuard {
         } else {
             raw_deadline
         };
+        // A fresh RPC starts with a clean verdict; the previous RPC's
+        // cancellation must not be attributed to this one.
+        self.fired.store(false, Ordering::Release);
         self.deadline_tick_ms.store(deadline, Ordering::Release);
+    }
+
+    /// `true` when the watchdog cancelled the most recently armed RPC.
+    ///
+    /// The owning thread calls this right after a blocking read or
+    /// write fails: a `true` means the failure is this guard's own
+    /// `CancelSynchronousIo` (the RPC exceeded `UFFS_CLIENT_TIMEOUT_SECS`)
+    /// and should surface as `ClientError::Timeout`; a `false` means the
+    /// error came from the transport itself.  The flag is written with
+    /// `Release` *before* the cancellation call and read with `Acquire`
+    /// after the cancelled I/O returns, so the owning thread always
+    /// observes it set when its I/O was the one cancelled.
+    pub(crate) fn fired(&self) -> bool {
+        self.fired.load(Ordering::Acquire)
     }
 
     /// Disarm the guard — the current RPC completed in time.
@@ -283,6 +317,7 @@ impl Drop for WindowsDeadlineGuard {
 /// overshoot.
 fn watchdog_loop(
     deadline_tick_ms: &Arc<AtomicU64>,
+    fired: &Arc<AtomicBool>,
     shutdown_rx: &mpsc::Receiver<()>,
     target: SendHandle,
 ) {
@@ -309,6 +344,11 @@ fn watchdog_loop(
         {
             continue;
         }
+        // Publish the verdict before cancelling: the owning thread's
+        // `ReadFile` returns `ERROR_OPERATION_ABORTED` strictly after
+        // this call, and it reads the flag strictly after that return,
+        // so `Release` here + `Acquire` there is enough ordering.
+        fired.store(true, Ordering::Release);
         // SAFETY: `target` was produced by `DuplicateHandle` in the
         // guard's `new`; the guard's `Drop` joins us before closing
         // the handle, so `target` is live for the whole call.
@@ -451,6 +491,10 @@ mod tests {
             DISARMED,
             "disarm must restore the sentinel",
         );
+        assert!(
+            !guard.fired(),
+            "an RPC that completes in time must not be reported as cancelled",
+        );
     }
 
     /// A 1 ms deadline must fire the watchdog within ~100 ms — we
@@ -477,6 +521,18 @@ mod tests {
             "expired deadline must be consumed by the watchdog \
              (`compare_exchange` back to 0)",
         );
+        assert!(
+            guard.fired(),
+            "the watchdog must record that it cancelled this RPC",
+        );
+
+        // The next arm starts clean — a stale verdict must never be
+        // attributed to a later RPC.
+        let fresh_guard =
+            WindowsDeadlineGuard::new(Duration::from_mins(1)).expect("guard construction");
+        fresh_guard.arm();
+        assert!(!fresh_guard.fired(), "arm must reset the fired flag");
+        fresh_guard.disarm();
     }
 
     /// arm never writes the `DISARMED` sentinel even under weird
@@ -500,25 +556,11 @@ mod tests {
         );
     }
 
-    /// End-to-end integration test: a **blackhole** named-pipe server
-    /// accepts a client connection but never writes; the client
-    /// issues a blocking `ReadFile` under an armed guard; the
-    /// watchdog fires, `CancelSynchronousIo` unblocks the read, and
-    /// `ReadFile` returns `ERROR_OPERATION_ABORTED` (995).
-    ///
-    /// This is the single most important regression guard for commit
-    /// D — if the watchdog's cancellation path ever breaks in a real
-    /// Windows build, this test will fail instead of a user's CLI
-    /// silently hanging forever.
-    ///
-    /// The pipe server lives on a short-lived helper thread that
-    /// sleeps briefly after accept, then exits; the thread joins at
-    /// the end of the test so no resources leak.
-    #[test]
-    fn watchdog_cancels_blocked_readfile_on_blackhole_pipe() {
-        use std::io::Read as _;
-        use std::time::Instant;
-
+    /// Create a named pipe at `server_name`, accept one client and then
+    /// hold the connection open without ever writing, so the client's
+    /// blocking `ReadFile` has nothing to return until the watchdog
+    /// cancels it.  Closes the pipe and exits after 2 s.
+    fn spawn_blackhole_pipe_server(server_name: String) -> JoinHandle<()> {
         use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
         use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
         use windows::Win32::System::Pipes::{
@@ -526,26 +568,7 @@ mod tests {
         };
         use windows::core::PCWSTR;
 
-        // Unique pipe path per-process + per-call so concurrent
-        // cargo test runs do not collide on the same name.  Build it
-        // through `PipeName::parse` so this test doubles as a
-        // regression pin: if `PipeName`'s invariants ever drift (e.g.
-        // a prefix tweak or a length-cap shrink), this fixture starts
-        // failing here instead of silently producing a path Win32
-        // would refuse.
-        let pipe_name = uffs_security::pipe::PipeName::parse(format!(
-            "\\\\.\\pipe\\uffs-test-blackhole-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|dur| dur.as_nanos())
-                .unwrap_or_default(),
-        ))
-        .expect("test-blackhole pipe path is a valid PipeName");
-
-        // ── Server thread: accept once, never respond ───────────
-        let server_name = pipe_name.as_str().to_owned();
-        let server = thread::spawn(move || {
+        thread::spawn(move || {
             let wide: Vec<u16> = format!("{server_name}\0").encode_utf16().collect();
             // SAFETY: standard Win32 FFI.  The handle is closed
             // below before the thread exits.  `CreateNamedPipeW`
@@ -585,7 +608,47 @@ mod tests {
             #[expect(unsafe_code, reason = "Win32 handle cleanup")]
             let close = unsafe { CloseHandle(handle) };
             drop(close);
-        });
+        })
+    }
+
+    /// End-to-end integration test: a **blackhole** named-pipe server
+    /// accepts a client connection but never writes; the client
+    /// issues a blocking `ReadFile` under an armed guard; the
+    /// watchdog fires, `CancelSynchronousIo` unblocks the read, and
+    /// `ReadFile` returns `ERROR_OPERATION_ABORTED` (995).
+    ///
+    /// This is the single most important regression guard for commit
+    /// D — if the watchdog's cancellation path ever breaks in a real
+    /// Windows build, this test will fail instead of a user's CLI
+    /// silently hanging forever.
+    ///
+    /// The pipe server lives on a short-lived helper thread that
+    /// sleeps briefly after accept, then exits; the thread joins at
+    /// the end of the test so no resources leak.
+    #[test]
+    fn watchdog_cancels_blocked_readfile_on_blackhole_pipe() {
+        use std::io::Read as _;
+        use std::time::Instant;
+
+        // Unique pipe path per-process + per-call so concurrent
+        // cargo test runs do not collide on the same name.  Build it
+        // through `PipeName::parse` so this test doubles as a
+        // regression pin: if `PipeName`'s invariants ever drift (e.g.
+        // a prefix tweak or a length-cap shrink), this fixture starts
+        // failing here instead of silently producing a path Win32
+        // would refuse.
+        let pipe_name = uffs_security::pipe::PipeName::parse(format!(
+            "\\\\.\\pipe\\uffs-test-blackhole-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|dur| dur.as_nanos())
+                .unwrap_or_default(),
+        ))
+        .expect("test-blackhole pipe path is a valid PipeName");
+
+        // ── Server thread: accept once, never respond ───────────
+        let server = spawn_blackhole_pipe_server(pipe_name.as_str().to_owned());
 
         // Give the server a brief moment to create the pipe before
         // we try to connect.  The retry loop below also covers this
@@ -629,6 +692,7 @@ mod tests {
         let read_result = pipe.read(&mut buf);
         let elapsed = start.elapsed();
 
+        let fired = guard.fired();
         guard.disarm();
 
         // ── Assertions ───────────────────────────────────────────
@@ -636,6 +700,10 @@ mod tests {
             read_result.is_err(),
             "read against a blackhole pipe must fail; got Ok with {:?}",
             read_result.ok(),
+        );
+        assert!(
+            fired,
+            "the guard must report the cancelled read as its own deadline firing",
         );
         assert!(
             elapsed >= Duration::from_millis(400),

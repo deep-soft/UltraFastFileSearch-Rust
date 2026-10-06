@@ -311,7 +311,8 @@ These flags are for power users, profiling, and parity testing:
 |------|-------------|
 | `-v, --verbose` | Enable verbose output (global) |
 | `--profile` | Show detailed timing breakdown |
-| `--benchmark` | Skip output; measure only MFT reading + filtering |
+| `--benchmark` | Time the whole pipeline including output formatting; the rows are rendered into a sink instead of the screen (add `-v` to also print them). The profile block reports the output pass as its own line |
+| `--no-output` | Match only: the daemon builds no rows, so this times "how many files match" and nothing else. Auto-set when stdout is a null device |
 | `--no-bitmap` | Disable MFT bitmap optimisation (read ALL records) |
 | `--no-cache` | Bypass cache; re-read MFT fresh |
 | `--query-mode <MODE>` | Force query path: `auto`, `index`, `dataframe` |

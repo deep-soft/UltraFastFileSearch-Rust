@@ -22,6 +22,7 @@ use uffs_client::protocol::{
 
 use super::RequestHandler;
 use crate::index::diff::DiffError;
+use crate::index::search::SearchFailure;
 
 impl RequestHandler {
     /// Resolve a search request to its response: a snapshot diff when
@@ -35,7 +36,10 @@ impl RequestHandler {
         if params.diff_baseline.is_some() {
             self.diff_search_response(id, params).await
         } else {
-            Ok(self.index.search(params).await)
+            self.index
+                .search(params)
+                .await
+                .map_err(|failure| search_failure_json(id, &failure))
         }
     }
 
@@ -132,6 +136,22 @@ impl RequestHandler {
                 ))
                 .unwrap_or_default())
             }
+            Err(DiffError::Search(failure)) => Err(search_failure_json(id, &failure)),
         }
     }
+}
+
+/// Serialise a [`SearchFailure`] as the JSON-RPC error the client should
+/// see: the failure's own code (`ERR_SEARCH_TIMEOUT` / `ERR_SEARCH_BUSY` /
+/// `ERR_INTERNAL`) and its operator-facing message.
+///
+/// Shared by the live search, the snapshot diff, and `facet_values`, so
+/// every path that runs a scan reports a non-completion the same way.
+pub(crate) fn search_failure_json(id: u64, failure: &SearchFailure) -> String {
+    serde_json::to_string(&RpcErrorResponse::error(
+        Some(id),
+        failure.rpc_code(),
+        &failure.to_string(),
+    ))
+    .unwrap_or_default()
 }

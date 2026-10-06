@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! Phase 3 Commit E + Phase 5 G4 — `shard.transition` tracing-event
-//! contract tests.
+//! Phase 3 Commit E — `shard.transition` tracing-event contract tests.
 //!
 //! Split from [`super::idle_demote`] so the state-transition ladder
 //! tests stay focused on TTL / multi-drive behaviour while this
@@ -12,8 +11,6 @@
 //!   `tracing::event!(target: "shard.transition", ...)` with the `letter` /
 //!   `from` / `to` / `reason` / `freed_mb` / `restored_mb` / `last_query_at_ms`
 //!   field surface.
-//! * Phase 5 G4 follow-up — single-canonical-event regression for the
-//!   pressure-cascade demote path.
 //! * PR-f — promote refreshes `last_query_at_ms` so the next idle tick doesn't
 //!   immediately re-demote the just-promoted shard (anti-thrash invariant).
 //!
@@ -176,139 +173,6 @@ async fn shard_transition_events_emitted_on_demote_and_promote() {
     assert!(
         promote.has_field("restored_mb"),
         "promote event must carry restored_mb field for resident-delta accounting"
-    );
-}
-
-/// Phase 5 G4 follow-up — the pressure-cascade demote path must
-/// emit exactly **one** `INFO`-level `shard.transition` event per
-/// shard, with `reason="pressure-cascade"` and `last_query_at_ms`
-/// in the field set.
-///
-/// Pre-refactor, every cascade demote produced **two** events: the
-/// registry primitive's generic `reason="demote"` event followed by
-/// a second `reason="pressure-cascade"` event from
-/// `cascade_demote_one_step` itself.  The two were separated by the
-/// `WorkingSetTrim::trim` syscall duration (6-22 ms typically; up
-/// to ~1 s on the first cascade demote when the daemon's working
-/// set was still large) which confused operator log analysis.
-///
-/// This test pins the single-event contract so a future refactor
-/// can't reintroduce the dual-event pattern.  It also pins the
-/// presence of `last_query_at_ms` (formerly cascade-only, now part
-/// of the canonical demote event for both TTL and pressure paths).
-///
-/// Test topology: 1 Warm drive (`C`) with a known
-/// `last_query_at_ms = 1_234` so the assertion can use a literal
-/// value instead of `has_field`.  `ControllablePressureSignal` is
-/// injected for completeness but never driven — the test calls
-/// `cascade_demote_one_step` directly, mirroring the contract of
-/// the existing
-/// `cascade_demote_one_step_picks_lru_warm_and_drains_in_order`
-/// test in `lifecycle_hooks.rs` (which pins the demote ordering
-/// and trim-call counts but doesn't capture tracing events).
-#[tokio::test]
-async fn cascade_demote_emits_single_event_with_pressure_cascade_reason() {
-    use crate::cache::ShardState;
-    use crate::cache::pressure::tests::ControllablePressureSignal;
-    use crate::cache::working_set::tests::CountingWorkingSetTrim;
-
-    // Same dummy-Dispatch + thread-local-default + interest-rebuild
-    // dance as `shard_transition_events_emitted_on_demote_and_promote`
-    // — see that test's docstring for the rationale.  Without this,
-    // a sibling test on a different thread can pin the
-    // `shard.transition` callsite's `Interest` cache to `never`
-    // before our subscriber gets a chance to vote, and the cascade
-    // event silently disappears.
-    let log = EventLog::default();
-    let _interest_rebuild_dummy =
-        tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
-    let _guard = tracing::subscriber::set_default(log.clone());
-    tracing::callsite::rebuild_interest_cache();
-
-    let (tx, _rx) = crate::events::event_channel();
-    let counting_trim = Arc::new(CountingWorkingSetTrim::new());
-    let pressure_fake = Arc::new(ControllablePressureSignal::new());
-    let hooks = crate::index::constructors::LifecycleHooks {
-        working_set_trim: Arc::clone(&counting_trim)
-            as Arc<dyn crate::cache::working_set::WorkingSetTrim>,
-        pressure: Arc::clone(&pressure_fake) as Arc<dyn crate::cache::pressure::PressureSignal>,
-        ..crate::index::constructors::LifecycleHooks::production()
-    };
-    let mgr = IndexManager::with_lifecycle_hooks_for_test(
-        None,
-        tx,
-        hooks,
-        Arc::new(crate::config::Config::default()),
-    );
-    mgr.add_drive(build_test_drive()).await;
-
-    // Backdate to a known timestamp so the assertion can use a
-    // literal value below.  `add_drive` already stamped
-    // `mark_loaded_at(unix_now_ms())`, which would make the assertion
-    // wall-clock-dependent.
-    assert!(
-        mgr.backdate_last_query_at_ms_for_test(uffs_mft::platform::DriveLetter::C, 1_234)
-            .await
-    );
-
-    // Drive the cascade once.  With one Warm shard, the LRU pick is
-    // unambiguous and the call returns `Some((uffs_mft::platform::DriveLetter::C,
-    // Parked))`.
-    let result = mgr.cascade_demote_one_step().await;
-    assert_eq!(
-        result,
-        Some((uffs_mft::platform::DriveLetter::C, ShardState::Parked)),
-        "single-shard cascade demotes C and returns Some",
-    );
-
-    // Filter to INFO-level `shard.transition` events whose `reason`
-    // is in the demote vocabulary.  We accept both `"demote"` (the
-    // legacy generic value) and `"pressure-cascade"` (the new
-    // discriminator) so this test would still catch a regression
-    // that flipped the cascade path back to emitting `"demote"`
-    // — the assertion below pins the EXACT value.
-    let events = log.events();
-    let demotes: Vec<&CapturedEvent> = events
-        .iter()
-        .filter(|event| {
-            event.target == "shard.transition"
-                && event.level == tracing::Level::INFO
-                && matches!(event.field("reason"), Some("demote" | "pressure-cascade"))
-        })
-        .collect();
-
-    assert_eq!(
-        demotes.len(),
-        1,
-        "G4 follow-up: cascade demote must emit exactly ONE info \
-         `shard.transition` event (the registry primitive's canonical \
-         event with reason=\"pressure-cascade\"); the legacy second \
-         event from `cascade_demote_one_step` is gone.  got {}: {:#?}",
-        demotes.len(),
-        demotes,
-    );
-
-    let cascade = demotes[0];
-    assert_eq!(cascade.field("reason"), Some("pressure-cascade"));
-    assert_eq!(cascade.field("from"), Some("warm"));
-    assert_eq!(cascade.field("to"), Some("parked"));
-    assert_eq!(cascade.field("letter"), Some("C"));
-    assert!(
-        cascade.has_field("freed_mb"),
-        "cascade demote event must carry freed_mb field",
-    );
-    assert_eq!(
-        cascade.field("last_query_at_ms"),
-        Some("1234"),
-        "cascade demote event must carry last_query_at_ms (formerly \
-         cascade-only; now part of the canonical demote event)",
-    );
-
-    // Sanity: trim fired exactly once for the single cascade step.
-    assert_eq!(
-        counting_trim.calls(),
-        1,
-        "single cascade step → single trim call",
     );
 }
 

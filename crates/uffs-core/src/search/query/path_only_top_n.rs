@@ -151,7 +151,7 @@ pub(super) fn collect_path_only_sorted_top_n<D: AsRef<DriveCompactIndex> + Sync>
     let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
 
     for &drive_idx in &drive_order {
-        if output.len() >= limit {
+        if output.len() >= limit || search_filters.is_cancelled() {
             break;
         }
         let Some(drive_ref) = drives.get(drive_idx) else {
@@ -263,10 +263,12 @@ fn walk_drive_asc(
         }
     }
 
+    let mut visited = 0_usize;
     while let Some(dir_idx) = stack.pop() {
-        if output.len() >= limit {
+        if output.len() >= limit || search_filters.cancelled_at(visited) {
             return;
         }
+        visited += 1;
         let child_slice = drive.children_of(dir_idx);
         if child_slice.is_empty() {
             continue;
@@ -362,10 +364,12 @@ fn walk_drive_desc(
         }
     }
 
+    let mut visited = 0_usize;
     while let Some(task) = stack.pop() {
-        if output.len() >= limit {
+        if output.len() >= limit || search_filters.cancelled_at(visited) {
             return;
         }
+        visited += 1;
         match task {
             DescTask::Emit(idx) => {
                 emit_if_passes(

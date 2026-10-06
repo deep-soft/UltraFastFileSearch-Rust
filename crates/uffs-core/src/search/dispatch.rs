@@ -340,6 +340,9 @@ pub(super) fn dispatch_regex(
     let drive_results: Vec<Vec<DisplayRow>> = active_drives
         .par_iter()
         .map(|drive| {
+            if search_filters.is_cancelled() {
+                return Vec::new();
+            }
             super::query::search_compact_drive_regex(drive, &compiled_re, limit, search_filters)
         })
         .collect();
@@ -378,6 +381,9 @@ pub(super) fn dispatch_trigram_or_tree(
     let drive_results: Vec<Vec<DisplayRow>> = active_drives
         .par_iter()
         .map(|drive| {
+            if search_filters.is_cancelled() {
+                return Vec::new();
+            }
             if is_path {
                 super::query::search_compact_drive_tree(drive, needle, limit, search_filters)
             } else if is_prefix {
@@ -425,6 +431,32 @@ pub(super) fn dispatch_trigram_or_tree(
     sort_rows(&mut rows, sort_column, sort_desc, extra_sort_tiers);
     rows.truncate(limit);
     rows
+}
+
+/// Drop the rows of a scan that was cancelled mid-way.
+///
+/// A cancelled scan stopped early on some drive: whatever it had
+/// collected is an arbitrary subset, and a subset presented as the
+/// answer is worse than no answer.  The caller that cancelled already
+/// knows why, so nothing is returned.
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted from search_index to keep it under the cognitive-complexity budget"
+)]
+pub(super) fn discard_if_cancelled(
+    rows: Vec<DisplayRow>,
+    search_filters: &SearchFilters,
+    pattern: &str,
+) -> Vec<DisplayRow> {
+    if !search_filters.is_cancelled() {
+        return rows;
+    }
+    tracing::debug!(
+        pattern,
+        partial_rows = rows.len(),
+        "search cancelled by caller; partial result discarded"
+    );
+    Vec::new()
 }
 
 /// Pick the `cache_profile` `mode` tracing label for the chosen

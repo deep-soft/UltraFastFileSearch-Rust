@@ -29,9 +29,8 @@ use serde::{Deserialize, Serialize};
 
 /// Parameters for the `hibernate` method.
 ///
-/// Hibernating a drive demotes its shard to `Cold` (encrypted cache on
-/// disk, zero RAM resident) by walking
-/// `cascade_demote_one_step` until the shard reaches the bottom tier.
+/// Hibernating a drive demotes its shard straight to `Cold` (encrypted
+/// cache on disk, zero RAM resident).
 /// An empty [`Self::drives`] vector hibernates **every** loaded drive
 /// — the typical operator action when freeing memory before a long
 /// idle stretch.
@@ -82,7 +81,7 @@ pub const DEFAULT_PRELOAD_PIN_MINUTES: u32 = 30;
 /// Parameters for the `preload` method.
 ///
 /// Preloads one or more drives into the `Hot` tier and pins them
-/// against demote (TTL idle and pressure cascades) for
+/// against the idle TTL demote for
 /// [`Self::pin_minutes`] minutes.  An empty [`Self::drives`] vector is
 /// a usage error — preload requires at least one explicit drive
 /// letter.

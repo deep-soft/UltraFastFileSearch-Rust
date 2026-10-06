@@ -23,9 +23,9 @@
 //!   pin).
 //!
 //! Why a sibling file (instead of folding into
-//! [`super::transitions`]): the two background controllers in
-//! `transitions.rs` (`demote_idle_shards`, `cascade_demote_one_step`)
-//! are policy-driven daemon-internal decisions, while these two
+//! [`super::transitions`]): the background controller in
+//! `transitions.rs` (`demote_idle_shards`) is a policy-driven
+//! daemon-internal decision, while these two
 //! methods are operator-driven entry points reached over the wire.
 //! Keeping the two clusters separate makes the audit boundary
 //! obvious — operator overrides go here, controller automation goes
@@ -127,7 +127,7 @@ impl IndexManager {
     /// The `OperatorHibernate` reason discriminator flows into the
     /// canonical `shard.transition` event so operators can grep
     /// `reason="operator-hibernate"` to distinguish manual
-    /// hibernation from idle-tick or pressure-cascade demotes.
+    /// hibernation from idle-tick demotes.
     pub(crate) async fn hibernate_shards(
         &self,
         drives: &[uffs_mft::platform::DriveLetter],

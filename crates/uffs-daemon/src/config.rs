@@ -118,13 +118,14 @@ pub(crate) struct Config {
               round-trip and reviewability properties."
 )]
 pub(crate) struct MemoryConfig {
-    /// Global resident-set ceiling, in MiB.  Once exceeded, the
-    /// pressure controller (Phase 5.3) cascades demotes until the
-    /// total drops back under the cap.
+    /// Global resident-set ceiling, in MiB.  Parsed and reported;
+    /// no controller enforces it — the idle TTL ladder is the only
+    /// automatic demote driver (owner ruling 2026-10-03).
     pub max_total_resident_mb: u64,
-    /// On Windows, hook the low-memory notification API and treat
-    /// `LowMemoryResourceNotification` as an immediate demote
-    /// trigger.  Mac is a no-op (no equivalent public API).
+    /// On Windows, hook the low-memory notification API so
+    /// `LowMemoryResourceNotification` transitions are logged under
+    /// `cache.pressure`.  They are observed, never acted on.  Mac is
+    /// a no-op (no equivalent public API).
     pub respect_os_low_memory: bool,
     /// Call `EmptyWorkingSet` after each demote on Windows so the
     /// freed pages return to the OS quickly (plan §8.2).

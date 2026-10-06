@@ -33,8 +33,9 @@ const DEFAULT_RPC_DEADLINE_SECS: u64 = 60;
 /// * `UFFS_CLIENT_TIMEOUT_SECS=0` → disables the timeout (useful when attaching
 ///   a debugger).
 /// * `UFFS_CLIENT_TIMEOUT_SECS=N` → `N`-second deadline.
-/// * unset or unparseable → [`DEFAULT_RPC_DEADLINE_SECS`].
-pub(crate) fn rpc_deadline() -> Option<core::time::Duration> {
+/// * unset or unparseable → `DEFAULT_RPC_DEADLINE_SECS` (60 s).
+#[must_use]
+pub fn rpc_deadline() -> Option<core::time::Duration> {
     let secs = std::env::var("UFFS_CLIENT_TIMEOUT_SECS")
         .ok()
         .and_then(|val| val.parse::<u64>().ok())
