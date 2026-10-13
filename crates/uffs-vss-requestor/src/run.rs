@@ -70,35 +70,6 @@ fn next_value(args: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Re
         .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))
 }
 
-/// `HRESULT`s the VSS documentation defines as transient: a fresh
-/// attempt (a brand-new `IVssBackupComponents` session, which is exactly
-/// what every [`VssSnapshotSession::create`] call already does) is
-/// expected to succeed once the underlying contention clears. Every
-/// other failure (unsupported volume, bad arguments, access denied, …)
-/// is left to fail immediately — retrying those would just waste the
-/// backoff budget on something that will never succeed.
-///
-/// - `VSS_E_PROVIDER_VETO` (`0x80042306`) — the provider couldn't currently
-///   service the request; per Microsoft's VSS requestor guidance this is one of
-///   the errors a requestor is expected to retry. Observed on real hardware
-///   from back-to-back snapshot create/release cycles on the same volume.
-/// - `VSS_E_SNAPSHOT_SET_IN_PROGRESS` (`0x80042316`) — another shadow copy
-///   operation is still in flight on this volume.
-/// - `VSS_E_HOLD_WRITES_TIMEOUT` (`0x80042317`) / `VSS_E_FLUSH_WRITES_TIMEOUT`
-///   (`0x80042318`) — the freeze/flush phase didn't complete in time.
-/// - `VSS_E_WRITERERROR_RETRYABLE` (`0x800423F3`) — a writer reported a
-///   retryable error. This requestor runs `VSS_CTX_FILE_SHARE_BACKUP` with no
-///   writer coordination (see `native/vss_shim.cpp`'s header comment), so
-///   writers should never actually be in play, but the code is retryable by
-///   definition if it ever is returned.
-const RETRYABLE_HRESULTS: [i32; 5] = [
-    0x8004_2306_u32.cast_signed(), // VSS_E_PROVIDER_VETO
-    0x8004_2316_u32.cast_signed(), // VSS_E_SNAPSHOT_SET_IN_PROGRESS
-    0x8004_2317_u32.cast_signed(), // VSS_E_HOLD_WRITES_TIMEOUT
-    0x8004_2318_u32.cast_signed(), // VSS_E_FLUSH_WRITES_TIMEOUT
-    0x8004_23F3_u32.cast_signed(), // VSS_E_WRITERERROR_RETRYABLE
-];
-
 /// Total attempts [`create_snapshot_with_retry`] makes before giving up
 /// (the first attempt plus this many retries).
 const MAX_SNAPSHOT_ATTEMPTS: u32 = 3;
@@ -112,7 +83,7 @@ const RETRY_BACKOFF_BASE: core::time::Duration = core::time::Duration::from_secs
 
 /// Create a `VSS_CTX_FILE_SHARE_BACKUP` snapshot of `volume_path`,
 /// retrying with backoff on the small set of `HRESULT`s VSS documents as
-/// transient ([`RETRYABLE_HRESULTS`]). Each attempt is a fully fresh
+/// transient ([`crate::hresult::RETRYABLE`]). Each attempt is a fully fresh
 /// [`VssSnapshotSession::create`] call — a brand-new `IVssBackupComponents`
 /// session — which is exactly what Microsoft's own guidance requires:
 /// retrying a transient VSS failure means restarting the whole sequence,
@@ -131,7 +102,7 @@ fn create_snapshot_with_retry(
         match VssSnapshotSession::create(volume_path) {
             Ok(created) => return Ok(created),
             Err(err)
-                if attempt < MAX_SNAPSHOT_ATTEMPTS && RETRYABLE_HRESULTS.contains(&err.hresult) =>
+                if attempt < MAX_SNAPSHOT_ATTEMPTS && crate::hresult::is_retryable(err.hresult) =>
             {
                 debug_log(&format!(
                     "snapshot creation attempt {attempt}/{MAX_SNAPSHOT_ATTEMPTS} failed with \
@@ -240,10 +211,17 @@ pub(crate) fn run() -> anyhow::Result<()> {
         Err(err) => {
             let stage = err.stage;
             let hresult = err.hresult;
+            // A permanent failure with a known remedy (e.g. the volume's
+            // shadow-copy limit) carries it, so the Broker's caller can act
+            // instead of seeing a generic failure.
+            let message = match crate::hresult::failure_hint(hresult) {
+                Some(hint) => format!("{} — {hint}", err.message),
+                None => err.message,
+            };
             protocol::write_event(&mut writer, &HelperEvent::Failed {
-                stage: err.stage,
-                hresult: err.hresult,
-                message: err.message,
+                stage,
+                hresult,
+                message,
             })?;
             anyhow::bail!("snapshot creation failed: stage={stage} hresult={hresult:#x}");
         }
