@@ -215,7 +215,8 @@ impl MftIndex {
                 continue;
             }
 
-            // Sort children by filename (case-insensitive, zero-allocation for ASCII)
+            // Sort children by filename (case-insensitive, zero-allocation for
+            // ASCII)
             child_indices.sort_by(|&idx_a, &idx_b| {
                 // Get child info entries
                 let (Some(child_a), Some(child_b)) = (
@@ -242,7 +243,8 @@ impl MftIndex {
                     .map_or("", |link| self.get_name(link.name));
 
                 // Compare case-insensitively (zero allocations for ASCII)
-                // Inlined from cmp_ascii_case_insensitive to satisfy clippy::single_call_fn
+                // Inlined from cmp_ascii_case_insensitive to satisfy
+                // clippy::single_call_fn
                 if name_a.is_ascii() && name_b.is_ascii() {
                     // Fast path: both strings are ASCII
                     name_a
@@ -250,7 +252,8 @@ impl MftIndex {
                         .map(|byte| byte.to_ascii_lowercase())
                         .cmp(name_b.bytes().map(|byte| byte.to_ascii_lowercase()))
                 } else {
-                    // Slow path: at least one string contains non-ASCII characters
+                    // Slow path: at least one string contains non-ASCII
+                    // characters
                     name_a.to_lowercase().cmp(&name_b.to_lowercase())
                 }
             });

@@ -519,7 +519,8 @@ pub(crate) async fn cmd_info(
         if let (Some(hidden), Some(system), Some(names), Some(is_dir)) =
             (is_hidden_col, is_system_col, name_col, is_dir_col)
         {
-            // Count user-visible entries (not hidden, not system, not $ metadata)
+            // Count user-visible entries (not hidden, not system, not $
+            // metadata)
             let mut win_dirs: u64 = 0;
             let mut win_files: u64 = 0;
 

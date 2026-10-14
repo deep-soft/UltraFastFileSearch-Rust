@@ -125,7 +125,8 @@ impl ParallelMftReader {
         let total_records = frs_to_usize(self.extent_map.total_records());
 
         // Use provided values or adaptive defaults
-        // For HDD, use extent-aware concurrency (fragmentation affects optimal value)
+        // For HDD, use extent-aware concurrency (fragmentation affects optimal
+        // value)
         #[expect(
             clippy::shadow_reuse,
             reason = "idiomatic Option::unwrap_or_else override-resolution: the \
@@ -171,7 +172,8 @@ impl ParallelMftReader {
         );
 
         // Generate read chunks with bitmap skip optimization
-        // For NVMe/SSD, use precise chunk generation to skip unused regions entirely
+        // For NVMe/SSD, use precise chunk generation to skip unused regions
+        // entirely
         let use_direct_chunk_io = matches!(
             self.drive_type,
             crate::platform::DriveType::Nvme | crate::platform::DriveType::Ssd
@@ -212,15 +214,17 @@ impl ParallelMftReader {
             let chunk_bytes = frs_to_usize(effective_records) * record_size;
 
             if use_direct_chunk_io {
-                // NVMe/SSD: Use chunk directly as one I/O operation (no splitting)
-                // This minimizes syscall overhead since there's no seek penalty
+                // NVMe/SSD: Use chunk directly as one I/O operation (no
+                // splitting) This minimizes syscall overhead
+                // since there's no seek penalty
                 io_ops.push_back(IoOp {
                     disk_offset: chunk.disk_offset + usize_to_u64(skip_begin_bytes),
                     size: chunk_bytes,
                     start_frs: chunk.start_frs + chunk.skip_begin,
                 });
             } else {
-                // HDD: Split into io_chunk_size pieces for predictable sequential reads
+                // HDD: Split into io_chunk_size pieces for predictable
+                // sequential reads
                 let mut offset_within_chunk = 0_usize;
                 let mut frs_offset = 0_u64;
 
@@ -266,8 +270,9 @@ impl ParallelMftReader {
             "📊 Generated I/O operations for parallel parsing"
         );
 
-        // Create channel for buffer handoff (bounded to prevent memory explosion)
-        // Each message contains: (buffer_data, start_frs, record_count)
+        // Create channel for buffer handoff (bounded to prevent memory
+        // explosion) Each message contains: (buffer_data, start_frs,
+        // record_count)
         let channel_capacity = num_workers * 2;
         let (tx, rx): WorkerChannel = bounded(channel_capacity);
 
@@ -292,7 +297,8 @@ impl ParallelMftReader {
                 let mut local_parsed = 0_usize;
 
                 // Process buffers until channel closes
-                // Use `mut buffer` to apply fixup in-place (zero-copy optimization)
+                // Use `mut buffer` to apply fixup in-place (zero-copy
+                // optimization)
                 while let Ok(Some((mut buffer, start_frs, record_count))) = worker_rx.recv() {
                     for i in 0..record_count {
                         let frs = start_frs + usize_to_u64(i);
@@ -307,7 +313,8 @@ impl ParallelMftReader {
                         let offset = i * worker_record_size;
                         let end = offset + worker_record_size;
 
-                        // Apply fixup in-place (zero-copy - no per-record allocation!)
+                        // Apply fixup in-place (zero-copy - no per-record
+                        // allocation!)
                         let Some(record_slice) = buffer.get_mut(offset..end) else {
                             break;
                         };
@@ -376,23 +383,26 @@ impl ParallelMftReader {
                 });
 
                 let offset = in_flight_op.op.disk_offset;
-                // SAFETY: The pinned allocation remains in place while the I/O is in
-                // flight; this only projects a mutable reference without moving it.
+                // SAFETY: The pinned allocation remains in place while the I/O
+                // is in flight; this only projects a mutable
+                // reference without moving it.
                 let op_mut = unsafe { in_flight_op.as_mut().get_unchecked_mut() };
                 set_overlapped_offset(&mut op_mut.overlapped, offset);
 
                 let overlapped_ptr = &raw mut op_mut.overlapped;
                 let read_size = op_mut.op.size;
                 let Some(read_slice) = op_mut.buffer.as_mut_slice().get_mut(..read_size) else {
-                    // Unreachable: buffer was sized to ≥ read_size at allocation.
+                    // Unreachable: buffer was sized to ≥ read_size at
+                    // allocation.
                     drop(tx);
                     return Err(MftError::Io(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "to-index-parallel buffer shorter than read_size",
                     )));
                 };
-                // SAFETY: `overlapped_handle` is a live overlapped-capable handle,
-                // the buffer slice spans `read_size` writable bytes in the pinned op,
+                // SAFETY: `overlapped_handle` is a live overlapped-capable
+                // handle, the buffer slice spans `read_size`
+                // writable bytes in the pinned op,
                 // and `overlapped_ptr` points into that same pinned operation.
                 let result = unsafe {
                     ReadFile(
@@ -404,8 +414,9 @@ impl ParallelMftReader {
                 };
 
                 if result.is_err() {
-                    // SAFETY: `GetLastError` reads the calling thread's last-error
-                    // slot and does not dereference any Rust pointers.
+                    // SAFETY: `GetLastError` reads the calling thread's
+                    // last-error slot and does not
+                    // dereference any Rust pointers.
                     let last_error = unsafe { GetLastError() };
                     if last_error != ERROR_IO_PENDING {
                         // Signal workers to stop
@@ -433,8 +444,9 @@ impl ParallelMftReader {
             let mut overlapped_ptr: *mut windows::Win32::System::IO::OVERLAPPED =
                 core::ptr::null_mut();
 
-            // SAFETY: `iocp.raw_handle()` is a live completion port and all out-pointers
-            // reference writable stack storage for the duration of the wait.
+            // SAFETY: `iocp.raw_handle()` is a live completion port and all
+            // out-pointers reference writable stack storage for the
+            // duration of the wait.
             let result = unsafe {
                 GetQueuedCompletionStatus(
                     iocp.raw_handle(),
@@ -502,7 +514,8 @@ impl ParallelMftReader {
                 && let Some(mut completed_op) = op_slot.take()
             {
                 // SAFETY: The `Pin<Box<_>>` is still pinned in this scope; we
-                // only project a mutable reference without moving the allocation.
+                // only project a mutable reference without moving the
+                // allocation.
                 let op_mut = unsafe { completed_op.as_mut().get_unchecked_mut() };
 
                 // Send buffer to workers (copy the data)
@@ -552,8 +565,9 @@ impl ParallelMftReader {
                     });
 
                     let offset = new_in_flight.op.disk_offset;
-                    // SAFETY: The pinned allocation remains in place while the I/O
-                    // is in flight; this only projects a mutable reference.
+                    // SAFETY: The pinned allocation remains in place while the
+                    // I/O is in flight; this only projects
+                    // a mutable reference.
                     let new_op_mut = unsafe { new_in_flight.as_mut().get_unchecked_mut() };
                     set_overlapped_offset(&mut new_op_mut.overlapped, offset);
 
@@ -561,7 +575,8 @@ impl ParallelMftReader {
                     let read_size = new_op_mut.op.size;
                     let Some(read_slice) = new_op_mut.buffer.as_mut_slice().get_mut(..read_size)
                     else {
-                        // Unreachable: buffer was sized to ≥ read_size at allocation.
+                        // Unreachable: buffer was sized to ≥ read_size at
+                        // allocation.
                         drop(tx);
                         return Err(MftError::Io(std::io::Error::new(
                             std::io::ErrorKind::UnexpectedEof,
@@ -569,8 +584,9 @@ impl ParallelMftReader {
                         )));
                     };
                     // SAFETY: `overlapped_handle` is a live overlapped-capable
-                    // handle, the buffer slice spans `read_size` writable bytes in
-                    // the pinned op, and `new_overlapped_ptr` points into that op.
+                    // handle, the buffer slice spans `read_size` writable bytes
+                    // in the pinned op, and
+                    // `new_overlapped_ptr` points into that op.
                     let submit_result = unsafe {
                         ReadFile(
                             overlapped_handle,
@@ -582,7 +598,8 @@ impl ParallelMftReader {
 
                     if submit_result.is_err() {
                         // SAFETY: `GetLastError` reads the calling thread's
-                        // last-error slot and does not dereference Rust pointers.
+                        // last-error slot and does not dereference Rust
+                        // pointers.
                         let last_error = unsafe { GetLastError() };
                         if last_error != ERROR_IO_PENDING {
                             warn!(error = ?last_error, "Failed to queue next read");

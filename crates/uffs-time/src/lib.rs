@@ -357,7 +357,8 @@ mod tests {
     #[test]
     fn filetime_to_unix_micros_filetime_epoch() {
         // FILETIME = 1 (one 100ns tick after 1601-01-01 00:00:00).
-        // Should produce a large negative Unix µs (roughly -11644473600 seconds).
+        // Should produce a large negative Unix µs (roughly -11644473600
+        // seconds).
         let us = filetime_to_unix_micros(1);
         assert!(
             us < -11_000_000_000_000_000,

@@ -322,24 +322,21 @@ impl SearchFilters {
     )]
     pub fn from_params(params: &SearchFilterParams<'_>) -> Self {
         let now_us = now_unix_micros();
-        let extensions: Vec<String> = params
-            .ext_filter
-            .map(|ext_list| {
-                let mut exts = Vec::new();
-                for segment in ext_list.split(',') {
-                    let token = segment.trim().trim_start_matches('.').to_lowercase();
-                    if token.is_empty() {
-                        continue;
-                    }
-                    if let Some(collection) = crate::extensions::expand_collection(&token) {
-                        exts.extend(collection.iter().map(|ext| (*ext).to_owned()));
-                    } else {
-                        exts.push(token);
-                    }
+        let extensions: Vec<String> = params.ext_filter.map_or_default(|ext_list| {
+            let mut exts = Vec::new();
+            for segment in ext_list.split(',') {
+                let token = segment.trim().trim_start_matches('.').to_lowercase();
+                if token.is_empty() {
+                    continue;
                 }
-                exts
-            })
-            .unwrap_or_default();
+                if let Some(collection) = crate::extensions::expand_collection(&token) {
+                    exts.extend(collection.iter().map(|ext| (*ext).to_owned()));
+                } else {
+                    exts.push(token);
+                }
+            }
+            exts
+        });
         if !extensions.is_empty() {
             tracing::trace!(
                 raw_ext_filter = params.ext_filter.unwrap_or_default(),
@@ -359,8 +356,8 @@ impl SearchFilters {
             //
             // Normalize path separators:
             // 1. Replace `/` with `\` (users may use forward slashes).
-            // 2. Collapse runs of `\` into a single `\` (transport layers may double-encode
-            //    backslashes, turning `\` into `\\`).
+            // 2. Collapse runs of `\` into a single `\` (transport layers may
+            //    double-encode backslashes, turning `\` into `\\`).
             let lowered = pat.to_ascii_lowercase();
             normalize_path_separators(&lowered)
         });

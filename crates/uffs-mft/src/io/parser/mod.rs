@@ -152,7 +152,11 @@ mod tests {
             .raw(&[0_u8; 2]) // resident flags + reserved
             .raw(&payload)
             .attr(0x30, file_name_total_len, 0, 0, 0)
-            .raw(&u32::try_from(fn_payload.len()).expect("fits in u32").to_le_bytes()) // value_length
+            .raw(
+                &u32::try_from(fn_payload.len())
+                    .expect("fits in u32")
+                    .to_le_bytes(),
+            ) // value_length
             .raw(&24_u16.to_le_bytes()) // value_offset
             .raw(&[0_u8; 2]) // resident flags + reserved
             .raw(&fn_payload)
@@ -290,7 +294,11 @@ mod tests {
 
         let mut record = RecordBuilder::new(56)
             .attr(0x30, file_name_total_len, 0, 0, 0)
-            .raw(&u32::try_from(fn_payload.len()).expect("fits in u32").to_le_bytes())
+            .raw(
+                &u32::try_from(fn_payload.len())
+                    .expect("fits in u32")
+                    .to_le_bytes(),
+            )
             .raw(&24_u16.to_le_bytes()) // value_offset
             .raw(&[0_u8; 2])
             .raw(&fn_payload)
@@ -728,7 +736,8 @@ mod tests {
         // 2. Header valid, attr offset points exactly at end (empty attr area).
         assert_all_parsers_survive(&RecordBuilder::new(56).build());
 
-        // 3. StandardInformation attr whose declared length overruns the record.
+        // 3. StandardInformation attr whose declared length overruns the
+        //    record.
         assert_all_parsers_survive(
             &RecordBuilder::new(56)
                 .attr(0x10, 0xFFFF_FFFF, 0, 0, 0)
@@ -739,14 +748,14 @@ mod tests {
         //    (exercises the `name_len * 2` → checked_mul conversion).
         assert_all_parsers_survive(&RecordBuilder::new(56).attr(0x30, 24, 0, 0xFF, 0).build());
 
-        // 5. $DATA attr flagged non-resident but the record is too short to hold the
-        //    non-resident size fields (exercises the size-calc block).
+        // 5. $DATA attr flagged non-resident but the record is too short to
+        //    hold the non-resident size fields (exercises the size-calc block).
         assert_all_parsers_survive(&RecordBuilder::new(56).attr(0x80, 16, 1, 0, 0).build());
 
-        // 6. REPARSE_POINT resident attr whose value offset (rd_u16 @ off+20) points
-        //    far past the record (reparse-tag read path). The 16-byte attr prefix puts
-        //    bytes [16..20] at value-offset position; we pad to byte 20 then write
-        //    0xFFFF as the value offset.
+        // 6. REPARSE_POINT resident attr whose value offset (rd_u16 @ off+20)
+        //    points far past the record (reparse-tag read path). The 16-byte
+        //    attr prefix puts bytes [16..20] at value-offset position; we pad
+        //    to byte 20 then write 0xFFFF as the value offset.
         assert_all_parsers_survive(
             &RecordBuilder::new(56)
                 .attr(0xC0, 16, 0, 0, 0)
@@ -764,16 +773,18 @@ mod tests {
             .collect();
         assert_all_parsers_survive(&RecordBuilder::new(56).raw(&garbage).build());
 
-        // 9. Regression pin: a resident attribute whose *declared* length is short
-        //    enough to pass the `offset + length <= max_offset` gate, but too short to
-        //    actually cover the fixed `value_length` (offset+16..20) / `value_offset`
-        //    (offset+20..22) fields the parser reads unconditionally, right at the tail
-        //    of the buffer. `crate::parse::parse_record_to_index` used to read these
-        //    via raw `&data[a..b]` slicing (no bounds check at all beyond the
-        //    attribute-length gate above) and panicked with "range start index ... out
-        //    of range" on exactly this shape. Covers StandardInformation, FileName,
-        //    ReparsePoint, IndexRoot, ObjectId, and the unknown-type catch-all -- every
-        //    arm in direct_index.rs that reads those two fixed fields.
+        // 9. Regression pin: a resident attribute whose *declared* length is
+        //    short enough to pass the `offset + length <= max_offset` gate, but
+        //    too short to actually cover the fixed `value_length`
+        //    (offset+16..20) / `value_offset` (offset+20..22) fields the parser
+        //    reads unconditionally, right at the tail of the buffer.
+        //    `crate::parse::parse_record_to_index` used to read these via raw
+        //    `&data[a..b]` slicing (no bounds check at all beyond the
+        //    attribute-length gate above) and panicked with "range start index
+        //    ... out of range" on exactly this shape. Covers
+        //    StandardInformation, FileName, ReparsePoint, IndexRoot, ObjectId,
+        //    and the unknown-type catch-all -- every arm in direct_index.rs
+        //    that reads those two fixed fields.
         for type_code in [0x10, 0x30, 0xC0, 0x90, 0x40, 0x77] {
             assert_all_parsers_survive(
                 &RecordBuilder::new(56)

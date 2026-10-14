@@ -102,11 +102,12 @@ impl MftIndex {
         }
 
         // Fix total_stream_count for non-directory records that have NO unnamed
-        // $DATA attribute but DO have other streams.  In the single-pass parser,
-        // the first non-$STD_INFO/non-$FILE_NAME attribute becomes first_stream
-        // directly — there is no phantom empty default.  The legacy Rust parser
-        // (`FileRecord::new()`) always counts 1 for the default slot.  The
-        // `has_default_data()` bit lets us subtract that phantom 1.
+        // $DATA attribute but DO have other streams.  In the single-pass
+        // parser, the first non-$STD_INFO/non-$FILE_NAME attribute
+        // becomes first_stream directly — there is no phantom empty
+        // default.  The legacy Rust parser (`FileRecord::new()`) always
+        // counts 1 for the default slot.  The `has_default_data()` bit
+        // lets us subtract that phantom 1.
         //
         // Records created by the unified parser (`new_unified()`) start counts
         // at 0, so the phantom-default correction is not needed for them.
@@ -138,7 +139,8 @@ impl MftIndex {
             .count();
 
         // Also check root specifically for treesize=0 (belt-and-suspenders).
-        // Root should always have treesize > 0 if there are any files on the volume.
+        // Root should always have treesize > 0 if there are any files on the
+        // volume.
         let root_looks_bad = self
             .frs_to_idx_opt(crate::frs::Frs::ROOT)
             .and_then(|root_idx| self.records.get(root_idx))
@@ -179,8 +181,8 @@ impl MftIndex {
         // to help diagnose LIVE scan issues.
         // Interpretation:
         // - If bad_dirs is non-empty here → Failure mode A/C (not stamped)
-        // - If bad_dirs is empty here but CSV shows bad rows → Failure mode B (reset
-        //   after compute)
+        // - If bad_dirs is empty here but CSV shows bad rows → Failure mode B
+        //   (reset after compute)
         let final_bad_dirs: Vec<_> = self
             .records
             .iter()

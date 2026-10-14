@@ -455,13 +455,13 @@ fn spawn_ipc_servers(
     // never `.abort()`-ed.  Rationale (mirrors the parent fn rustdoc):
     //
     //   * **Owner:** the binding `_pipe_task` lives until end-of-scope in
-    //     `spawn_ipc_servers`; the task itself outlives the binding (Tokio detaches
-    //     a spawned task once its `JoinHandle` drops).
+    //     `spawn_ipc_servers`; the task itself outlives the binding (Tokio
+    //     detaches a spawned task once its `JoinHandle` drops).
     //   * **Shutdown:** none cooperative — the pipe `accept` loop has no
     //     cancellation hook; the `await_shutdown_then_force_exit` watchdog
     //     `process::exit`s the daemon, terminating the task with the runtime.
-    //   * **Error obs.:** body logs via `tracing::error!`; outer `JoinHandle` drop
-    //     discards the result.
+    //   * **Error obs.:** body logs via `tracing::error!`; outer `JoinHandle`
+    //     drop discards the result.
     //   * **Cancel behavior:** process-exit only.
     //
     // The sibling AF_UNIX task IS returned + held + `.abort()`-ed —

@@ -185,7 +185,8 @@ fn resolve_drive_subdirs(
             continue;
         }
 
-        // Find the best MFT file in this subdir (prefer .iocp > .uffs > .bin > .raw).
+        // Find the best MFT file in this subdir (prefer .iocp > .uffs > .bin >
+        // .raw).
         if let Some(best) = find_best_mft_in_dir(&path) {
             results.push(best);
         }

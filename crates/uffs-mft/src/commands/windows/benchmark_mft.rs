@@ -114,7 +114,8 @@ pub(crate) async fn cmd_benchmark_mft(drive: uffs_mft::platform::DriveLetter) ->
     let sector_size = u32_as_usize(vol_data.bytes_per_sector);
     let bytes_per_cluster = vol_data.bytes_per_cluster;
 
-    // Allocate sector-aligned buffer (AlignedBuffer uses SECTOR_SIZE internally)
+    // Allocate sector-aligned buffer (AlignedBuffer uses SECTOR_SIZE
+    // internally)
     let mut buffer = AlignedBuffer::new(BUFFER_SIZE);
 
     // Storage for first and last 4 bytes (proof of complete read)

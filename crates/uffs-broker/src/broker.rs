@@ -515,8 +515,9 @@ fn get_pipe_client_pid(pipe: windows::Win32::Foundation::HANDLE) -> Option<u32> 
 
     let mut pid: u32 = 0;
 
-    // SAFETY: `pipe` is a valid server-side pipe HANDLE with an active connection;
-    // `pid` is a stack-allocated u32 whose exclusive mutable pointer is passed.
+    // SAFETY: `pipe` is a valid server-side pipe HANDLE with an active
+    // connection; `pid` is a stack-allocated u32 whose exclusive mutable
+    // pointer is passed.
     let result = unsafe { GetNamedPipeClientProcessId(pipe, &raw mut pid) };
 
     (result.is_ok() && pid != 0).then_some(pid)
@@ -721,7 +722,8 @@ fn write_pipe(pipe: windows::Win32::Foundation::HANDLE, buf: &[u8]) -> anyhow::R
     if let Err(win_err) = result {
         anyhow::bail!("WriteFile failed: {win_err}");
     }
-    // SAFETY: `pipe` is the same valid, still-open pipe HANDLE written to above.
+    // SAFETY: `pipe` is the same valid, still-open pipe HANDLE written to
+    // above.
     if let Err(win_err) = unsafe { FlushFileBuffers(pipe) } {
         anyhow::bail!("FlushFileBuffers failed: {win_err}");
     }

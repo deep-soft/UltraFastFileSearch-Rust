@@ -19,6 +19,19 @@
 //! `CreateFileW` / `DeviceIoControl` calls, fixed-size record-decode loop — is
 //! a single cohesive unit that benefits from living together.
 
+// zerocopy-derive emits an uninhabited `enum ẕ<field> {}` per field for every
+// `#[derive(FromBytes)]` in this module, inside a generated `#[allow(...)]`
+// list that lacks `clippy::empty_enums` (google/zerocopy#3414, fix proposed in
+// #3600, tracked here in #617).  Since never_type stabilized on nightly
+// 2026-08-24 that lint fires on our derive lines.  The derive output is a
+// sibling item, so an attribute on each struct cannot reach it; the module is
+// the narrowest scope that does.  `expect`, not `allow`: the day a zerocopy
+// release carries the fix, this expectation goes unfulfilled, fails the build,
+// and must be deleted.  Owner ruling 2026-10-13.
+#![expect(
+    clippy::empty_enums,
+    reason = "zerocopy-derive FromBytes expansion (google/zerocopy#3414 / #3600, UFFS #617)"
+)]
 #![expect(
     unsafe_code,
     reason = "FFI: Windows API calls (CreateFileW, DeviceIoControl, CloseHandle)"
@@ -154,8 +167,8 @@ fn open_volume_handle(volume: crate::platform::DriveLetter) -> Result<HANDLE, st
         .collect();
     // USN Journal operations require GENERIC_READ access
     // SAFETY: `wide` is a NUL-terminated UTF-16 path buffer that lives for the
-    // duration of the call, optional parameters are `None`, and ownership of any
-    // returned handle is transferred to the caller.
+    // duration of the call, optional parameters are `None`, and ownership of
+    // any returned handle is transferred to the caller.
     let handle = unsafe {
         CreateFileW(
             PCWSTR::from_raw(wide.as_ptr()),

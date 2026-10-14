@@ -60,7 +60,8 @@ fn build_drive(file_names: &[&str]) -> DriveCompactIndex {
     let ext_index = ExtensionIndex::build(&records);
     let count = u32::try_from(records.len()).expect("fixture record count fits u32");
     let frs_to_compact: Vec<u32> = (0..count).collect();
-    // Fields in struct-definition order (clippy::inconsistent_struct_constructor).
+    // Fields in struct-definition order
+    // (clippy::inconsistent_struct_constructor).
     DriveCompactIndex {
         letter: uffs_mft::platform::DriveLetter::T,
         records: ColumnStorage::from_vec(records),
@@ -98,8 +99,8 @@ fn delta_none_delegates_to_base_search() {
 fn create_via_delta_becomes_searchable() {
     let mut drive = build_drive(&["report.txt"]);
     let fold = drive.fold;
-    // Simulate a create of "summary.log" at idx 2 (record need not exist for the
-    // candidate set; trigram_search is a pre-filter over postings).
+    // Simulate a create of "summary.log" at idx 2 (record need not exist for
+    // the candidate set; trigram_search is a pre-filter over postings).
     let delta = drive.delta.get_or_insert_with(Default::default);
     let tris = needle_trigrams("summary.log", fold).unwrap();
     delta.add_record(2, &tris, 0, 0);

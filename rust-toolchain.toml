@@ -32,28 +32,29 @@
 #     `cargo update -p ethnum --precise 1.5.3` (or newer), never a
 #     toolchain downgrade.
 #
-#   * nightly-2026-08-25 and later (as of 2026-08-29) fail our clippy gate
-#     with 14 × `clippy::empty_enums` ("enum with no variants") at every
-#     `#[derive(FromBytes)]` site in uffs-mft.  Root cause: rust#155499
-#     stabilized `never_type` on 2026-08-24, which turns on the guard
-#     inside `empty_enums`, and zerocopy-derive 0.8.56 emits one
-#     uninhabited `enum ẕ<field> {}` per field inside a generated
-#     `#[allow(...)]` block that lacks that lint (call-site spans, so it
-#     lands on OUR derive lines).  Upstream: google/zerocopy#3414 (fix
-#     proposed in google/zerocopy#3600); tracked here in #617.  Policy:
-#     no local `#[allow]`, no source patch of a crate we do not own —
-#     the pin holds until a zerocopy release carries the fix, then the
-#     resolution is a dependency bump (the ethnum pattern), never a lint
-#     exception.
-#   * nightly-2026-08-22..24 were additionally rejected by toolchain-sync
-#     on 2026-08-29: clippy-driver exited 101 on the `uffs-ci-pipeline`
-#     test target (no diagnostic in the log tail).  Not root-caused —
-#     moot while the 08-25+ block above stands; re-check on the next bump.
+#   * nightly-2026-08-25 and later fire `clippy::empty_enums` at every
+#     `#[derive(FromBytes)]` site: rust#155499 stabilized `never_type` on
+#     2026-08-24, and zerocopy-derive emits one uninhabited `enum ẕ<field> {}`
+#     per field inside a generated `#[allow(...)]` block that lacks that
+#     lint (google/zerocopy#3414, fix proposed in #3600; UFFS #617).  Held
+#     at 2026-08-21 from 2026-08-29 to 2026-10-13.  Owner ruling 2026-10-13:
+#     bump anyway, with a module-level `#![expect(clippy::empty_enums)]` in
+#     the four uffs-mft modules that derive FromBytes (ntfs/boot_sector,
+#     ntfs/metadata, ntfs/records, usn/windows).  The derive output is a
+#     sibling item, so a per-struct attribute cannot reach it.  `expect`
+#     self-expires: once a zerocopy release carries the fix, the four
+#     expectations go unfulfilled and fail the build until removed.  No
+#     source patch of zerocopy.  Our own empty-enum FFI handle
+#     (uffs-vss-requestor `ffi::Session`) was a real finding and became
+#     the Rustonomicon opaque-struct pattern instead.
+#   * nightly-2026-08-22..24 crashed clippy-driver on the
+#     `uffs-ci-pipeline` test target on 2026-08-29; nightly-2026-10-14 does
+#     not (toolchain-sync validated host, Windows and Linux on 2026-10-13).
 #
 # Run `just toolchain-sync` to re-attempt a channel bump; the CI
 # pipeline auto-refreshes on `ship --fresh` unless `--skip-toolchain-sync`
 # is passed.
-channel = "nightly-2026-08-21"
+channel = "nightly-2026-10-14"
 
 # Specify components that should always be available
 components = [

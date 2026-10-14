@@ -125,12 +125,13 @@ impl MftIndex {
             let name_offset = index.add_name(&parsed.name);
             let name_len = len_to_u16(parsed.name.len());
             let is_ascii = parsed.name.is_ascii();
-            // Extract and intern extension (must be done before get_or_create borrows
-            // mutably)
+            // Extract and intern extension (must be done before get_or_create
+            // borrows mutably)
             let extension_id = index.intern_extension(&parsed.name);
 
-            // Get or create the record and set all basic fields in a block scope
-            // to end the mutable borrow before adding additional names/streams
+            // Get or create the record and set all basic fields in a block
+            // scope to end the mutable borrow before adding
+            // additional names/streams
             {
                 let record = index.get_or_create(parsed_frs);
 
@@ -139,28 +140,33 @@ impl MftIndex {
                 record.lsn = parsed.lsn;
                 record.namespace = parsed.namespace;
 
-                // Set $FILE_NAME timestamps (often differ from $STANDARD_INFORMATION)
+                // Set $FILE_NAME timestamps (often differ from
+                // $STANDARD_INFORMATION)
                 record.fn_created = parsed.fn_created;
                 record.fn_modified = parsed.fn_modified;
                 record.fn_accessed = parsed.fn_accessed;
                 record.fn_mft_changed = parsed.fn_mft_changed;
 
-                // Set $STANDARD_INFORMATION using the canonical conversion method.
-                // This is the single source of truth for ExtendedStandardInfo → StandardInfo.
+                // Set $STANDARD_INFORMATION using the canonical conversion
+                // method. This is the single source of truth
+                // for ExtendedStandardInfo → StandardInfo.
                 record.stdinfo = StandardInfo::from_extended(&parsed.std_info);
                 record.stdinfo.set_directory(parsed.is_directory);
 
-                // Set name info (offset and extension_id were computed before borrowing record)
+                // Set name info (offset and extension_id were computed before
+                // borrowing record)
                 record.first_name.name =
                     IndexNameRef::new(name_offset, name_len, is_ascii, extension_id);
                 record.first_name.parent_frs = parsed_parent_frs;
-                // Note: name_count is set AFTER filtering additional names to avoid
-                // counting duplicates. See the code after this block.
+                // Note: name_count is set AFTER filtering additional names to
+                // avoid counting duplicates. See the code after
+                // this block.
 
                 // Set reparse tag (0 if not a reparse point)
                 record.reparse_tag = parsed.reparse_tag;
 
-                // Set P3 forensic fields (is_deleted, is_corrupt, is_extension, base_frs)
+                // Set P3 forensic fields (is_deleted, is_corrupt, is_extension,
+                // base_frs)
                 record.set_forensic_flags(
                     parsed.is_deleted,
                     parsed.is_corrupt,
@@ -169,13 +175,16 @@ impl MftIndex {
                 record.base_frs = parsed_base_frs;
 
                 // Set size and flags
-                // For directories, use parsed.size/allocated_size which includes
-                // $INDEX_ROOT + $INDEX_ALLOCATION while excluding $BITMAP.
-                // For files, use the default stream size
-                // Note: stream_count is set AFTER filtering named streams to avoid
-                // counting internal Windows streams. See the code after this block.
+                // For directories, use parsed.size/allocated_size which
+                // includes $INDEX_ROOT + $INDEX_ALLOCATION
+                // while excluding $BITMAP. For files, use the
+                // default stream size Note: stream_count is set
+                // AFTER filtering named streams to avoid
+                // counting internal Windows streams. See the code after this
+                // block.
                 if parsed.is_directory {
-                    // Directory size comes from index attributes, already in parsed.size
+                    // Directory size comes from index attributes, already in
+                    // parsed.size
                     record.first_stream.size.length = parsed.size;
                     record.first_stream.size.allocated = parsed.allocated_size;
                 } else if let Some(default_stream) =
@@ -200,17 +209,20 @@ impl MftIndex {
 
             // Store additional names (hardlinks) in the links vector.
             // Skip the name that matches first_name (the primary/best name).
-            // Note: `parsed.name` is the BEST name (selected by `PrimaryNameTracker`),
-            // which may not be `parsed.names[0]`.  Filter by matching name+parent;
-            // the parent comparison is now structural typed-`ParentFrs` equality.
+            // Note: `parsed.name` is the BEST name (selected by
+            // `PrimaryNameTracker`), which may not be
+            // `parsed.names[0]`.  Filter by matching name+parent;
+            // the parent comparison is now structural typed-`ParentFrs`
+            // equality.
             let additional_names: Vec<_> = parsed
                 .names
                 .iter()
                 .filter(|n| !(n.name == parsed.name && n.parent_frs == parsed.parent_frs))
                 .collect();
 
-            // Update name_count to reflect actual stored names (1 primary + additional)
-            // This must be done AFTER filtering to avoid counting duplicates
+            // Update name_count to reflect actual stored names (1 primary +
+            // additional) This must be done AFTER filtering to
+            // avoid counting duplicates
             let actual_name_count = len_to_u16((1 + additional_names.len()).max(1));
             index.get_or_create(parsed_frs).name_count = actual_name_count;
 
@@ -244,11 +256,12 @@ impl MftIndex {
             //   - Empty name (default stream)
             //   - Internal Windows streams (names starting with `$UPPERCASE`)
             //
-            // Internal streams are NOT emitted as ADS rows, but they ARE required for
-            // precise tree-metrics accounting. We keep them as individual
-            // stream entries because proportional size distribution uses
-            // integer division:     delta(a + b) != delta(a) + delta(b)
-            // So pre-summing internal stream sizes causes 1-4 byte tree-size skews.
+            // Internal streams are NOT emitted as ADS rows, but they ARE
+            // required for precise tree-metrics accounting. We keep
+            // them as individual stream entries because
+            // proportional size distribution uses integer division:
+            // delta(a + b) != delta(a) + delta(b) So pre-summing
+            // internal stream sizes causes 1-4 byte tree-size skews.
             let mut internal_streams_size = 0_u64;
             let mut internal_streams_allocated = 0_u64;
             let mut first_internal_stream = NO_ENTRY;
@@ -296,11 +309,13 @@ impl MftIndex {
             }
 
             // Set total_stream_count to include all streams for tree metrics.
-            // This includes internal Windows streams like $REPARSE_POINT and $OBJECT_ID.
+            // This includes internal Windows streams like $REPARSE_POINT and
+            // $OBJECT_ID.
             let total_stream_count = len_to_u16(parsed.streams.len().max(1));
 
-            // Set stream_count to reflect only user-visible stored streams (1 default +
-            // named) This is used for user-facing output (DataFrame export)
+            // Set stream_count to reflect only user-visible stored streams (1
+            // default + named) This is used for user-facing output
+            // (DataFrame export)
             let actual_stream_count = len_to_u16((1 + named_streams.len()).max(1));
 
             let record = index.get_or_create(parsed_frs);
@@ -378,7 +393,8 @@ impl MftIndex {
                     index.frs_to_idx[parent_frs_usize]
                 };
 
-                // Add child entry with name_index for proportional share calculation
+                // Add child entry with name_index for proportional share
+                // calculation
                 let child_idx = len_to_u32(index.children.len());
 
                 // Get parent's first_child and update
@@ -386,8 +402,9 @@ impl MftIndex {
                 let old_first_child = parent.first_child;
                 parent.first_child = child_idx;
 
-                // Store the parsed name index directly; traversal converts it to the
-                // corresponding proportional-share slot when needed.
+                // Store the parsed name index directly; traversal converts it
+                // to the corresponding proportional-share slot
+                // when needed.
                 index.children.push(ChildInfo {
                     next_entry: old_first_child,
                     _pad0: [0; 4],
@@ -500,7 +517,8 @@ impl MftIndex {
         // just the tree metrics by clearing and recomputing.
         let insert_start = Instant::now();
         let mut index = Self::from_parsed_records(volume, records);
-        // Saturating cast: u128 -> u64 (overflow impossible for realistic durations)
+        // Saturating cast: u128 -> u64 (overflow impossible for realistic
+        // durations)
         let full_build_ms = u64::try_from(insert_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         // Phase 2: Time tree metrics separately by clearing and recomputing
@@ -518,8 +536,8 @@ impl MftIndex {
 
         let total_ms = u64::try_from(total_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-        // Estimate the other phases based on the full build time minus tree metrics
-        // This is approximate but gives a reasonable breakdown
+        // Estimate the other phases based on the full build time minus tree
+        // metrics This is approximate but gives a reasonable breakdown
         let index_only_ms = full_build_ms.saturating_sub(tree_metrics_ms);
 
         let timing = IndexBuildTiming {

@@ -384,8 +384,9 @@ mod windows_impl {
             // the very "looks hung" symptom this rework set out to remove.
             spinner_while("Restarting the index daemon", restart_daemon);
             // A daemon that needs elevation to read the MFT (no broker) cannot
-            // come back from this non-elevated restart. Say so with the one-time
-            // fix instead of leaving a silently-stopped daemon.
+            // come back from this non-elevated restart. Say so with the
+            // one-time fix instead of leaving a silently-stopped
+            // daemon.
             if !daemon_running() {
                 println!(
                     "\u{26a0} The index daemon was stopped for the update and couldn't restart\n\

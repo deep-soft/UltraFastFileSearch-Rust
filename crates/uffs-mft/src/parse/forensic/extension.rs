@@ -141,8 +141,9 @@ pub(super) fn parse_extension_record(
 
                 if is_i30 {
                     // $I30:$BITMAP is NOT included in directory size.
-                    // $BITMAP is metadata (used/free slots in the directory index),
-                    // not part of directory byte size. Skip this attribute.
+                    // $BITMAP is metadata (used/free slots in the directory
+                    // index), not part of directory byte
+                    // size. Skip this attribute.
                     if matches!(
                         AttributeType::from_u32(attr_header.type_code),
                         Some(AttributeType::Bitmap)
@@ -150,7 +151,8 @@ pub(super) fn parse_extension_record(
                         // Skip $I30:$BITMAP - don't add to dir_index_size
                     } else {
                         // Accumulate $I30 sizes for directory
-                        // Only $INDEX_ROOT and $INDEX_ALLOCATION contribute to directory size
+                        // Only $INDEX_ROOT and $INDEX_ALLOCATION contribute to
+                        // directory size
                         if attr_header.is_non_resident == 0 {
                             let value_length = u64::from(u32::from_le_bytes(
                                 data.get(offset + 16..offset + 20)
@@ -237,8 +239,8 @@ pub(super) fn parse_extension_record(
                 | AttributeType::AttributeList,
             ) => {
                 // Handle other stream-creating attributes
-                // Note: AttributeList (0x20) IS counted as a stream (catch-all below).
-                // case
+                // Note: AttributeList (0x20) IS counted as a stream (catch-all
+                // below). case
                 let attr_name = if attr_header.name_length > 0 {
                     let name_offset = offset + usize::from(attr_header.name_offset);
                     let name_len = usize::from(attr_header.name_length);
@@ -317,7 +319,8 @@ pub(super) fn parse_extension_record(
                 });
             }
             _ => {
-                // All remaining attribute types are counted as streams (catch-all).
+                // All remaining attribute types are counted as streams
+                // (catch-all).
                 let type_code = attr_header.type_code;
                 let attr_name = if attr_header.name_length > 0 {
                     let name_offset = offset + usize::from(attr_header.name_offset);

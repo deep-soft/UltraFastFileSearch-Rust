@@ -189,7 +189,8 @@ const DPAPI_ENTROPY: &[u8] = b"uffs-cache-v1";
 #[cfg(target_os = "windows")]
 fn dpapi_write_key(path: &std::path::Path, key: &[u8; KEY_SIZE]) -> io::Result<()> {
     let encrypted = dpapi_protect(key)?;
-    // Replace any stale blob first so create_new can't follow a planted symlink.
+    // Replace any stale blob first so create_new can't follow a planted
+    // symlink.
     if path.exists() {
         let _ignore = std::fs::remove_file(path);
     }

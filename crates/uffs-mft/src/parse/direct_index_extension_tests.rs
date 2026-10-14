@@ -167,8 +167,9 @@ fn dir_index_zero_extension_values() {
     // Base with existing values
     index.records.push(create_test_record(100, 8192, 16384));
 
-    // This simulates what would happen if the code path were taken with 0 values
-    // (In reality, the if dir_index_size > 0 check prevents this branch)
+    // This simulates what would happen if the code path were taken with 0
+    // values (In reality, the if dir_index_size > 0 check prevents this
+    // branch)
     merge_dir_index(&mut index.records[0], 0, 0);
 
     // Base values should remain unchanged (0 + 8192 = 8192)
@@ -208,8 +209,8 @@ fn dir_index_saturating_add_no_overflow() {
 #[test]
 fn dir_index_regression_old_unconditional_add_bug() {
     // This test demonstrates the bug that was fixed
-    // OLD CODE (buggy): Always used += , losing data when extension arrives first
-    // NEW CODE (correct): Uses snapshot/restore pattern
+    // OLD CODE (buggy): Always used += , losing data when extension arrives
+    // first NEW CODE (correct): Uses snapshot/restore pattern
 
     let mut index = MftIndex::new(crate::platform::DriveLetter::C);
     index.frs_to_idx.resize(101, NO_ENTRY);
@@ -225,9 +226,9 @@ fn dir_index_regression_old_unconditional_add_bug() {
     // first_stream.size.length = 0 + 4096 = 4096 ✓ (correct by accident)
 
     // Base overwrites with new SizeInfo = {length: 8192, allocated: 16384}
-    // This is simulated by directly setting values (what the old base parser did)
-    // OLD CODE would do: record.first_stream.size = SizeInfo { length: 8192,
-    // allocated: 16384 } This LOSES the extension data!
+    // This is simulated by directly setting values (what the old base parser
+    // did) OLD CODE would do: record.first_stream.size = SizeInfo { length:
+    // 8192, allocated: 16384 } This LOSES the extension data!
 
     // NEW CODE prevents this by accumulating:
     let snapshot = index.records[0].first_stream.size;

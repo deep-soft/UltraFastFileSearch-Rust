@@ -384,8 +384,8 @@ fn snapshot_cache(host: &dyn Host, guard: &mut RunGuard<'_>, cfg: &StageCfg) -> 
             let backup = backup_dir.join(format!("{drive}{suffix}"));
             host.copy_file(&src, &backup)
                 .map_err(|err| BenchError::io(&src, err))?;
-            let restore_src = src.clone();
-            let restore_backup = backup.clone();
+            let restore_src = src;
+            let restore_backup = backup;
             guard.register(format!("cache {drive}{suffix}"), move |restore_host| {
                 restore_host
                     .copy_file(&restore_backup, &restore_src)

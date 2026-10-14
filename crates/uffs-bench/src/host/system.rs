@@ -34,8 +34,8 @@ impl SystemHost {
 /// security or control-flow decision — so a lossy decode is the correct,
 /// non-failing choice and stays deterministic for fingerprint diffing.
 fn decode_console(bytes: &[u8]) -> String {
-    // AUDIT-OK(bytes): display/log-only capture of arbitrary child output; never a
-    // parse or security decision.
+    // AUDIT-OK(bytes): display/log-only capture of arbitrary child output;
+    // never a parse or security decision.
     String::from_utf8_lossy(bytes).into_owned()
 }
 
@@ -116,13 +116,14 @@ impl Host for SystemHost {
     fn is_elevated(&self) -> bool {
         // Best-effort, dependency-free probe through the same process seam the
         // host already uses. Honest token/uid inspection would need `unsafe`
-        // FFI (which the workspace denies) or a heavyweight crate; this value is
-        // only recorded in the environment fingerprint, never used to gate a
-        // decision, so a process probe is the correct, minimal trade-off.
+        // FFI (which the workspace denies) or a heavyweight crate; this value
+        // is only recorded in the environment fingerprint, never used
+        // to gate a decision, so a process probe is the correct,
+        // minimal trade-off.
         #[cfg(windows)]
         {
-            // The High Mandatory Level group SID (`S-1-16-12288`) appears in the
-            // token only when the process is running elevated.
+            // The High Mandatory Level group SID (`S-1-16-12288`) appears in
+            // the token only when the process is running elevated.
             self.run("whoami", &["/groups"])
                 .is_ok_and(|out| out.stdout.contains("S-1-16-12288"))
         }
@@ -140,8 +141,9 @@ impl Host for SystemHost {
     fn read_key(&self) -> io::Result<char> {
         // A full-line read is a deliberately simple stand-in for raw single-key
         // input: it needs no extra dependency or `unsafe` termios handling and
-        // is sufficient for the gate prompts (the operator presses a letter then
-        // Enter). True raw single-key capture is a later UX refinement.
+        // is sufficient for the gate prompts (the operator presses a letter
+        // then Enter). True raw single-key capture is a later UX
+        // refinement.
         let mut line = String::new();
         io::stdin().read_line(&mut line)?;
         Ok(line.trim().chars().next().unwrap_or('\n'))

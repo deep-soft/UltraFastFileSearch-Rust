@@ -111,7 +111,8 @@ fn win_verify_trust(exe_path: &str) -> bool {
 
     // Always release the trust state, whatever the verdict.
     data.dwStateAction = WTD_STATEACTION_CLOSE;
-    // SAFETY: same `data` / `action` from the VERIFY call; CLOSE frees its state.
+    // SAFETY: same `data` / `action` from the VERIFY call; CLOSE frees its
+    // state.
     let _close: i32 = unsafe {
         WinVerifyTrust(
             HWND::default(),

@@ -173,9 +173,10 @@ impl IndexManager {
                 }
             }
             // Explicit early drop so the read lock is released
-            // before the `Vec<(uffs_mft::platform::DriveLetter, ShardState)>` is returned
-            // and the surrounding block exits.  Tightens the read-lock
-            // hold time for any concurrent dispatcher while keeping
+            // before the `Vec<(uffs_mft::platform::DriveLetter, ShardState)>`
+            // is returned and the surrounding block exits.
+            // Tightens the read-lock hold time for any concurrent
+            // dispatcher while keeping
             // clippy::significant_drop_tightening satisfied.
             drop(guard);
             to_demote

@@ -259,8 +259,8 @@ impl ParsedColumns {
         };
 
         // Create one row per (name × stream) combination
-        // Filter out internal Windows streams ($OBJECT_ID, $EA_INFORMATION, etc.)
-        // to produce correct directory size output
+        // Filter out internal Windows streams ($OBJECT_ID, $EA_INFORMATION,
+        // etc.) to produce correct directory size output
         for name_info in &names {
             for stream_info in &streams {
                 // Skip internal Windows streams (matches the legacy baseline
@@ -268,7 +268,8 @@ impl ParsedColumns {
                 if crate::ntfs::is_internal_windows_stream(&stream_info.name) {
                     continue;
                 }
-                // Polars-bound `Vec<u64>` columns — downcast at the push boundary.
+                // Polars-bound `Vec<u64>` columns — downcast at the push
+                // boundary.
                 self.frs.push(record.frs.raw());
                 self.parent_frs.push(name_info.parent_frs.raw());
                 // legacy-output parity: directories have empty name
@@ -277,7 +278,8 @@ impl ParsedColumns {
                 } else {
                     self.name.push(name_info.name.clone());
                 }
-                // Use stream-specific size for ADS, file size for default stream
+                // Use stream-specific size for ADS, file size for default
+                // stream
                 let (size, alloc) = if stream_info.name.is_empty() {
                     (record.size, record.allocated_size)
                 } else {
@@ -290,7 +292,8 @@ impl ParsedColumns {
                 self.accessed.push(record.std_info.accessed);
                 self.mft_changed.push(record.std_info.mft_changed);
                 self.is_directory.push(record.is_directory);
-                // For expanded records, counts are 1 (this row = one link + one stream)
+                // For expanded records, counts are 1 (this row = one link + one
+                // stream)
                 self.name_count.push(1);
                 self.stream_count.push(1);
                 self.stream_name.push(stream_info.name.clone());
@@ -396,9 +399,11 @@ impl ParsedColumns {
     ///   (standard behavior). If `false`, one row per FRS.
     #[must_use]
     pub fn from_records(records: Vec<ParsedRecord>, expand_links: bool) -> Self {
-        // Estimate capacity using integer arithmetic to avoid float precision issues
+        // Estimate capacity using integer arithmetic to avoid float precision
+        // issues
         let estimated_capacity = if expand_links {
-            // Rough estimate: assume average of 1.2 links per file (len * 6 / 5)
+            // Rough estimate: assume average of 1.2 links per file (len * 6 /
+            // 5)
             records.len().saturating_mul(6) / 5
         } else {
             records.len()

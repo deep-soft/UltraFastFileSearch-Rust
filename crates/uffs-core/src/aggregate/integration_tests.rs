@@ -536,7 +536,8 @@ fn terms_drilldown_preserves_query_predicates() {
     if let AggregateResultData::Buckets { rows, .. } = &output.response.results[0].data {
         let rs = rows.iter().find(|r| r.key == "rs").expect("rs bucket");
 
-        // Should have 2 predicates: size>=100 (from query) + extension=rs (bucket)
+        // Should have 2 predicates: size>=100 (from query) + extension=rs
+        // (bucket)
         assert_eq!(rs.drilldown.len(), 2, "expected 2 drilldown preds");
         assert_eq!(rs.drilldown[0].field, "size");
         assert_eq!(rs.drilldown[0].op, "gte");

@@ -48,8 +48,8 @@ struct QuietGuard;
 impl Drop for QuietGuard {
     fn drop(&mut self) {
         QUIET.store(false, core::sync::atomic::Ordering::Relaxed);
-        // Restore the thin client's auto-start retry chatter (a quiet reload may
-        // have (re)started the daemon, driving that connect loop).
+        // Restore the thin client's auto-start retry chatter (a quiet reload
+        // may have (re)started the daemon, driving that connect loop).
         uffs_client::connect_sync::set_quiet_autostart(false);
     }
 }

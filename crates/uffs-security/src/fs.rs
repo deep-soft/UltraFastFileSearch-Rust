@@ -410,7 +410,8 @@ impl FileLock {
         };
 
         loop {
-            // SAFETY: flock is a well-defined POSIX syscall operating on a valid fd.
+            // SAFETY: flock is a well-defined POSIX syscall operating on a
+            // valid fd.
             #[expect(unsafe_code, reason = "flock requires unsafe FFI call")]
             let result = unsafe { libc::flock(file.as_raw_fd(), operation) };
 

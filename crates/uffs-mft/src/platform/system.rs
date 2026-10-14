@@ -523,14 +523,15 @@ pub fn detect_drive_type(drive_letter: DriveLetter) -> DriveType {
             let mut buffer = [0_u8; 1024];
             let mut bytes_returned: u32 = 0;
 
-            // `buffer` is a fixed-size 1024-byte stack array; len is compile-time
-            // known and always fits in u32.
+            // `buffer` is a fixed-size 1024-byte stack array; len is
+            // compile-time known and always fits in u32.
             let buffer_len_u32 = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
 
-            // SAFETY: `drive_handle` is a live device handle, `query` contains the
-            // exact input bytes Windows expects for this IOCTL, `buffer` is a
-            // writable output buffer of the advertised length, and
-            // `bytes_returned` is a valid out-parameter.
+            // SAFETY: `drive_handle` is a live device handle, `query` contains
+            // the exact input bytes Windows expects for this IOCTL,
+            // `buffer` is a writable output buffer of the
+            // advertised length, and `bytes_returned` is a valid
+            // out-parameter.
             let result = unsafe {
                 DeviceIoControl(
                     drive_handle,
@@ -583,9 +584,10 @@ pub fn detect_drive_type(drive_letter: DriveLetter) -> DriveType {
 
         let mut bytes_returned: u32 = 0;
 
-        // SAFETY: `drive_handle` is a live device handle, `query` and `descriptor`
-        // point to initialized storage matching the advertised sizes, and
-        // `bytes_returned` is a valid out-parameter.
+        // SAFETY: `drive_handle` is a live device handle, `query` and
+        // `descriptor` point to initialized storage matching the
+        // advertised sizes, and `bytes_returned` is a valid
+        // out-parameter.
         let result = unsafe {
             DeviceIoControl(
                 drive_handle,

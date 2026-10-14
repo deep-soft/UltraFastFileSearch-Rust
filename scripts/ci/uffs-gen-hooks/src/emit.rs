@@ -963,7 +963,8 @@ order     = 20
         assert!(out.contains("if has_staged_vet && command -v cargo-vet >/dev/null 2>&1; then"));
         assert!(out.contains("spawn \"vet-fmt\" bash scripts/hooks/_check_vet_fmt.sh"));
 
-        // Rust-staged group: ONE block, three spawns inside, manifest-order sorted.
+        // Rust-staged group: ONE block, three spawns inside, manifest-order
+        // sorted.
         assert!(
             out.contains("if has_staged_rs; then"),
             "missing rust-staged guard:\n{out}"

@@ -414,7 +414,8 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
     // Names (original case only)
     buf.extend_from_slice(&index.names);
 
-    // Children CSR — bulk cast (u32 slices → &[u8] via bytemuck, zero-copy on LE)
+    // Children CSR — bulk cast (u32 slices → &[u8] via bytemuck, zero-copy on
+    // LE)
     buf.extend_from_slice(bytemuck::cast_slice(csr_offsets));
     buf.extend_from_slice(bytemuck::cast_slice(csr_values));
 
@@ -1455,7 +1456,8 @@ pub fn ensure_compact_cached(
     mft_index: &uffs_mft::MftIndex,
 ) -> DriveCompactIndex {
     // Try loading existing compact cache (epoch check catches stale caches).
-    // Not TTL-only: we have the MftIndex, so mtime validation is cheap & correct.
+    // Not TTL-only: we have the MftIndex, so mtime validation is cheap &
+    // correct.
     if let Some(cached) = try_load_for_ensure(drive_letter, mft_index.build_epoch) {
         return cached;
     }

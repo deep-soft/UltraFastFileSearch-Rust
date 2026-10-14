@@ -50,7 +50,8 @@ use uffs_version as _;
 async fn setup_client() -> rmcp::service::RunningService<rmcp::RoleClient, impl ClientHandler> {
     let (server_io, client_io) = tokio::io::duplex(8192);
 
-    // Server side — spawn in background and keep alive until client disconnects.
+    // Server side — spawn in background and keep alive until client
+    // disconnects.
     let server = UffsMcpServer::new_unconnected();
     tokio::spawn(async move {
         let server_handle = server.serve(server_io).await.unwrap();

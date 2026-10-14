@@ -455,7 +455,7 @@ mod proptest_tests {
     use super::*;
 
     proptest! {
-        /// apply_fixup should never panic regardless of input
+        /// `apply_fixup` should never panic regardless of input
         #[test]
         fn apply_fixup_never_panics(mut data in prop::collection::vec(any::<u8>(), 0..2048)) {
             // Should return true or false, never panic
@@ -467,7 +467,7 @@ mod proptest_tests {
         }
 
 
-        /// create_placeholder_record should always produce valid records
+        /// `create_placeholder_record` should always produce valid records
         #[test]
         fn placeholder_record_always_valid(frs in 0_u64..1_000_000) {
             let record = create_placeholder_record(frs);
@@ -477,7 +477,7 @@ mod proptest_tests {
             prop_assert_eq!(record.parent_frs, ParentFrs::ROOT); // Always root
         }
 
-        /// ParseOptions should have consistent is_forensic behavior
+        /// `ParseOptions` should have consistent `is_forensic` behavior
         #[test]
         fn parse_options_forensic_consistency(
             include_deleted in any::<bool>(),
@@ -493,7 +493,7 @@ mod proptest_tests {
             prop_assert_eq!(opts.is_forensic(), expected);
         }
 
-        /// parse_record (and the zero-alloc variant) must handle any buffer
+        /// `parse_record` (and the zero-alloc variant) must handle any buffer
         /// without panicking — crucially including buffers carrying the FILE
         /// magic, which drive the attribute-walk paths where malformed header
         /// offsets can run past a truncated record. Pure random bytes almost
@@ -514,7 +514,7 @@ mod proptest_tests {
             }
         }
 
-        /// parse_record_full must handle any buffer without panicking, incl.
+        /// `parse_record_full` must handle any buffer without panicking, incl.
         /// forced-FILE-magic buffers that drive the attribute walk.
         #[test]
         fn parse_record_full_never_panics(

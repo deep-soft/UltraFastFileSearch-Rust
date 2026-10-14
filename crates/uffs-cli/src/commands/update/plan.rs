@@ -179,9 +179,10 @@ fn classify_root(
     elevated: bool,
     daemon_stop_needs_elev: bool,
 ) -> UpdateItem {
-    // Already at the target version → never touched, and (crucially) its running
-    // daemon is never stopped. This is what keeps an already-current `~\bin`
-    // hosting an elevated daemon out of the update entirely.
+    // Already at the target version → never touched, and (crucially) its
+    // running daemon is never stopped. This is what keeps an
+    // already-current `~\bin` hosting an elevated daemon out of the update
+    // entirely.
     if root_already_current(root, latest_norm) {
         return skip_item(root, UpdateAction::AlreadyCurrent);
     }
@@ -467,8 +468,9 @@ mod tests {
     fn root_already_at_target_is_a_pure_skip_even_with_an_elevated_daemon() {
         let mut install = root(&writable_dir(), Channel::Unmanaged, Scope::Unknown);
         install.binaries = vec![bin("uffs", "0.6.24"), bin("uffsd", "0.6.24")];
-        // Elevated daemon running here + non-elevated caller: still a pure skip,
-        // because there is nothing to update — so the daemon is never stopped.
+        // Elevated daemon running here + non-elevated caller: still a pure
+        // skip, because there is nothing to update — so the daemon is
+        // never stopped.
         let report = report_with_daemon(&install.dir);
         let item = classify_root(&install, "0.6.24", &report, false, true);
         assert_eq!(item.action, UpdateAction::AlreadyCurrent);
@@ -479,8 +481,8 @@ mod tests {
     fn winget_user_root_hosting_a_daemon_is_not_gated() {
         // A daemon running from a winget-user root (even elevated) must NOT be
         // gated: winget::quiesce stops it cooperatively (IPC shutdown, no
-        // elevation), so the upgrade runs non-elevated. Gating it would give the
-        // dead-end "re-run elevated" hint winget can't honor.
+        // elevation), so the upgrade runs non-elevated. Gating it would give
+        // the dead-end "re-run elevated" hint winget can't honor.
         let dir = writable_dir();
         let mut install = root(&dir, Channel::WinGet, Scope::User);
         install.binaries = vec![bin("uffs", "0.6.18")]; // out of date

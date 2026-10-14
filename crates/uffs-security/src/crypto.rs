@@ -485,7 +485,8 @@ mod tests {
             workload();
         }
         let elapsed_us = start.elapsed().as_micros().max(1);
-        // MB/s = (payload_bytes * runs * 1_000_000) / (BYTES_PER_MB * elapsed_us)
+        // MB/s = (payload_bytes * runs * 1_000_000) / (BYTES_PER_MB *
+        // elapsed_us)
         let payload_u128 = payload_bytes as u128;
         let mib_u128 = BYTES_PER_MB as u128;
         let numerator = payload_u128 * u128::from(runs) * 1_000_000_u128;

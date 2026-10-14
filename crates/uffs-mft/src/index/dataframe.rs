@@ -113,7 +113,8 @@ impl MftIndex {
             Vec::with_capacity(n),
             Vec::with_capacity(n),
         );
-        // File type (extension) column - first-class citizen like name, size, etc.
+        // File type (extension) column - first-class citizen like name, size,
+        // etc.
         let mut file_type: Vec<String> = Vec::with_capacity(n);
         let (mut reparse_tag, mut is_resident): (Vec<u32>, Vec<bool>) =
             (Vec::with_capacity(n), Vec::with_capacity(n));
@@ -170,7 +171,8 @@ impl MftIndex {
             str.push(rec.stream_count);
             reparse_tag.push(rec.reparse_tag);
             is_resident.push(rec.first_stream.is_resident());
-            // File type (extension) - lookup from ExtensionTable using extension_id
+            // File type (extension) - lookup from ExtensionTable using
+            // extension_id
             let ext_id = rec.first_name.name.extension_id();
             let ext_str = self.extensions.get_extension(ext_id).unwrap_or("");
             file_type.push(ext_str.to_owned());
@@ -182,7 +184,8 @@ impl MftIndex {
                 base_frs_col.push(rec.base_frs.raw());
             }
             // Tree metrics (pre-computed via compute_tree_metrics())
-            // Use the tree_metrics() method as the single source of truth (Fix #3)
+            // Use the tree_metrics() method as the single source of truth (Fix
+            // #3)
             let (desc, ts, ta) = rec.tree_metrics();
             descendants.push(desc);
             treesize.push(ts);

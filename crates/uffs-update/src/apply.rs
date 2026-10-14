@@ -292,7 +292,8 @@ mod tests {
         write(&target, "OLD");
         let staged = dir.join("absent.new");
         backup_and_swap(&staged, &target).expect_err("missing staged image must abort");
-        // The original must be untouched (no backup, no swap) on a pre-check fail.
+        // The original must be untouched (no backup, no swap) on a pre-check
+        // fail.
         assert_eq!(read(&target), "OLD");
         assert!(!backup_path(&target).exists(), "no backup created on abort");
     }

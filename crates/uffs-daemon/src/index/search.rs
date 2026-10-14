@@ -507,7 +507,8 @@ impl IndexManager {
             .is_some_and(|cap| filtered_len >= cap as usize);
         let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
 
-        // Profile (built in a separate method to keep `search` under the line limit).
+        // Profile (built in a separate method to keep `search` under the line
+        // limit).
         let profile = if profiling {
             Some(
                 self.build_search_profile(

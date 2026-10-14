@@ -100,10 +100,10 @@ pub(crate) fn run_uninstall(args: &[String]) -> Result<()> {
     // plan, and the gate notes. Nothing was shown while data was in flight.
     #[cfg(windows)]
     let gathered = finish_stray_gather(&removal_plan, gather, sweep);
-    // The deep sweep may have STARTED the daemon (the no-broker UAC start) after
-    // the plan was snapshotted with none running — make sure the plan stops that
-    // live daemon before its binary is deleted, or its locked image would fail
-    // the runtime-binary delete with Access-denied.
+    // The deep sweep may have STARTED the daemon (the no-broker UAC start)
+    // after the plan was snapshotted with none running — make sure the plan
+    // stops that live daemon before its binary is deleted, or its locked
+    // image would fail the runtime-binary delete with Access-denied.
     #[cfg(windows)]
     if let Some(pid) = running_daemon_pid() {
         removal_plan.ensure_daemon_shutdown(pid);
@@ -183,8 +183,8 @@ fn execute_all(
     broker_remains: bool,
 ) {
     // M9: mark the run in progress (survives the lifecycle-dir deletion) so an
-    // interruption is detectable next launch. Best-effort: a failed marker write
-    // must not block the uninstall, but we surface it honestly.
+    // interruption is detectable next launch. Best-effort: a failed marker
+    // write must not block the uninstall, but we surface it honestly.
     if let Err(err) = journal::begin() {
         render::print_journal_warning(&err);
     }
@@ -195,8 +195,9 @@ fn execute_all(
     // them after this process exits.
     let self_paths = self_binaries();
 
-    // M4 execute (U-40..42): run the plan(s) once against the live effects sink,
-    // accumulating a single outcome so the summary + retry hint print once.
+    // M4 execute (U-40..42): run the plan(s) once against the live effects
+    // sink, accumulating a single outcome so the summary + retry hint print
+    // once.
     let mut effects =
         effects::SystemEffects::new(self_paths.clone(), elevate_via_uac, broker_remains);
     let mut outcome = remove::RemovalOutcome::default();

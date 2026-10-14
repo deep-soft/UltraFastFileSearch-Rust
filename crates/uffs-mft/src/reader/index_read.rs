@@ -421,10 +421,11 @@ impl MftReader {
         }
 
         // Select reader based on mode
-        // Historical benchmark insight: "read all then parse" is faster than pipelining
-        // even on HDD because: no context switching, CPU cache stays hot, no
-        // channel overhead, OS can optimize continuous sequential reads better.
-        // For lean index (MftIndex), use SlidingIocpInline for NVMe/SSD - this uses
+        // Historical benchmark insight: "read all then parse" is faster than
+        // pipelining even on HDD because: no context switching, CPU
+        // cache stays hot, no channel overhead, OS can optimize
+        // continuous sequential reads better. For lean index
+        // (MftIndex), use SlidingIocpInline for NVMe/SSD - this uses
         // IOCP with multiple reads in flight and inline parsing
         // performance.
         let effective_mode = index_effective_mode(self.mode, drive_type);
@@ -530,7 +531,8 @@ impl MftReader {
             }
             MftReadMode::IocpParallel => {
                 // IOCP parallel mode: Multiple overlapped reads in flight
-                // IOCP requires FILE_FLAG_OVERLAPPED, so we open a separate raw_handle
+                // IOCP requires FILE_FLAG_OVERLAPPED, so we open a separate
+                // raw_handle
                 let overlapped_handle = self.require_handle()?.open_overlapped_handle()?;
                 let iocp_reader = crate::io::IocpMftReader::new(extent_map, bitmap, drive_type);
 
@@ -564,7 +566,8 @@ impl MftReader {
                     reason = "FFI: CloseHandle on valid overlapped raw_handle"
                 )]
                 {
-                    // SAFETY: `overlapped_handle` was opened by `open_overlapped_handle`
+                    // SAFETY: `overlapped_handle` was opened by
+                    // `open_overlapped_handle`
                     // and is closed exactly once here.
                     _ = unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) };
                 };
@@ -641,15 +644,18 @@ impl MftReader {
                     reason = "FFI: CloseHandle on valid overlapped raw_handle"
                 )]
                 {
-                    // SAFETY: `overlapped_handle` came from `open_overlapped_handle`, is
-                    // no longer used after the read completes, and is closed exactly once.
+                    // SAFETY: `overlapped_handle` came from
+                    // `open_overlapped_handle`, is
+                    // no longer used after the read completes, and is closed
+                    // exactly once.
                     _ = unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) };
                 };
 
                 result?
             }
             MftReadMode::SlidingIocp => {
-                // Sliding window IOCP mode: adaptive concurrency with multiple reads in flight
+                // Sliding window IOCP mode: adaptive concurrency with multiple
+                // reads in flight
                 let overlapped_handle = self.require_handle()?.open_overlapped_handle()?;
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
@@ -690,17 +696,19 @@ impl MftReader {
                     reason = "FFI: CloseHandle on valid overlapped raw_handle"
                 )]
                 {
-                    // SAFETY: `overlapped_handle` came from `open_overlapped_handle`, is
-                    // no longer used after the read completes, and is closed exactly once.
+                    // SAFETY: `overlapped_handle` came from
+                    // `open_overlapped_handle`, is
+                    // no longer used after the read completes, and is closed
+                    // exactly once.
                     _ = unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) };
                 };
 
                 result?
             }
             MftReadMode::SlidingIocpInline => {
-                // Sliding window IOCP with inline parsing and direct index building
-                // This mode returns MftIndex directly, skipping the intermediate
-                // Vec<ParsedRecord>
+                // Sliding window IOCP with inline parsing and direct index
+                // building This mode returns MftIndex directly,
+                // skipping the intermediate Vec<ParsedRecord>
                 debug!("[PARITY_TRACE] ENTERING SlidingIocpInline branch (Windows LIVE path)");
                 let overlapped_handle = self.require_handle()?.open_overlapped_handle()?;
                 let parallel_reader =
@@ -720,8 +728,10 @@ impl MftReader {
                     reason = "FFI: CloseHandle on valid overlapped raw_handle"
                 )]
                 {
-                    // SAFETY: `overlapped_handle` came from `open_overlapped_handle`, is
-                    // no longer used after the read completes, and is closed exactly once.
+                    // SAFETY: `overlapped_handle` came from
+                    // `open_overlapped_handle`, is
+                    // no longer used after the read completes, and is closed
+                    // exactly once.
                     _ = unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) };
                 };
 
@@ -749,7 +759,8 @@ impl MftReader {
                         );
                         index.reserved_allocated_bytes = ra;
 
-                        // Compute tree metrics (directory sizes, descendant counts).
+                        // Compute tree metrics (directory sizes, descendant
+                        // counts).
                         debug!(
                             records = index.records.len(),
                             "[PARITY_TRACE] SlidingIocpInline: CALLING compute_tree_metrics()"
@@ -802,8 +813,8 @@ impl MftReader {
                         // fallback strategies before giving up:
                         //
                         // 1. Open `X:\$MFT` as a file (filesystem-mediated)
-                        // 2. Re-open volume with FILE_FLAG_NO_BUFFERING (bypasses cache manager,
-                        //    direct device I/O)
+                        // 2. Re-open volume with FILE_FLAG_NO_BUFFERING
+                        //    (bypasses cache manager, direct device I/O)
                         // INFO, not WARN: the cascade below is designed,
                         // automatically-handled resilience — a normal run
                         // stays quiet (WARN-default subscribers show
@@ -820,7 +831,8 @@ impl MftReader {
                 }
             }
             MftReadMode::Streaming | MftReadMode::Prefetch => {
-                // Fallback to parallel for streaming/prefetch modes in lean index
+                // Fallback to parallel for streaming/prefetch modes in lean
+                // index
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
                 parallel_reader

@@ -11,8 +11,7 @@
 //! # Resolution order
 //!
 //! 1. `UFFS_LOG_DIR` env var, if set to a **non-empty** value — used verbatim.
-//! 2. The per-platform native location
-//!    ([`native_log_dir`](crate::log_dir::native_log_dir)):
+//! 2. The per-platform native location ([`native_log_dir`]):
 //!    - macOS:   `~/Library/Logs/uffs`            (read by Console.app)
 //!    - Windows: `%LOCALAPPDATA%\uffs\logs`        (== `dirs data_local_dir`)
 //!    - Linux:   `$XDG_STATE_HOME/uffs/logs`, else `~/.local/state/uffs/logs`

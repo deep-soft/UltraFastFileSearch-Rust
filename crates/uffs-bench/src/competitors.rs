@@ -152,7 +152,8 @@ pub fn fetch(
         .map_err(|err| BenchError::io(&dest, err))?;
     let computed = sha256_hex(&bytes);
     if !computed.eq_ignore_ascii_case(pin.es_sha256.trim()) {
-        // Fail closed: never leave unverified bytes where a later stage runs them.
+        // Fail closed: never leave unverified bytes where a later stage runs
+        // them.
         if let Err(err) = host.remove_file(&dest) {
             host.out(&format!(
                 "warning: could not delete unverified download {}: {err}",

@@ -642,8 +642,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|dur| dur.as_nanos())
-                .unwrap_or_default(),
+                .map_or_default(|dur| dur.as_nanos()),
         ))
         .expect("test-blackhole pipe path is a valid PipeName");
 

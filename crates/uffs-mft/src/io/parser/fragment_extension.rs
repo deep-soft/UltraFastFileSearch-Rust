@@ -84,7 +84,8 @@ pub(super) fn parse_extension_to_fragment(
             break;
         }
 
-        // `offset + length` can overflow on a crafted `length`; checked_add → break.
+        // `offset + length` can overflow on a crafted `length`; checked_add →
+        // break.
         let Some(attr_end) = offset.checked_add(u32_as_usize(attr_header.length)) else {
             break;
         };
@@ -95,8 +96,8 @@ pub(super) fn parse_extension_to_fragment(
         match AttributeType::from_u32(attr_header.type_code) {
             Some(AttributeType::FileName) if attr_header.is_non_resident == 0 => {
                 let value_offset = usize::from(rd_u16(data, offset.saturating_add(20)));
-                // `offset + value_offset` is byte-derived; checked, then re-validated
-                // by the `.get()` below.
+                // `offset + value_offset` is byte-derived; checked, then
+                // re-validated by the `.get()` below.
                 if let Some(fn_offset) = offset.checked_add(value_offset)
                     && let Some(fn_slice) = fn_offset
                         .checked_add(size_of::<FileNameAttribute>())
@@ -110,8 +111,9 @@ pub(super) fn parse_extension_to_fragment(
                     if fn_attr.file_name_namespace != 2 {
                         let name_len = usize::from(fn_attr.file_name_length);
                         let name_start = fn_offset.saturating_add(size_of::<FileNameAttribute>());
-                        // `name_len * 2` (UTF-16) overflows on a crafted length →
-                        // checked_mul/checked_add, then `.get()` bounds the slice.
+                        // `name_len * 2` (UTF-16) overflows on a crafted length
+                        // → checked_mul/checked_add,
+                        // then `.get()` bounds the slice.
                         if let Some(name_bytes) = name_len
                             .checked_mul(2)
                             .and_then(|byte_len| name_start.checked_add(byte_len))
@@ -131,8 +133,9 @@ pub(super) fn parse_extension_to_fragment(
                 }
             }
             Some(AttributeType::Data) => {
-                // legacy-output parity: Only primary attributes (LowestVCN == 0) count as
-                // streams. Continuation extents (LowestVCN > 0) are skipped.
+                // legacy-output parity: Only primary attributes (LowestVCN ==
+                // 0) count as streams. Continuation extents
+                // (LowestVCN > 0) are skipped.
                 // See ntfs_index_load.hpp:358
                 let is_primary = if attr_header.is_non_resident == 0 {
                     true // Resident attributes are always primary
@@ -147,7 +150,8 @@ pub(super) fn parse_extension_to_fragment(
                 };
 
                 if !is_primary {
-                    // Skip continuation extents - they don't count as new streams
+                    // Skip continuation extents - they don't count as new
+                    // streams
                     offset = offset.saturating_add(u32_as_usize(attr_header.length));
                     continue;
                 }
@@ -155,8 +159,9 @@ pub(super) fn parse_extension_to_fragment(
                 let name_len = usize::from(attr_header.name_length);
                 if name_len > 0 {
                     let (size, allocated) = if attr_header.is_non_resident != 0 {
-                        // `rd_u*` are individually bounds-safe (return 0 OOB); the
-                        // `nr + 48 <= len` guard preserves the original "all fields
+                        // `rd_u*` are individually bounds-safe (return 0 OOB);
+                        // the `nr + 48 <= len` guard
+                        // preserves the original "all fields
                         // present" semantics. `nr` via checked_add.
                         offset
                             .checked_add(16)
@@ -171,8 +176,9 @@ pub(super) fn parse_extension_to_fragment(
                                 )
                             })
                     } else {
-                        // `rd_u32` is bounds-safe (returns 0 OOB); the `+ 4 <= len`
-                        // guard preserves the original "field present" semantics.
+                        // `rd_u32` is bounds-safe (returns 0 OOB); the `+ 4 <=
+                        // len` guard preserves the
+                        // original "field present" semantics.
                         offset
                             .checked_add(16)
                             .filter(|len_off| len_off.saturating_add(4) <= data.len())
@@ -198,7 +204,8 @@ pub(super) fn parse_extension_to_fragment(
                         let stream_name = crate::io::parser::unified::decode_name_u16(&name_u16).0;
                         // ALL named $DATA streams create regular
                         // stream entries.  Internal ones are filtered from
-                        // output by is_internal_windows_stream in the output layer.
+                        // output by is_internal_windows_stream in the output
+                        // layer.
                         streams.push((stream_name, size, allocated));
                     }
                 }
@@ -380,8 +387,8 @@ fn attach_links(
     // the typed-API call sites in this function.
     let base_frs_typed = crate::frs::Frs::new(base_frs);
     if first_name_valid {
-        // Base record already has a name — chain extension names as additional hard
-        // links
+        // Base record already has a name — chain extension names as additional
+        // hard links
         if let Some(end_idx) = link_chain_end {
             fragment.links[u32_as_usize(end_idx)].next_entry = link_indices[0];
         } else {
@@ -440,8 +447,9 @@ fn build_parent_child_entries(
         let parent_idx = {
             let p_frs_usize = frs_to_usize(p_frs);
             if p_frs_usize >= fragment.frs_to_idx.len() {
-                // `p_frs` is masked to 48 bits, so `+ 1` cannot overflow usize on
-                // 64-bit; saturate defensively to keep arithmetic panic-free.
+                // `p_frs` is masked to 48 bits, so `+ 1` cannot overflow usize
+                // on 64-bit; saturate defensively to keep
+                // arithmetic panic-free.
                 fragment
                     .frs_to_idx
                     .resize(p_frs_usize.saturating_add(1), NO_ENTRY);
@@ -459,7 +467,8 @@ fn build_parent_child_entries(
         let effective_name_idx = if existing_name_count == 0 {
             len_to_u16(name_idx)
         } else {
-            // Preserve legacy off-by-one semantics; bounded u16 counters, saturate.
+            // Preserve legacy off-by-one semantics; bounded u16 counters,
+            // saturate.
             existing_name_count
                 .saturating_sub(1)
                 .saturating_add(len_to_u16(name_idx))

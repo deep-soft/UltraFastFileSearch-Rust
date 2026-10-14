@@ -458,7 +458,8 @@ fn null_values_not_filtered() -> TestResult {
 
     let result = df.lazy().filter(expr).collect()?;
 
-    // Should match: file.txt, $recycle.txt, test.TXT (null should be filtered out)
+    // Should match: file.txt, $recycle.txt, test.TXT (null should be filtered
+    // out)
     assert_eq!(
         result.height(),
         3,

@@ -451,9 +451,9 @@ impl FileRecord {
     #[inline]
     #[must_use]
     pub const fn has_base_data(&self) -> bool {
-        // Real base records always have a creation timestamp from $STANDARD_INFORMATION
-        // Placeholders created by extension processing have stdinfo = Default (all
-        // zeros)
+        // Real base records always have a creation timestamp from
+        // $STANDARD_INFORMATION Placeholders created by extension
+        // processing have stdinfo = Default (all zeros)
         self.stdinfo.created != 0
     }
 

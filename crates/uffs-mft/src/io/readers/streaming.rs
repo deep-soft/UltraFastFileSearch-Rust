@@ -188,7 +188,8 @@ impl StreamingMftReader {
 
         let mut bytes_read = 0_u32;
         let Some(read_slice) = self.buffer.as_mut_slice().get_mut(..aligned_size) else {
-            // Unreachable: streaming buffer was sized to ≥ aligned_size upfront.
+            // Unreachable: streaming buffer was sized to ≥ aligned_size
+            // upfront.
             return Err(MftError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "streaming buffer shorter than aligned_size",

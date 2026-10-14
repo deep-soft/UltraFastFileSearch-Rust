@@ -126,7 +126,21 @@ impl VssError {
 
 /// Opaque handle to a live VSS requestor session — never constructed or
 /// read from Rust, only passed back to the shim that produced it.
-pub(crate) enum Session {}
+///
+/// The Rustonomicon's opaque-FFI-type pattern: a zero-sized `#[repr(C)]`
+/// struct whose private field keeps it unconstructible outside this module,
+/// and whose marker makes it `!Send`, `!Sync` and `!Unpin`, so the compiler
+/// assumes nothing about the C object behind the pointer.  An uninhabited
+/// `enum Session {}` (the earlier form) claims the pointee cannot exist,
+/// which is the wrong model for a real C++ object, and newer clippy rejects
+/// it (`empty_enums`).
+#[repr(C)]
+pub(crate) struct Session {
+    /// Zero-sized placeholder; makes the struct unconstructible elsewhere.
+    _data: [u8; 0],
+    /// Opts out of `Send`, `Sync` and `Unpin`.
+    _marker: core::marker::PhantomData<(*mut u8, core::marker::PhantomPinned)>,
+}
 
 #[expect(
     unsafe_code,

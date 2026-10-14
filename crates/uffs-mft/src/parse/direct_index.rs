@@ -206,7 +206,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
     }
 
     // Handle extension records: add their names/streams to the base record.
-    // Extension records reference a base FRS; their attributes are merged inline.
+    // Extension records reference a base FRS; their attributes are merged
+    // inline.
     if !header.is_base_record() {
         let base_frs = file_reference_to_frs(header.base_file_record_segment);
         return parse_extension_to_index(data, base_frs, index);
@@ -264,7 +265,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                     // 72-byte NTFS 3.0+ `StandardInformationExtended` form
                     // (usn/security_id/owner_id) when `value_length` says it's
                     // present, falling back to the 36-byte NTFS 1.2 form
-                    // otherwise — see `attribute_helpers::parse_standard_info_full`
+                    // otherwise — see
+                    // `attribute_helpers::parse_standard_info_full`
                     // for the single-source-of-truth rationale.
                     let mut ext = crate::ntfs::ExtendedStandardInfo::default();
                     // Bulk path: `StdInfoParse` has nowhere to live on the
@@ -289,7 +291,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                         if name_bytes_offset + name_len * 2 <= data.len() {
                             let name_bytes =
                                 &data[name_bytes_offset..name_bytes_offset + name_len * 2];
-                            // SmallVec avoids heap allocation for typical filenames (<= 64 chars)
+                            // SmallVec avoids heap allocation for typical
+                            // filenames (<= 64 chars)
                             let name_u16: SmallVec<[u16; 64]> = name_bytes
                                 .as_chunks::<2>()
                                 .0
@@ -337,11 +340,13 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                 }
             }
             Some(AttributeType::Data) => {
-                // legacy-output parity: Only primary attributes (LowestVCN == 0) count as
-                // streams. Continuation extents (LowestVCN > 0) are skipped.
+                // legacy-output parity: Only primary attributes (LowestVCN ==
+                // 0) count as streams. Continuation extents
+                // (LowestVCN > 0) are skipped.
                 // See ntfs_index_load.hpp:358
                 if !is_primary_attribute(data, offset, &attr_header) {
-                    // Skip continuation extents - they don't count as new streams
+                    // Skip continuation extents - they don't count as new
+                    // streams
                     offset += u32_as_usize(attr_header.length);
                     continue;
                 }
@@ -369,9 +374,11 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                             .map(|c| u16::from_le_bytes(*c))
                             .collect();
                         let stream_name = crate::io::parser::unified::decode_name_u16(&name_u16).0;
-                        // ALL named $DATA streams create regular stream entries.
-                        // Internal ones are filtered from
-                        // output by is_internal_windows_stream in the output layer.
+                        // ALL named $DATA streams create regular stream
+                        // entries. Internal ones are
+                        // filtered from
+                        // output by is_internal_windows_stream in the output
+                        // layer.
                         additional_streams.push((
                             stream_name,
                             size,
@@ -392,7 +399,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                     let value_offset = usize::from(rd_u16(data, offset + 20));
                     let rp_offset = offset + value_offset;
                     if rp_offset + 4 <= data.len() {
-                        // Read reparse tag (first 4 bytes of reparse point data)
+                        // Read reparse tag (first 4 bytes of reparse point
+                        // data)
                         let tag_bytes = &data[rp_offset..rp_offset + 4];
                         reparse_tag =
                             u32::from_le_bytes(tag_bytes.try_into().unwrap_or([0, 0, 0, 0]));
@@ -413,7 +421,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                     }
                 };
 
-                // Add $REPARSE_POINT as a stream (contributes to stream counting)
+                // Add $REPARSE_POINT as a stream (contributes to stream
+                // counting)
                 let (is_resident, is_sparse) = resident_and_sparse(&attr_header);
                 additional_streams.push((
                     String::from("$REPARSE"),
@@ -426,8 +435,9 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
             Some(
                 AttributeType::IndexRoot | AttributeType::IndexAllocation | AttributeType::Bitmap,
             ) => {
-                // $INDEX_ROOT and $INDEX_ALLOCATION with name $I30 contribute to
-                // directory size. Non-$I30 indexes are counted as individual streams.
+                // $INDEX_ROOT and $INDEX_ALLOCATION with name $I30 contribute
+                // to directory size. Non-$I30 indexes are
+                // counted as individual streams.
 
                 // Extract attribute name
                 let name_len = usize::from(attr_header.name_length);
@@ -524,8 +534,9 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                 }
             }
             _ => {
-                // All remaining attribute types are counted as streams (catch-all).
-                // This includes truly unknown types
+                // All remaining attribute types are counted as streams
+                // (catch-all). This includes truly unknown
+                // types
                 let type_code = attr_header.type_code;
 
                 if is_primary_attribute(data, offset, &attr_header) {
@@ -547,7 +558,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
     }
 
     // Set directory flag in std_info BEFORE checking for filename
-    // This ensures is_directory is set even when $FILE_NAME is in extension record
+    // This ensures is_directory is set even when $FILE_NAME is in extension
+    // record
     if is_directory {
         std_info.set_directory(true);
         // For directories, set default size to directory index size
@@ -558,7 +570,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
     }
 
     // Handle records without a filename in the base record
-    // The $FILE_NAME may be in an extension record - we still need to store stdinfo
+    // The $FILE_NAME may be in an extension record - we still need to store
+    // stdinfo
     let (name, parent_frs, primary_namespace, primary_parse_index) = match primary_name {
         Some(n) => n,
         None => {
@@ -566,8 +579,9 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
             // The extension record will add the name later
             //
             // IMPORTANT: We must still add ADS streams from the base record!
-            // The $FILE_NAME may be in an extension record, but the ADS are here.
-            // Without this, ADS on files/directories with extension records are lost.
+            // The $FILE_NAME may be in an extension record, but the ADS are
+            // here. Without this, ADS on files/directories with
+            // extension records are lost.
 
             // Pre-process ADS streams using helper
             let additional_stream_count = additional_streams.len();
@@ -706,7 +720,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
         record.first_name.next_entry = link_indices[0];
     }
 
-    // Chain the additional streams: first_stream -> stream[0] -> stream[1] -> ...
+    // Chain the additional streams: first_stream -> stream[0] -> stream[1] ->
+    // ...
     if !stream_indices.is_empty() {
         // Point first_stream to the first additional stream
         record.first_stream.next_entry = stream_indices[0];

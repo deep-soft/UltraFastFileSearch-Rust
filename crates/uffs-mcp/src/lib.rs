@@ -202,7 +202,7 @@ fn default_mcp_log_file() -> std::path::PathBuf {
 pub(crate) mod cookbook;
 /// MCP bridge error types.
 pub(crate) mod error;
-/// MCP [`ServerHandler`](rmcp::ServerHandler) implementation.
+/// MCP [`rmcp::ServerHandler`] implementation.
 ///
 /// Kept `pub` because `tests/mcp_protocol.rs` (integration test,
 /// separate compilation unit) imports `uffs_mcp::handler::UffsMcpServer`.

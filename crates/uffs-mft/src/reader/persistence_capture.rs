@@ -265,7 +265,8 @@ impl MftReader {
         );
 
         // Close the overlapped handle before writing the file
-        // SAFETY: handle was opened by open_overlapped_handle and is no longer needed
+        // SAFETY: handle was opened by open_overlapped_handle and is no longer
+        // needed
         _ = unsafe { CloseHandle(handle) };
 
         writer.write_to_file(path)
@@ -500,8 +501,8 @@ unsafe fn issue_overlapped_read(
     // SAFETY: same justification as above — pinned Box, sole writer.
     let op_mut = unsafe { op.as_mut().get_unchecked_mut() };
     let Some(read_slice) = op_mut.buffer.as_mut_slice().get_mut(..aligned_size) else {
-        // Unreachable: caller sizes `buffer_size` to `max_chunk_size + SECTOR_SIZE` ≥
-        // aligned_size.
+        // Unreachable: caller sizes `buffer_size` to `max_chunk_size +
+        // SECTOR_SIZE` ≥ aligned_size.
         return Err(MftError::Io(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
             "IOCP capture buffer shorter than aligned_size",

@@ -357,7 +357,8 @@ fn unlimited_returns_more_than_capped() {
 #[test]
 fn prefix_search_matches_generic_glob_path() {
     // The trigram-accelerated prefix path must return exactly the same set of
-    // rows as the ground-truth generic glob scan. `f000` matches f00000..f00099.
+    // rows as the ground-truth generic glob scan. `f000` matches
+    // f00000..f00099.
     let drive = build_large_drive(1_500);
     let prefix_rows =
         search_compact_drive_prefix(&drive, "f000", 10_000, false, &SearchFilters::default());

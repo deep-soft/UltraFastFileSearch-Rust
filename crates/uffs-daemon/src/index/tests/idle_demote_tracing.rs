@@ -278,8 +278,8 @@ async fn promote_resets_idle_clock_against_thrash() {
     mgr.demote_idle_shards(now_ms).await;
 
     // ── Step 5: Assert no re-demote.  Pre-PR-f this assertion
-    // fails: states_post_tick == [(uffs_mft::platform::DriveLetter::C, Parked)].
-    // Post-PR-f the shard stays Warm.
+    // fails: states_post_tick == [(uffs_mft::platform::DriveLetter::C,
+    // Parked)]. Post-PR-f the shard stays Warm.
     assert_eq!(
         mgr.shard_states_for_test().await,
         vec![(uffs_mft::platform::DriveLetter::C, ShardState::Warm)],

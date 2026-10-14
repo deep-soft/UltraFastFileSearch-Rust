@@ -74,7 +74,8 @@ pub fn push_entry(buf: &mut Vec<u8>, name: &str, data: &[u8], mtime: u64) -> Res
     push_field(buf, b"", 12); // pad to 512
 
     // Header checksum: sum of all header bytes with the checksum field as
-    // spaces (the placeholder above), written back as 6 octal digits + NUL + ' '.
+    // spaces (the placeholder above), written back as 6 octal digits + NUL + '
+    // '.
     let sum: u32 = buf
         .get(header_start..header_start + BLOCK)
         .map_or(0, |header| header.iter().map(|&byte| u32::from(byte)).sum());

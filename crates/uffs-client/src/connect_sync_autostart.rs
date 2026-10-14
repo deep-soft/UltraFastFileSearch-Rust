@@ -85,12 +85,14 @@ fn is_process_alive(pid: u32) -> bool {
             .stderr(std::process::Stdio::null())
             .output()
             .is_ok_and(|output| {
-                // AUDIT-OK(bytes): daemon-identity probe via substring match; a lossy
-                // decode can only FAIL the match → treat as 'not the daemon' (fail-safe
-                // reconnect), never a false positive. (WI-4.3 follow-up)
+                // AUDIT-OK(bytes): daemon-identity probe via substring match; a
+                // lossy decode can only FAIL the match → treat
+                // as 'not the daemon' (fail-safe reconnect),
+                // never a false positive. (WI-4.3 follow-up)
                 let text = String::from_utf8_lossy(&output.stdout);
-                // tasklist prints  "uffsd.exe  <PID> ..." when the process matches.
-                // Verify both the PID and the executable name.
+                // tasklist prints  "uffsd.exe  <PID> ..." when the process
+                // matches. Verify both the PID and the
+                // executable name.
                 text.contains(&pid.to_string()) && text.contains("uffsd")
             })
     }
@@ -115,9 +117,10 @@ fn is_daemon_process(pid: u32) -> bool {
         .stderr(std::process::Stdio::null())
         .output()
         .is_ok_and(|output| {
-            // AUDIT-OK(bytes): daemon-identity probe via substring match; a lossy
-            // decode can only FAIL the match → treat as 'not the daemon' (fail-safe
-            // reconnect), never a false positive. (WI-4.3 follow-up)
+            // AUDIT-OK(bytes): daemon-identity probe via substring match; a
+            // lossy decode can only FAIL the match → treat as 'not
+            // the daemon' (fail-safe reconnect), never a false
+            // positive. (WI-4.3 follow-up)
             let comm = String::from_utf8_lossy(&output.stdout);
             // `ps -o comm=` prints the executable path or basename.
             // Match if any path component is "uffsd".
