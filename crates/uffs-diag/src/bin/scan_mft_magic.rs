@@ -10,14 +10,21 @@
 //! stop and other data (e.g. RCRD/zeros) begin.
 
 #![expect(
-    unused_crate_dependencies,
-    reason = "shared Cargo.toml dependencies not used by all binaries"
-)]
-#![expect(
     clippy::print_stdout,
     clippy::print_stderr,
     reason = "diagnostic tool — stdout/stderr output is intentional"
 )]
+
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
+use chrono as _;
+use hex as _;
+use rayon as _;
+use sha2 as _;
+use uffs_diag as _;
+use uffs_polars as _;
 
 extern crate alloc;
 
@@ -106,8 +113,7 @@ fn main() -> Result<()> {
     })?;
     let bucket_size: u64 = if args.len() >= 3 {
         args.get(2)
-            .map(String::as_str)
-            .unwrap_or_default()
+            .map_or_default(String::as_str)
             .parse::<u64>()
             .context("Failed to parse bucket_size as u64")?
     } else {

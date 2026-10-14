@@ -79,7 +79,6 @@ edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/skyllc-ai/UltraFastFileSearch"
 authors = ["Robert Nio <50460704+githubrobbi@users.noreply.github.com>"]
-description = "UFFS - Ultra Fast File Search using direct NTFS MFT reading and Polars DataFrames"
 documentation = "https://docs.rs/uffs"
 readme = "README.md"
 keywords = ["mft", "ntfs", "file-search", "windows", "polars"]
@@ -292,7 +291,6 @@ colored = "3.1.1"
 # ───── Pattern Matching ─────
 regex = "1.13.1"
 memchr = "2.8.3"
-aho-corasick = "1.1.5"
 globset = "0.4.20"
 
 # ───── Time ─────

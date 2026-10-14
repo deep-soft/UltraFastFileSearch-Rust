@@ -142,8 +142,7 @@ pub fn attribute_list_data_frs(list: &[u8], stream_name: &str) -> Vec<u64> {
             let name_off = usize::from(*list.get(pos + 7).unwrap_or(&0));
             let name = list
                 .get(pos + name_off..pos + name_off + name_len * 2)
-                .map(decode_utf16_name)
-                .unwrap_or_default();
+                .map_or_default(decode_utf16_name);
             if name == stream_name
                 && let Some(base_ref) = rd_u64(list, pos + 0x10)
             {
@@ -254,8 +253,7 @@ pub fn parse_usn(payload: &[u8]) -> UsnSummary {
         if summary.sample.len() < USN_SAMPLE_MAX {
             let name = record
                 .get(name_off..name_off + name_len)
-                .map(decode_utf16_name)
-                .unwrap_or_default();
+                .map_or_default(decode_utf16_name);
             summary.sample.push(UsnEntry { usn, reason, name });
         }
         summary.record_count += 1;

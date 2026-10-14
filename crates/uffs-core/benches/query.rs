@@ -33,10 +33,6 @@
     reason = "benchmark code expects on controlled test data"
 )]
 #![expect(
-    unused_crate_dependencies,
-    reason = "transitive dependencies not directly used"
-)]
-#![expect(
     clippy::shadow_reuse,
     reason = "benchmarks reuse variable names in loops"
 )]
@@ -49,11 +45,38 @@
     reason = "benchmark code clarity with closures"
 )]
 
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
+use anyhow as _;
+use bytemuck as _;
+use chrono as _;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use devicons as _;
+use globset as _;
+use itoa as _;
+use memchr as _;
+use memmap2 as _;
+use rayon as _;
+use regex as _;
+use rustc_hash as _;
+use serde_json as _;
+use sha2 as _;
+use tempfile as _;
+use thiserror as _;
+use tokio as _;
+use tracing as _;
 use uffs_core::MftQuery;
 use uffs_core::extensions::ExtensionFilter;
 use uffs_core::pattern::ParsedPattern;
+use uffs_format as _;
+use uffs_mft as _;
 use uffs_polars::{Column, DataFrame};
+use uffs_security as _;
+use uffs_text as _;
+use uffs_time as _;
+use zstd as _;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Test Data Generation

@@ -137,23 +137,18 @@ pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, Bridg
     // to answer both or it misleads.  Best-effort: a drives-RPC failure
     // degrades to the lifecycle-only view rather than failing the call.
     let drives = client.drives().await.ok().map(|resp| resp.drives);
-    let tiers: alloc::collections::BTreeMap<String, String> = drives
-        .as_ref()
-        .map(|list| {
+    let tiers: alloc::collections::BTreeMap<String, String> =
+        drives.as_ref().map_or_default(|list| {
             list.iter()
                 .map(|drv| (drv.letter.to_string(), tier_name(drv.tier).to_owned()))
                 .collect()
-        })
-        .unwrap_or_default();
-    let loading_now: Vec<String> = drives
-        .as_ref()
-        .map(|list| {
-            list.iter()
-                .filter(|drv| drv.loading == Some(true))
-                .map(|drv| drv.letter.to_string())
-                .collect()
-        })
-        .unwrap_or_default();
+        });
+    let loading_now: Vec<String> = drives.as_ref().map_or_default(|list| {
+        list.iter()
+            .filter(|drv| drv.loading == Some(true))
+            .map(|drv| drv.letter.to_string())
+            .collect()
+    });
     let index_ready = drives.as_ref().is_some_and(|list| {
         list.iter()
             .all(|drv| matches!(drv.tier, None | Some(ShardTier::Warm | ShardTier::Hot)))

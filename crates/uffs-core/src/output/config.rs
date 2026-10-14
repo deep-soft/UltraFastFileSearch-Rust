@@ -223,8 +223,7 @@ impl OutputConfig {
     pub fn get_tree_columns(&self) -> Vec<crate::tree::TreeColumn> {
         self.columns
             .as_ref()
-            .map(|cols| cols.iter().filter_map(|col| col.to_tree_column()).collect())
-            .unwrap_or_default()
+            .map_or_default(|cols| cols.iter().filter_map(|col| col.to_tree_column()).collect())
     }
 
     /// Write `DataFrame` to output with this configuration.

@@ -482,8 +482,7 @@ impl RawCliArgs {
         let allowed_months: Vec<u32> = self
             .month
             .as_deref()
-            .map(crate::format::parse_month_spec)
-            .unwrap_or_default();
+            .map_or_default(crate::format::parse_month_spec);
 
         // ── Smart case ─────────────────────────────────────────────
         let case_sensitive = if self.case {

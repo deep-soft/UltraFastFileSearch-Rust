@@ -74,11 +74,7 @@ pub(crate) fn run_update(args: &[String]) -> Result<()> {
     // via UAC by the winget orchestration; never part of the interactive flow
     // and deliberately absent from the visible action list below.
     if action == Some("broker-cycle-helper") {
-        let release_file = args
-            .get(1)
-            .map(String::as_str)
-            .unwrap_or_default()
-            .to_owned();
+        let release_file = args.get(1).map_or_default(String::as_str).to_owned();
         if release_file.is_empty() {
             bail!("broker-cycle-helper needs the release-file path argument");
         }

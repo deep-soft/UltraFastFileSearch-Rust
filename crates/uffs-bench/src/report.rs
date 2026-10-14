@@ -322,8 +322,7 @@ fn load_storage_md(host: &dyn Host, bundle_dir: &Path) -> Option<String> {
         .read_file(&bundle_dir.join(MATRIX_JSON))
         .ok()
         .and_then(|raw| serde_json::from_slice::<Matrix>(&raw).ok())
-        .map(|matrix| matrix.capable_drives)
-        .unwrap_or_default();
+        .map_or_default(|matrix| matrix.capable_drives);
     storage::render_md(&drives, &benched)
 }
 

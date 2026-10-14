@@ -3,10 +3,25 @@
 
 //! Integration tests for the `uffs` CLI binary.
 
-#![expect(
-    unused_crate_dependencies,
-    reason = "integration test — relaxed linting for test clarity"
-)]
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
+use anyhow as _;
+use dirs_next as _;
+use serde_json as _;
+use strsim as _;
+use tempfile as _;
+use uffs_broker_protocol as _;
+use uffs_client as _;
+use uffs_format as _;
+use uffs_mft as _;
+use uffs_security as _;
+use uffs_statusfmt as _;
+use uffs_time as _;
+use uffs_version as _;
+use uffs_winsvc as _;
+use which as _;
 
 #[cfg(test)]
 mod tests {

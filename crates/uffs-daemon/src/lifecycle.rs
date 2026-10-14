@@ -286,8 +286,7 @@ impl LifecycleManager {
         let path = self.launch_state_path();
         let image = std::env::current_exe()
             .ok()
-            .map(|exe| exe.display().to_string())
-            .unwrap_or_default();
+            .map_or_default(|exe| exe.display().to_string());
         let command_line = std::env::args().collect::<Vec<_>>().join(" ");
         let started_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -851,9 +850,8 @@ impl LifecycleManager {
         reason = "hashing helper — clarity over inlining"
     )]
     fn exe_path_hash() -> u64 {
-        let exe_path = std::env::current_exe()
-            .map(|exe| exe.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let exe_path =
+            std::env::current_exe().map_or_default(|exe| exe.to_string_lossy().to_string());
         Self::fnv1a_hash(exe_path.as_bytes())
     }
 

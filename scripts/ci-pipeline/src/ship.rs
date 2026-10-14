@@ -495,8 +495,7 @@ fn working_tree_fingerprint() -> String {
         std::process::Command::new("git")
             .args(args)
             .output()
-            .map(|out| out.stdout)
-            .unwrap_or_default()
+            .map_or_default(|out| out.stdout)
     }
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
