@@ -343,7 +343,8 @@ impl PathResolver {
         }
         // Normalize volume root to "X:\\"
         // NTFS root record (FRS=5) often has FILE_NAME="." which we skip above,
-        // so without this normalization we'd return "X:" which is drive-relative.
+        // so without this normalization we'd return "X:" which is
+        // drive-relative.
         if path.len() == 2 && path.as_bytes().last() == Some(&b':') {
             path.push('\\');
         }
@@ -386,7 +387,8 @@ impl PathResolver {
         } else {
             let mut path = String::with_capacity(parent_path.len() + 1 + name.len());
             path.push_str(&parent_path);
-            // Avoid double separators if parent is already the volume root ("X:\\").
+            // Avoid double separators if parent is already the volume root
+            // ("X:\\").
             let ends_with_sep = parent_path.as_bytes().last() == Some(&b'\\');
             if !ends_with_sep {
                 path.push('\\');

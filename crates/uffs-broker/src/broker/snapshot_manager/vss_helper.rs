@@ -459,8 +459,8 @@ impl VssProvider for WindowsVssProvider {
         // snapshot's lifetime is tied to its helper process/Job Object,
         // which the OS itself tears down if the Broker dies (closing
         // every handle it held, including each Job Object — see
-        // `docs/dev/architecture/uffs-vss-rust-cpp-shim-implementation-guide.md`
-        // §6/§7). There is nothing left to reconcile at startup.
+        // `docs/dev/architecture/uffs-vss-rust-cpp-shim-implementation-guide.
+        // md` §6/§7). There is nothing left to reconcile at startup.
         Ok(Vec::new())
     }
 }

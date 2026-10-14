@@ -414,7 +414,8 @@ mod tests {
     )]
     fn parse_usn_rejects_misaligned_usn() {
         // One valid V2 record (usn 800, 8-aligned) followed by a well-formed
-        // header whose USN is misaligned (804) — stale bytes, not a real record.
+        // header whose USN is misaligned (804) — stale bytes, not a real
+        // record.
         let rec_len = 0x3C_usize; // header-only record
         let mut buf = vec![0_u8; rec_len * 2];
 

@@ -80,7 +80,8 @@ fn spinner_step<T: Send>(label: &str, body: impl FnOnce() -> T + Send) -> T {
             std::thread::sleep(core::time::Duration::from_millis(120));
             frame = frame.wrapping_add(1);
         }
-        // Redraw the bare label so the caller's verdict ("ok"/"failed") appends.
+        // Redraw the bare label so the caller's verdict ("ok"/"failed")
+        // appends.
         print!("\r{label}");
         let _flushed = std::io::stdout().flush();
         handle.join().unwrap_or_else(|_| std::process::abort())
@@ -293,8 +294,9 @@ pub(super) fn uninstall_service() -> anyhow::Result<()> {
 /// (`ERROR_SERVICE_DOES_NOT_EXIST`, 1060) — i.e. already uninstalled, so the
 /// uninstall request is already satisfied.
 fn service_already_absent(output: &std::process::Output) -> bool {
-    // AUDIT-OK(bytes): the `sc` output is inspected only to classify the "already
-    // gone" case; the exit code is the primary signal, the text a fallback.
+    // AUDIT-OK(bytes): the `sc` output is inspected only to classify the
+    // "already gone" case; the exit code is the primary signal, the text a
+    // fallback.
     absent_service_signal(output.status.code(), &sc_output(output))
 }
 

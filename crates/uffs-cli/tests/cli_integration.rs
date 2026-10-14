@@ -143,7 +143,8 @@ mod tests {
     #[test]
     fn version_short_form_carries_the_build_sha() {
         // `uffs[.exe] <semver> (<sha>)` — the parenthesised build sha ties a
-        // running binary to its exact source (shared shape across all binaries).
+        // running binary to its exact source (shared shape across all
+        // binaries).
         assert_success("version_sha", &["--version"], &["uffs", "("]);
     }
 

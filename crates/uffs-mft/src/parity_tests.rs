@@ -276,11 +276,11 @@ mod tier2_offline_capture_parity {
 
         // ── Documented differences (asserted, not silently ignored): ─────
         //
-        // 1. Alternate Data Streams: the C++ golden lists ADS as `path:stream` rows;
-        //    UFFS tracks streams outside the path namespace, so they are absent from
-        //    `got`. We assert the corpus *does* contain ADS (so the test stays
-        //    meaningful on a corpus that exercises them) and that none leaked into
-        //    UFFS's path set.
+        // 1. Alternate Data Streams: the C++ golden lists ADS as `path:stream`
+        //    rows; UFFS tracks streams outside the path namespace, so they are
+        //    absent from `got`. We assert the corpus *does* contain ADS (so the
+        //    test stays meaningful on a corpus that exercises them) and that
+        //    none leaked into UFFS's path set.
         for ads in &want_ads {
             assert!(
                 !got.contains(ads),
@@ -288,12 +288,13 @@ mod tier2_offline_capture_parity {
             );
         }
 
-        // 2. Hard links: a hard-linked file has one `$FILE_NAME` per link, so UFFS
-        //    legitimately enumerates *every* link name while the C++ reference lists
-        //    the inode once. UFFS's path set may therefore be a strict superset of the
-        //    reference; the extras are the alias names. We assert any extras are
-        //    bounded and real (non-empty component names), documenting the multiplicity
-        //    rather than treating it as a failure.
+        // 2. Hard links: a hard-linked file has one `$FILE_NAME` per link, so
+        //    UFFS legitimately enumerates *every* link name while the C++
+        //    reference lists the inode once. UFFS's path set may therefore be a
+        //    strict superset of the reference; the extras are the alias names.
+        //    We assert any extras are bounded and real (non-empty component
+        //    names), documenting the multiplicity rather than treating it as a
+        //    failure.
         let extra: Vec<&String> = got.difference(&want).collect();
         for path in &extra {
             assert!(

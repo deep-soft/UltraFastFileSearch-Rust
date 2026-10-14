@@ -201,9 +201,10 @@ mod platform_tz {
             tz_info.Bias
         };
 
-        // Convert from "bias" (UTC = Local + Bias) to "offset" (Local = UTC + offset).
-        // offset = −Bias.  `Bias` is documented as signed-minutes in range
-        // ±14 hours, so `× 60` stays well within `i32`.
+        // Convert from "bias" (UTC = Local + Bias) to "offset" (Local = UTC +
+        // offset). offset = −Bias.  `Bias` is documented as
+        // signed-minutes in range ±14 hours, so `× 60` stays well
+        // within `i32`.
         -(total_bias_minutes * 60)
     }
 }

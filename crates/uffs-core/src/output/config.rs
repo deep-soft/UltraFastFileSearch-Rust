@@ -50,7 +50,8 @@ pub struct OutputConfig {
 impl Default for OutputConfig {
     fn default() -> Self {
         // Get current timezone offset once. On Windows,
-        // Windows' FileTimeToLocalFileTime() uses the CURRENT offset for all timestamps
+        // Windows' FileTimeToLocalFileTime() uses the CURRENT offset for all
+        // timestamps
         let timezone_offset_secs = chrono::Local::now().offset().local_minus_utc();
 
         Self {
@@ -185,8 +186,8 @@ impl OutputConfig {
     }
 
     // NOTE: with_tripwire() was removed (Fix #1).
-    // Tripwire is now logged to stderr/tracing and embedded in binary string table.
-    // See TRIPWIRE constant in uffs-cli/src/commands.rs.
+    // Tripwire is now logged to stderr/tracing and embedded in binary string
+    // table. See TRIPWIRE constant in uffs-cli/src/commands.rs.
 
     /// Check if the descendants column is requested.
     #[must_use]
@@ -255,9 +256,9 @@ impl OutputConfig {
             .collect();
 
         // NOTE: Tripwire is now logged to stderr/tracing instead of CSV output.
-        // This keeps CSV output strict (header + data rows only) for parity analysis.
-        // The tripwire is also embedded in the binary string table (see TRIPWIRE
-        // constant).
+        // This keeps CSV output strict (header + data rows only) for parity
+        // analysis. The tripwire is also embedded in the binary string
+        // table (see TRIPWIRE constant).
 
         // Write header if enabled
         if self.header {

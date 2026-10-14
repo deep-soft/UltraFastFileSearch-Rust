@@ -450,7 +450,8 @@ mod tests {
 
     #[test]
     fn a_bare_drive_is_a_valid_live_source() {
-        // `-d C` with no --mft-file is a live scan (Windows); parsing accepts it.
+        // `-d C` with no --mft-file is a live scan (Windows); parsing accepts
+        // it.
         let parsed = parse_deleted_args(&args(&["-d", "C"])).expect("live drive parses");
         assert!(parsed.mft_file.is_none());
         assert_eq!(parsed.drive, Some(DriveLetter::C));

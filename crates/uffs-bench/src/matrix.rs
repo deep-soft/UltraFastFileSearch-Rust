@@ -190,7 +190,8 @@ pub fn compute_matrix(spec: &MatrixSpec, preflight: &PreflightResult) -> Matrix 
     let capable_drives: Vec<char> = if everything_required {
         ram_budget_capable_drives(spec, preflight)
     } else {
-        // No budget constraint: all preflight-confirmed drives, in candidate order.
+        // No budget constraint: all preflight-confirmed drives, in candidate
+        // order.
         let known: alloc::collections::BTreeSet<char> = preflight
             .drives
             .iter()
@@ -505,8 +506,9 @@ mod tests {
         let md = render_md(&matrix);
 
         assert!(md.contains("**Capable drives (all tools):** C, D"));
-        // Cross-tool cells are summarized by count (detailed in the §1 results),
-        // not re-listed; UFFS-only exclusions keep their per-cell reason.
+        // Cross-tool cells are summarized by count (detailed in the §1
+        // results), not re-listed; UFFS-only exclusions keep their
+        // per-cell reason.
         assert!(md.contains("**Cross-tool cells:** 1"));
         assert!(md.contains("- `E:` all_dlls — E: es not loaded"));
         assert!(!md.contains("no UFFS-only exclusions"));

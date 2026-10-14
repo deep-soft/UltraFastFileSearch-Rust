@@ -273,8 +273,8 @@ pub fn generate_precise_read_chunks(
         );
     }
 
-    // Merge adjacent chunks with small gaps (for NVMe, small gaps are cheaper to
-    // read through)
+    // Merge adjacent chunks with small gaps (for NVMe, small gaps are cheaper
+    // to read through)
     let min_gap_bytes = min_gap_records as u64 * u64::from(record_size);
     let merged_chunks = merge_precise_chunks(chunks, record_size, min_gap_bytes, max_io_size);
 
@@ -374,9 +374,10 @@ fn emit_io_chunks(
         let chunk_frs_start = start_frs + pos;
         let chunk_frs_end = chunk_frs_start + chunk_records;
 
-        // Bitmap edge-trimming disabled: same rationale as generate_read_chunks().
-        // The bitmap is stale at chunk boundaries, causing valid IN_USE records
-        // to be skipped. Always read full chunks; IN_USE flag is authoritative.
+        // Bitmap edge-trimming disabled: same rationale as
+        // generate_read_chunks(). The bitmap is stale at chunk
+        // boundaries, causing valid IN_USE records to be skipped.
+        // Always read full chunks; IN_USE flag is authoritative.
         let (skip_begin, skip_end) = (0_u64, 0_u64);
         let diag = bitmap.calculate_skip_range(chunk_frs_start, chunk_frs_end);
         if diag.0 > 0 || diag.1 > 0 {
@@ -516,19 +517,21 @@ fn merge_adjacent_chunks(
 
     for next in chunks {
         // Check if chunks are PHYSICALLY adjacent on disk.
-        // This is critical for fragmented MFTs where FRS numbers may be contiguous
-        // but disk locations are NOT (e.g., extent 4 at LCN 9M, extent 5 at LCN 3M).
+        // This is critical for fragmented MFTs where FRS numbers may be
+        // contiguous but disk locations are NOT (e.g., extent 4 at LCN
+        // 9M, extent 5 at LCN 3M).
         //
-        // BUG FIX: Previously we only checked if gap_bytes (using saturating_sub) was
-        // small, but saturating_sub returns 0 when next.disk_offset <
-        // current_end_offset, causing chunks from different extents to be
-        // incorrectly merged.
+        // BUG FIX: Previously we only checked if gap_bytes (using
+        // saturating_sub) was small, but saturating_sub returns 0 when
+        // next.disk_offset < current_end_offset, causing chunks from
+        // different extents to be incorrectly merged.
         let current_end_offset =
             current.disk_offset + current.record_count * u64::from(record_size);
 
-        // Check for physical contiguity: next chunk must start at or very close to
-        // where current chunk ends. We check BOTH directions to catch non-contiguous
-        // extents regardless of their relative disk positions.
+        // Check for physical contiguity: next chunk must start at or very close
+        // to where current chunk ends. We check BOTH directions to
+        // catch non-contiguous extents regardless of their relative
+        // disk positions.
         let is_physically_contiguous = if next.disk_offset >= current_end_offset {
             // Normal case: next chunk is after current on disk
             let gap_bytes = next.disk_offset - current_end_offset;

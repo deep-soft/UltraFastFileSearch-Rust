@@ -483,8 +483,8 @@ fn apply_usn_patch_created_record_is_findable_by_extension() {
         "created record must be tagged with the resolved 'pdf' id"
     );
 
-    // 3. records_with_ext (base ∪ delta overlay) returns the new record for that id
-    //    — exactly what `--ext pdf` walks.
+    // 3. records_with_ext (base ∪ delta overlay) returns the new record for
+    //    that id — exactly what `--ext pdf` walks.
     let matches = drive.records_with_ext(pdf_id);
     assert!(
         matches.contains(&u32::try_from(new_idx).expect("idx fits u32")),

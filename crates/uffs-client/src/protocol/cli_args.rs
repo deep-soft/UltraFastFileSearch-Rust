@@ -504,10 +504,10 @@ impl RawCliArgs {
         //
         // Guards:
         // - `match_path` off: `path:*.dll` scans full paths, not names.
-        // - `case_sensitive` off: `--case *.DLL` would return zero results today (no
-        //   files have literal uppercase extensions on NTFS), but the ext index is
-        //   case-folded and would return all .dll files.  Preserve the stricter
-        //   semantic.
+        // - `case_sensitive` off: `--case *.DLL` would return zero results
+        //   today (no files have literal uppercase extensions on NTFS), but the
+        //   ext index is case-folded and would return all .dll files.  Preserve
+        //   the stricter semantic.
         // - `self.ext` is `None`: don't clobber an explicit `--ext`.
         // - `is_pure_ext_glob`: only `*.<alnum+_>+` shapes are safe to promote;
         //   `*.tar.gz`, `*.[ch]`, etc. stay on trigram.

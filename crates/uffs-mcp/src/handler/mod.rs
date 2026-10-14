@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! MCP [`ServerHandler`](rmcp::ServerHandler) implementation — bridges rmcp to
+//! MCP [`ServerHandler`] implementation — bridges rmcp to
 //! the UFFS daemon.
 //!
 //! This is the core of the MCP server.  It implements the rmcp
-//! [`ServerHandler`](rmcp::ServerHandler) trait, dispatching `tools/call`,
+//! [`ServerHandler`] trait, dispatching `tools/call`,
 //! `resources/read`, and `prompts/get` to the appropriate handlers.
 
 use crate::handler::definitions::percent_decode_path;
@@ -627,7 +627,8 @@ impl ServerHandler for UffsMcpServer {
                 let info_prefix_len = "uffs://info/".len();
                 let encoded_path = uri_str.get(info_prefix_len..).unwrap_or_default();
                 let decoded_path = percent_decode_path(encoded_path);
-                // Normalize URI-style forward slashes back to Windows backslashes.
+                // Normalize URI-style forward slashes back to Windows
+                // backslashes.
                 let win_path = decoded_path.replace('/', "\\");
 
                 let mut client = self

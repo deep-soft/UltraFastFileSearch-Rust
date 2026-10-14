@@ -993,8 +993,8 @@ mod tests {
         assert!(LifecycleManager::is_uffsd_image(Path::new(
             "/opt/uffs_daemon.exe"
         )));
-        // Sibling UFFS binaries and unrelated processes must NOT match — this is
-        // what makes a recycled PID read as "not our daemon".
+        // Sibling UFFS binaries and unrelated processes must NOT match — this
+        // is what makes a recycled PID read as "not our daemon".
         assert!(!LifecycleManager::is_uffsd_image(Path::new(
             "/usr/bin/uffs"
         )));
@@ -1025,7 +1025,8 @@ mod tests {
         use std::path::Path;
         let uffsd = Path::new("/usr/bin/uffsd");
         let other = Path::new("/usr/bin/chrome");
-        // Dead process is never a running daemon, whatever the image resolves to.
+        // Dead process is never a running daemon, whatever the image resolves
+        // to.
         assert!(!LifecycleManager::pid_entry_is_running_daemon(
             false,
             Some(uffsd)

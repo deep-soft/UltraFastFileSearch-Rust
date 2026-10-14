@@ -292,8 +292,8 @@ pub fn render(inputs: &ReportInputs) -> String {
 
 /// Decode bundle-artifact bytes for embedding into the draft.
 fn decode(bytes: &[u8]) -> String {
-    // AUDIT-OK(bytes): display-only embedding of a bundle artifact into a report
-    // draft; never a parse or security decision.
+    // AUDIT-OK(bytes): display-only embedding of a bundle artifact into a
+    // report draft; never a parse or security decision.
     String::from_utf8_lossy(bytes).into_owned()
 }
 

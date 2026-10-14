@@ -258,7 +258,8 @@ impl UffsClient {
                 continue; // keep reading for the actual response
             }
 
-            // It's a response — could be success (has `result`) or error (has `error`).
+            // It's a response — could be success (has `result`) or error (has
+            // `error`).
             let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|err| {
                 crate::error::ClientError::Protocol(format!("Bad response: {err}"))
             })?;
@@ -629,7 +630,8 @@ impl UffsClient {
     ///
     /// Returns a `ClientError` on connection or timeout failure.
     pub async fn shutdown(&mut self) -> Result<(), crate::error::ClientError> {
-        // Read nonce from PID file (line 4): {pid}\n{timestamp}\n{exe_hash}\n{nonce}\n
+        // Read nonce from PID file (line 4):
+        // {pid}\n{timestamp}\n{exe_hash}\n{nonce}\n
         let nonce = std::fs::read_to_string(pid_file_path())
             .ok()
             .and_then(|content| content.lines().nth(3).map(ToOwned::to_owned))

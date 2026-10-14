@@ -296,8 +296,8 @@ pub fn write_search_results(
     mmap[..header_size].copy_from_slice(header_bytes);
 
     // Write records.
-    // Safety: ShmemRecord is repr(C), Copy, and the slice is valid for records_size
-    // bytes.
+    // Safety: ShmemRecord is repr(C), Copy, and the slice is valid for
+    // records_size bytes.
     let records_bytes: &[u8] =
         unsafe { core::slice::from_raw_parts(records.as_ptr().cast::<u8>(), records_size) };
     mmap[header_size..header_size + records_size].copy_from_slice(records_bytes);

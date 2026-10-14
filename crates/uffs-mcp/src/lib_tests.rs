@@ -479,7 +479,8 @@ mod idle_timeout_tests {
         let last_activity = Arc::new(AtomicU64::new(now_epoch()));
         let la = Arc::clone(&last_activity);
 
-        // 2 s timeout. At ~1.2 s, poke activity (ensures epoch second advances).
+        // 2 s timeout. At ~1.2 s, poke activity (ensures epoch second
+        // advances).
         let updater = tokio::spawn(async move {
             tokio::time::sleep(core::time::Duration::from_millis(1200)).await;
             la.store(now_epoch(), Ordering::Relaxed);

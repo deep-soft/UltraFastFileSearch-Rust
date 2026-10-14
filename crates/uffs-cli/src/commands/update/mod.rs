@@ -128,16 +128,17 @@ pub(crate) fn run_update(args: &[String]) -> Result<()> {
             forwarded.push("--repair".to_owned());
         }
         // Helper health check (+ local self-heal when --repair): journal,
-        // backups, services, broker, release reach. Captured (not `?`-propagated)
-        // so a reported failure doesn't pre-empt the update-flow fix below.
+        // backups, services, broker, release reach. Captured (not
+        // `?`-propagated) so a reported failure doesn't pre-empt the
+        // update-flow fix below.
         let health = doctor::spawn(&snapshot_path, &forwarded);
 
-        // Update-class issues — out-of-date, version-skewed, or **missing a core
-        // binary** — are fixed by the update flow itself, which already owns the
-        // core set. So doctor *redirects* there rather than teaching the
-        // health-check helper that set. `--offline` skips this (assess needs the
-        // release feed). With `--repair` we run it; interactively we ask; piped
-        // we just point.
+        // Update-class issues — out-of-date, version-skewed, or **missing a
+        // core binary** — are fixed by the update flow itself, which
+        // already owns the core set. So doctor *redirects* there rather
+        // than teaching the health-check helper that set. `--offline`
+        // skips this (assess needs the release feed). With `--repair`
+        // we run it; interactively we ask; piped we just point.
         if !args.iter().any(|arg| arg == "--offline")
             && matches!(assess(&report), UpdateAssessment::Available { .. })
         {
@@ -701,7 +702,8 @@ mod tests {
     #[test]
     fn absent_broker_does_not_mark_root_incomplete() {
         // Every non-broker core binary present, broker absent (it lives in the
-        // winget root / as the service) → NOT incomplete, so no pointless update.
+        // winget root / as the service) → NOT incomplete, so no pointless
+        // update.
         let root = unmanaged_root(&["uffs", "uffsd", "uffsmcp", "uffs-update", "uffs-mft"]);
         assert!(
             !root_missing_core(&root, &CORE_WITH_BROKER),
@@ -729,7 +731,8 @@ mod tests {
             strip_verbatim_str(r"\\?\UNC\server\share\bin").as_deref(),
             Some(r"\\server\share\bin")
         );
-        // A plain path has no verbatim prefix -> None (left untouched upstream).
+        // A plain path has no verbatim prefix -> None (left untouched
+        // upstream).
         assert_eq!(strip_verbatim_str(r"C:\Users\rnio\bin"), None);
         assert_eq!(strip_verbatim_str("/usr/local/bin"), None);
     }

@@ -356,8 +356,8 @@ impl SearchFilters {
             //
             // Normalize path separators:
             // 1. Replace `/` with `\` (users may use forward slashes).
-            // 2. Collapse runs of `\` into a single `\` (transport layers may double-encode
-            //    backslashes, turning `\` into `\\`).
+            // 2. Collapse runs of `\` into a single `\` (transport layers may
+            //    double-encode backslashes, turning `\` into `\\`).
             let lowered = pat.to_ascii_lowercase();
             normalize_path_separators(&lowered)
         });

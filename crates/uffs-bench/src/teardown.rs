@@ -150,7 +150,8 @@ pub fn finalize(
     write_fingerprint(host, bundle_dir, FINGERPRINT_AFTER, &after)?;
     let before = load_fingerprint(host, bundle_dir, FINGERPRINT_BEFORE)?;
     report_diff(host, &fingerprint::diff(&before, &after));
-    // 4. The host is restored, so the manifest no longer describes pending work.
+    // 4. The host is restored, so the manifest no longer describes pending
+    //    work.
     RestoreManifest::new().save(host, &bundle_dir.join(RESTORE_MANIFEST))?;
     // 5. Finalize the resume/audit record.
     state.save(host, state_path)

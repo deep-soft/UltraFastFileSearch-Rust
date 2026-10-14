@@ -74,7 +74,8 @@ pub(crate) async fn cmd_save(
     use uffs_mft::platform::{VolumeHandle, detect_drive_type};
 
     // $UpCase mode: save only the 128 KB uppercase mapping table.
-    // Always saves as plain binary (64-byte header + raw table) — no encryption.
+    // Always saves as plain binary (64-byte header + raw table) — no
+    // encryption.
     if upcase {
         return cmd_save_upcase(drive, output).await;
     }

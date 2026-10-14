@@ -694,7 +694,8 @@ mod tests {
             Err(err) => panic!("Unexpected error: {err:?}"),
         };
 
-        // Verify that concurrency and io_size are None (will use optimal defaults)
+        // Verify that concurrency and io_size are None (will use optimal
+        // defaults)
         assert!(
             reader.concurrency.is_none(),
             "MftReader should default to None for concurrency"
@@ -764,7 +765,8 @@ mod tests {
             Err(err) => panic!("Unexpected error: {err:?}"),
         };
 
-        // These defaults are set for optimal performance and baseline-compatible output
+        // These defaults are set for optimal performance and
+        // baseline-compatible output
         assert!(reader.use_bitmap, "use_bitmap should default to true");
         assert!(reader.expand_links, "expand_links should default to true");
         assert!(

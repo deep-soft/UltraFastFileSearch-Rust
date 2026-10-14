@@ -270,7 +270,7 @@ fn gui_tool_probe() -> ToolProbe {
 #[test]
 fn ipc_error_with_process_running_reports_ipc_unavailable() {
     let host = MockHost::new()
-        .with_run_result(tasklist_found())  // state probe: process running
+        .with_run_result(tasklist_found()) // state probe: process running
         .with_run_result(ipc_error_output()); // version probe: IPC error
     let tv = probe_tool(&host, &gui_tool_probe());
     assert_eq!(tv.state, "running");
@@ -283,7 +283,7 @@ fn ipc_error_with_process_running_reports_ipc_unavailable() {
 #[test]
 fn ipc_error_with_process_absent_reports_not_running() {
     let host = MockHost::new()
-        .with_run_result(tasklist_empty())  // state probe: no process
+        .with_run_result(tasklist_empty()) // state probe: no process
         .with_run_result(ipc_error_output()); // version probe: IPC error
     let tv = probe_tool(&host, &gui_tool_probe());
     assert_eq!(tv.state, "stopped");

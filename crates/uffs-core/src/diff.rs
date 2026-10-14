@@ -114,7 +114,8 @@ const fn is_real(rec: &CompactRecord) -> bool {
 /// the three result vectors. Row indices are emitted in ascending array order.
 #[must_use]
 pub fn diff_records(baseline: &[CompactRecord], current: &[CompactRecord]) -> DeltaReport {
-    // Baseline: File Reference -> (size, modified) of the first row seen for it.
+    // Baseline: File Reference -> (size, modified) of the first row seen for
+    // it.
     let mut base_meta: FxHashMap<u64, Meta> =
         FxHashMap::with_capacity_and_hasher(baseline.len(), rustc_hash::FxBuildHasher);
     for rec in baseline.iter().filter(|rec| is_real(rec)) {

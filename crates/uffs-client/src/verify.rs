@@ -131,11 +131,12 @@ pub(crate) fn verify_daemon_pid_file(pid_path: &std::path::Path) -> bool {
         // `QueryFullProcessImageNameW` (the resolved image path). For a daemon
         // launched through a symlink/shim — e.g. a WinGet `…\Links\uffsd.exe`
         // entry, or any relaunch — those two path strings differ for the SAME
-        // binary, so the hashes differ even though nothing is wrong. Rather than
-        // refuse a legitimate daemon, defer to the authoritative identity check:
-        // the peer must be a `uffsd` binary (by name) and, when signed, pass
-        // Authenticode — which a real impostor fails just as it fails the hash.
-        // (This mirrors the hash==0 path, which already falls back here.)
+        // binary, so the hashes differ even though nothing is wrong. Rather
+        // than refuse a legitimate daemon, defer to the authoritative
+        // identity check: the peer must be a `uffsd` binary (by name)
+        // and, when signed, pass Authenticode — which a real impostor
+        // fails just as it fails the hash. (This mirrors the hash==0
+        // path, which already falls back here.)
         tracing::warn!(
             pid,
             exe = %exe_path.display(),

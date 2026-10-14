@@ -533,8 +533,8 @@ mod tests {
             make_group(vec![(2, 0), (3, 0)], 4),
         ]);
 
-        // Budget: 10 bytes max → group 1 reads 8 bytes (ok), group 2 needs 8 more (over
-        // budget)
+        // Budget: 10 bytes max → group 1 reads 8 bytes (ok), group 2 needs 8
+        // more (over budget)
         let mut verifier = DuplicateVerifier::new(
             DuplicateVerify::FirstBytes { count: 4096 },
             VerificationBudget::new(10, 0),

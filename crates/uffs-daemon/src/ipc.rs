@@ -76,7 +76,8 @@ impl IpcServer {
 
         let fd = stream.as_raw_fd();
 
-        // SAFETY: `getuid()` is a pure read of the process UID — no side effects.
+        // SAFETY: `getuid()` is a pure read of the process UID — no side
+        // effects.
         #[expect(unsafe_code, reason = "getuid is a standard POSIX call")]
         let my_uid = unsafe { libc::getuid() };
 

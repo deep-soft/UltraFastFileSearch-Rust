@@ -88,7 +88,8 @@ impl MftRecordMerger {
         match result {
             ParseResult::Base(record) => {
                 let frs = frs_to_usize(record.frs.raw());
-                // Expand if needed (rare - only if FRS exceeds initial capacity)
+                // Expand if needed (rare - only if FRS exceeds initial
+                // capacity)
                 if frs >= self.base_records.len() {
                     self.base_records.resize(frs + 1, None);
                 }
@@ -117,24 +118,28 @@ impl MftRecordMerger {
             if base_frs < self.base_records.len()
                 && let Some(ref mut base) = self.base_records[base_frs]
             {
-                // Merge names from extension records (no dedup — every $FILE_NAME
-                // attribute is counted, including duplicates across base+extension records).
+                // Merge names from extension records (no dedup — every
+                // $FILE_NAME attribute is counted, including
+                // duplicates across base+extension records).
                 for name in ext.names {
                     base.names.push(name);
                 }
                 // Merge streams from extension records
                 //
-                // Each primary attribute (LowestVCN == 0) is counted as a separate
-                // stream. Same-name non-$DATA streams are NOT merged — each internal
-                // attribute type instance is counted individually. However, $DATA streams
-                // (named ADS or unnamed default) may appear as continuation extents
-                // that should be merged by name.
+                // Each primary attribute (LowestVCN == 0) is counted as a
+                // separate stream. Same-name non-$DATA streams
+                // are NOT merged — each internal attribute type
+                // instance is counted individually. However, $DATA streams
+                // (named ADS or unnamed default) may appear as continuation
+                // extents that should be merged by name.
                 //
-                // Internal streams ("$EA", "$OBJECT_ID", etc.) from extension records
-                // are separate attribute instances, each counted individually.
+                // Internal streams ("$EA", "$OBJECT_ID", etc.) from extension
+                // records are separate attribute instances,
+                // each counted individually.
                 for stream in ext.streams {
-                    // Check if this is an internal/system stream (name starts with
-                    // "$" + uppercase letter). These are non-$DATA attribute types
+                    // Check if this is an internal/system stream (name starts
+                    // with "$" + uppercase letter). These
+                    // are non-$DATA attribute types
                     // that are counted as separate streams.
                     let is_internal = stream
                         .name
@@ -143,13 +148,15 @@ impl MftRecordMerger {
                         .is_some_and(|ch| ch.is_ascii_uppercase());
 
                     if is_internal {
-                        // Internal stream: always push as new (each counted separately)
+                        // Internal stream: always push as new (each counted
+                        // separately)
                         base.streams.push(stream);
                     } else if let Some(existing) =
                         base.streams.iter_mut().find(|s| s.name == stream.name)
                     {
                         // $DATA stream (unnamed or named ADS): merge sizes
-                        // This handles continuation extents split across segments
+                        // This handles continuation extents split across
+                        // segments
                         existing.size += stream.size;
                         existing.allocated_size += stream.allocated_size;
                         existing.is_sparse |= stream.is_sparse;
@@ -161,9 +168,11 @@ impl MftRecordMerger {
                     }
                 }
                 // Merge directory index sizes from extension records
-                // For directories, $I30 attributes may be split across extension records
+                // For directories, $I30 attributes may be split across
+                // extension records
                 if ext.dir_index_size > 0 || ext.dir_index_allocated > 0 {
-                    // Find or create the default stream (empty name) for directory
+                    // Find or create the default stream (empty name) for
+                    // directory
                     if let Some(default_stream) =
                         base.streams.iter_mut().find(|s| s.name.is_empty())
                     {
@@ -189,8 +198,9 @@ impl MftRecordMerger {
         let mut result = Vec::with_capacity(self.base_count);
         for record in self.base_records.iter_mut().flatten() {
             // Sort names by source_frs (ascending) to match MFT scan order.
-            // Records are processed in ascending FRS order, so when an extension
-            // record has a lower FRS than the base, its names appear first.
+            // Records are processed in ascending FRS order, so when an
+            // extension record has a lower FRS than the base, its
+            // names appear first.
             record.names.sort_by_key(|n| n.source_frs);
 
             if let Some(default_stream) = record.streams.iter().find(|s| s.name.is_empty()) {
@@ -200,7 +210,8 @@ impl MftRecordMerger {
 
             // If base record had no $FILE_NAME but extensions added names,
             // update the primary name from the first available name.
-            // This handles cases where all $FILE_NAME attributes are in extension records.
+            // This handles cases where all $FILE_NAME attributes are in
+            // extension records.
             if record.name.is_empty() && !record.names.is_empty() {
                 // Find the best name (prefer Win32/Win32+DOS namespace)
                 let best_name = record
@@ -273,24 +284,28 @@ impl MftRecordMerger {
             if base_frs < self.base_records.len()
                 && let Some(ref mut base) = self.base_records[base_frs]
             {
-                // Merge names from extension records (no dedup — every $FILE_NAME
-                // attribute is counted, including duplicates across base+extension records).
+                // Merge names from extension records (no dedup — every
+                // $FILE_NAME attribute is counted, including
+                // duplicates across base+extension records).
                 for name in ext.names {
                     base.names.push(name);
                 }
                 // Merge streams from extension records
                 //
-                // Each primary attribute (LowestVCN == 0) is counted as a separate
-                // stream. Same-name non-$DATA streams are NOT merged — each internal
-                // attribute type instance is counted individually. However, $DATA streams
-                // (named ADS or unnamed default) may appear as continuation extents
-                // that should be merged by name.
+                // Each primary attribute (LowestVCN == 0) is counted as a
+                // separate stream. Same-name non-$DATA streams
+                // are NOT merged — each internal attribute type
+                // instance is counted individually. However, $DATA streams
+                // (named ADS or unnamed default) may appear as continuation
+                // extents that should be merged by name.
                 //
-                // Internal streams ("$EA", "$OBJECT_ID", etc.) from extension records
-                // are separate attribute instances, each counted individually.
+                // Internal streams ("$EA", "$OBJECT_ID", etc.) from extension
+                // records are separate attribute instances,
+                // each counted individually.
                 for stream in ext.streams {
-                    // Check if this is an internal/system stream (name starts with
-                    // "$" + uppercase letter). These are non-$DATA attribute types
+                    // Check if this is an internal/system stream (name starts
+                    // with "$" + uppercase letter). These
+                    // are non-$DATA attribute types
                     // that are counted as separate streams.
                     let is_internal = stream
                         .name
@@ -299,13 +314,15 @@ impl MftRecordMerger {
                         .is_some_and(|ch| ch.is_ascii_uppercase());
 
                     if is_internal {
-                        // Internal stream: always push as new (each counted separately)
+                        // Internal stream: always push as new (each counted
+                        // separately)
                         base.streams.push(stream);
                     } else if let Some(existing) =
                         base.streams.iter_mut().find(|s| s.name == stream.name)
                     {
                         // $DATA stream (unnamed or named ADS): merge sizes
-                        // This handles continuation extents split across segments
+                        // This handles continuation extents split across
+                        // segments
                         existing.size += stream.size;
                         existing.allocated_size += stream.allocated_size;
                         existing.is_sparse |= stream.is_sparse;
@@ -317,9 +334,11 @@ impl MftRecordMerger {
                     }
                 }
                 // Merge directory index sizes from extension records
-                // For directories, $I30 attributes may be split across extension records
+                // For directories, $I30 attributes may be split across
+                // extension records
                 if ext.dir_index_size > 0 || ext.dir_index_allocated > 0 {
-                    // Find or create the default stream (empty name) for directory
+                    // Find or create the default stream (empty name) for
+                    // directory
                     if let Some(default_stream) =
                         base.streams.iter_mut().find(|s| s.name.is_empty())
                     {
@@ -342,12 +361,13 @@ impl MftRecordMerger {
         }
 
         // Recalculate sizes from merged streams and fix primary name if needed
-        // For directories, size comes from the default stream (which now includes
-        // merged $I30 sizes from extension records)
+        // For directories, size comes from the default stream (which now
+        // includes merged $I30 sizes from extension records)
         for record in self.base_records.iter_mut().flatten() {
             // Sort names by source_frs (ascending) to match MFT scan order.
-            // Records are processed in ascending FRS order, so when an extension
-            // record has a lower FRS than the base, its names appear first.
+            // Records are processed in ascending FRS order, so when an
+            // extension record has a lower FRS than the base, its
+            // names appear first.
             record.names.sort_by_key(|n| n.source_frs);
 
             if let Some(default_stream) = record.streams.iter().find(|s| s.name.is_empty()) {
@@ -357,7 +377,8 @@ impl MftRecordMerger {
 
             // If base record had no $FILE_NAME but extensions added names,
             // update the primary name from the first available name.
-            // This handles cases where all $FILE_NAME attributes are in extension records.
+            // This handles cases where all $FILE_NAME attributes are in
+            // extension records.
             if record.name.is_empty() && !record.names.is_empty() {
                 // Find the best name (prefer Win32/Win32+DOS namespace)
                 let best_name = record
@@ -380,7 +401,8 @@ impl MftRecordMerger {
         // Estimate capacity: if expanding links, we need more space
         // Use integer arithmetic to avoid float precision issues
         let estimated_capacity = if expand_links {
-            // Rough estimate: assume average of 1.2 links per file (base_count * 6 / 5)
+            // Rough estimate: assume average of 1.2 links per file (base_count
+            // * 6 / 5)
             self.base_count.saturating_mul(6) / 5
         } else {
             self.base_count

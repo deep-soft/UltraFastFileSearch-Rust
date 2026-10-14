@@ -212,10 +212,10 @@ fn merge_sums_groups_across_drives() {
     // 3× data.bin + 2× config.ini).  After merge:
     //   * data.bin:   6 copies × 1000 B → reclaimable 5000
     //   * config.ini: 4 copies ×  200 B → reclaimable  600
-    //   * readme.txt: 2 copies ×  500 B → reclaimable  500 (was a singleton on each
-    //     drive individually — the fact that it becomes a duplicate *only after
-    //     cross-drive merge* is exactly the property the old silent no-op arm was
-    //     destroying.)
+    //   * readme.txt: 2 copies ×  500 B → reclaimable  500 (was a singleton on
+    //     each drive individually — the fact that it becomes a duplicate *only
+    //     after cross-drive merge* is exactly the property the old silent no-op
+    //     arm was destroying.)
     assert_eq!(
         result.candidate_groups, 3,
         "merge must keep all three cross-drive duplicate groups"

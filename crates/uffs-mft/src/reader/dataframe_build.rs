@@ -62,8 +62,8 @@ impl MftReader {
             let name_count = parsed.name_count();
             let stream_count = parsed.stream_count();
 
-            // Polars-bound `Vec<u64>` columns — downcast typed FRS values at the push
-            // boundary.
+            // Polars-bound `Vec<u64>` columns — downcast typed FRS values at
+            // the push boundary.
             frs_vec.push(parsed.frs.raw());
             parent_frs_vec.push(parsed.parent_frs.raw());
             name_vec.push(parsed.name);
@@ -346,7 +346,8 @@ impl MftReader {
         // 20 % headroom for hard-link expansion, computed in integer space to
         // avoid an f64 round-trip and the associated `cast_possible_truncation`
         // / `cast_precision_loss` lints.  `base_capacity / 5` is exact for any
-        // `usize` and saturates safely on add (the result feeds `Vec::with_capacity`).
+        // `usize` and saturates safely on add (the result feeds
+        // `Vec::with_capacity`).
         let capacity = if expand_links {
             base_capacity.saturating_add(base_capacity / 5)
         } else {
@@ -438,7 +439,8 @@ impl MftReader {
 
                 for name_info in &names {
                     for stream_info in &streams {
-                        // Polars-bound `Vec<u64>` columns — typed → raw at the push boundary.
+                        // Polars-bound `Vec<u64>` columns — typed → raw at the
+                        // push boundary.
                         frs_vec.push(parsed.frs.raw());
                         parent_frs_vec.push(name_info.parent_frs.raw());
                         name_vec.push(name_info.name.clone());
@@ -477,7 +479,8 @@ impl MftReader {
                     }
                 }
             } else {
-                // Polars-bound `Vec<u64>` columns — typed → raw at the push boundary.
+                // Polars-bound `Vec<u64>` columns — typed → raw at the push
+                // boundary.
                 frs_vec.push(parsed.frs.raw());
                 parent_frs_vec.push(parsed.parent_frs.raw());
                 name_vec.push(parsed.name);
@@ -630,8 +633,8 @@ impl MftReader {
             let name_count = parsed.name_count();
             let stream_count = parsed.stream_count();
 
-            // Polars-bound `Vec<u64>` columns — downcast typed FRS values at the push
-            // boundary.
+            // Polars-bound `Vec<u64>` columns — downcast typed FRS values at
+            // the push boundary.
             frs_vec.push(parsed.frs.raw());
             parent_frs_vec.push(parsed.parent_frs.raw());
             name_vec.push(parsed.name);

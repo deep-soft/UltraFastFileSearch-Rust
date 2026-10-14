@@ -298,7 +298,8 @@ pub(crate) async fn cmd_benchmark_index_lean(
     // Open reader and read MFT into lean index
     // - no_bitmap: disable bitmap optimization to read entire MFT sequentially
     // - no_placeholders: skip placeholder creation for ~15% speedup
-    // - concurrency: number of I/O ops in flight (None = auto based on drive type)
+    // - concurrency: number of I/O ops in flight (None = auto based on drive
+    //   type)
     // - io_size_kb: I/O chunk size in KB (None = auto based on drive type)
     // - parallel_parse: enable M3 parallel parsing optimization
     // - parse_workers: number of parsing worker threads
@@ -308,8 +309,8 @@ pub(crate) async fn cmd_benchmark_index_lean(
         .with_use_bitmap(!no_bitmap)
         .with_add_placeholders(!no_placeholders);
 
-    // Only set concurrency/io_size if explicitly specified (otherwise use adaptive
-    // defaults)
+    // Only set concurrency/io_size if explicitly specified (otherwise use
+    // adaptive defaults)
     if let Some(c) = concurrency {
         reader = reader.with_concurrency(c);
     }
@@ -697,9 +698,10 @@ pub(crate) async fn cmd_benchmark_multi_volume(
     for handle in handles {
         #[expect(unsafe_code, reason = "required for windows ffi call to CloseHandle")]
         {
-            // SAFETY: each `handle` was returned by `open_overlapped_handle` above
-            // and not used after this point; `CloseHandle` is the documented
-            // counterpart for `CreateFileW`-derived volume handles.
+            // SAFETY: each `handle` was returned by `open_overlapped_handle`
+            // above and not used after this point; `CloseHandle` is
+            // the documented counterpart for `CreateFileW`-derived
+            // volume handles.
             _ = unsafe { windows::Win32::Foundation::CloseHandle(handle) };
         }
     }

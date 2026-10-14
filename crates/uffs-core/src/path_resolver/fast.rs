@@ -111,7 +111,8 @@ impl FastPathResolver {
         let estimated_name_bytes = df.height() * 20;
         let mut names = NameArena::with_capacity(estimated_name_bytes);
 
-        // Pre-allocate entries Vec (u64 to usize is safe for practical MFT sizes)
+        // Pre-allocate entries Vec (u64 to usize is safe for practical MFT
+        // sizes)
         let entries_len = uffs_mft::frs_to_usize(max_frs + 1);
         let mut entries: Vec<Option<FastEntry>> = vec![None; entries_len];
 
@@ -377,7 +378,8 @@ impl FastPathResolver {
                 // capacity, so re-allocation is rare.
                 let file_name = name.unwrap_or("<unnamed>");
                 let mut path = parent_path;
-                // Special case: root directory has name "." — keep parent path as-is.
+                // Special case: root directory has name "." — keep parent path
+                // as-is.
                 if file_name != "." {
                     if !path.ends_with('\\') {
                         path.push('\\');
@@ -388,8 +390,9 @@ impl FastPathResolver {
                 // Check if this entry has an ADS stream name
                 let has_ads = stream_name.is_some_and(|sn| !sn.is_empty());
 
-                // Add trailing backslash for directories, but NOT if they have an ADS
-                // (ADS paths should be "dir:stream" not "dir\\:stream")
+                // Add trailing backslash for directories, but NOT if they have
+                // an ADS (ADS paths should be "dir:stream" not
+                // "dir\\:stream")
                 if is_dir.unwrap_or(false) && !path.ends_with('\\') && !has_ads {
                     path.push('\\');
                 }
@@ -450,7 +453,8 @@ pub fn add_path_only_column(df: &DataFrame) -> Result<DataFrame> {
             path_opt.map_or_else(String::new, |path| {
                 // Find the last backslash - use get() for safe UTF-8 slicing
                 path.rfind('\\').map_or_else(String::new, |last_sep| {
-                    // Use get() to safely slice, avoiding panic on UTF-8 boundary
+                    // Use get() to safely slice, avoiding panic on UTF-8
+                    // boundary
                     path.get(..=last_sep)
                         .map_or_else(String::new, str::to_owned)
                 })

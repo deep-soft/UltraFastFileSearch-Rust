@@ -124,7 +124,8 @@ pub fn parse_record_to_fragment(
             break;
         }
 
-        // `offset + length` can overflow on a crafted `length`; checked_add → break.
+        // `offset + length` can overflow on a crafted `length`; checked_add →
+        // break.
         let Some(attr_end) = offset.checked_add(u32_as_usize(attr_header.length)) else {
             break;
         };
@@ -150,8 +151,8 @@ pub fn parse_record_to_fragment(
             }
             Some(AttributeType::FileName) if attr_header.is_non_resident == 0 => {
                 let value_offset = usize::from(rd_u16(data, offset.saturating_add(20)));
-                // `offset + value_offset` is byte-derived; checked, then re-validated
-                // by the `.get()` below.
+                // `offset + value_offset` is byte-derived; checked, then
+                // re-validated by the `.get()` below.
                 if let Some(fn_offset) = offset.checked_add(value_offset)
                     && let Some(fn_slice) = fn_offset
                         .checked_add(size_of::<FileNameAttribute>())
@@ -183,7 +184,8 @@ pub fn parse_record_to_fragment(
 
                         if namespace != 2 {
                             let parse_idx = name_parse_counter;
-                            // Bounded parse-order counter; saturate to avoid overflow.
+                            // Bounded parse-order counter; saturate to avoid
+                            // overflow.
                             name_parse_counter = name_parse_counter.saturating_add(1);
                             let is_better = match namespace {
                                 1 | 3 => true,
@@ -205,14 +207,16 @@ pub fn parse_record_to_fragment(
                 }
             }
             Some(AttributeType::Data) => {
-                // legacy-output parity: Only primary attributes (LowestVCN == 0) count as
-                // streams. Continuation extents (LowestVCN > 0) are skipped.
+                // legacy-output parity: Only primary attributes (LowestVCN ==
+                // 0) count as streams. Continuation extents
+                // (LowestVCN > 0) are skipped.
                 // See ntfs_index_load.hpp:358
                 let is_primary = if attr_header.is_non_resident == 0 {
                     true // Resident attributes are always primary
                 } else {
-                    // `offset + 16` is byte-derived; checked then the `+ 8` field
-                    // bound preserves the original "can't verify, skip" fallback.
+                    // `offset + 16` is byte-derived; checked then the `+ 8`
+                    // field bound preserves the original
+                    // "can't verify, skip" fallback.
                     // Can't verify → false (skip to be safe).
                     offset
                         .checked_add(16)
@@ -221,8 +225,9 @@ pub fn parse_record_to_fragment(
                 };
 
                 if !is_primary {
-                    // Skip continuation extents - they don't count as new streams
-                    // Disk-derived advance; saturate so a crafted length can't overflow.
+                    // Skip continuation extents - they don't count as new
+                    // streams Disk-derived advance;
+                    // saturate so a crafted length can't overflow.
                     offset = offset.saturating_add(u32_as_usize(attr_header.length));
                     continue;
                 }
@@ -231,8 +236,9 @@ pub fn parse_record_to_fragment(
                 let name_len = usize::from(attr_header.name_length);
                 let (size, allocated) = if attr_header.is_non_resident != 0 {
                     // `rd_u*` are individually bounds-safe (return 0 OOB); the
-                    // `offset + 48 + 8 <= len` guard preserves the original "both
-                    // fields present" semantics. Offsets via checked/saturating_add.
+                    // `offset + 48 + 8 <= len` guard preserves the original
+                    // "both fields present" semantics.
+                    // Offsets via checked/saturating_add.
                     offset
                         .checked_add(48)
                         .filter(|size_off| size_off.saturating_add(8) <= data.len())
@@ -244,10 +250,12 @@ pub fn parse_record_to_fragment(
                         })
                 } else {
                     // Resident: value_length at offset 16
-                    // Resident files have no clusters allocated - data is stored in MFT record
-                    // Resident files have allocated_size=0 (data stored in MFT record)
-                    // `rd_u32` is bounds-safe; the `+ 4 <= len` guard preserves the
-                    // original "field present" fallback.
+                    // Resident files have no clusters allocated - data is
+                    // stored in MFT record Resident files
+                    // have allocated_size=0 (data stored in MFT record)
+                    // `rd_u32` is bounds-safe; the `+ 4 <= len` guard preserves
+                    // the original "field present"
+                    // fallback.
                     offset
                         .checked_add(16)
                         .filter(|len_off| len_off.saturating_add(4) <= data.len())
@@ -279,7 +287,8 @@ pub fn parse_record_to_fragment(
                         let stream_name = crate::io::parser::unified::decode_name_u16(&name_u16).0;
                         // ALL named $DATA streams create regular
                         // stream entries.  Internal ones are filtered from
-                        // output by is_internal_windows_stream in the output layer.
+                        // output by is_internal_windows_stream in the output
+                        // layer.
                         additional_streams.push((stream_name, size, allocated));
                     }
                 }
@@ -292,20 +301,23 @@ pub fn parse_record_to_fragment(
     }
 
     // Set directory flag in std_info BEFORE checking for filename
-    // This ensures is_directory is set even when $FILE_NAME is in extension record
+    // This ensures is_directory is set even when $FILE_NAME is in extension
+    // record
     if is_directory {
         std_info.set_directory(true);
     }
 
     // Handle records without a filename in the base record
-    // The $FILE_NAME may be in an extension record - we still need to store stdinfo
+    // The $FILE_NAME may be in an extension record - we still need to store
+    // stdinfo
     let Some((name, parent_frs, _namespace, primary_parse_index)) = primary_name else {
         // No $FILE_NAME in base record — store stdinfo anyway.
         // The extension record will add the name later.
         //
         // IMPORTANT: We must still add ADS streams from the base record!
         // The $FILE_NAME may be in an extension record, but the ADS are here.
-        // Without this, ADS on files/directories with extension records are lost.
+        // Without this, ADS on files/directories with extension records are
+        // lost.
         store_nameless_record(
             fragment,
             frs,
@@ -392,10 +404,10 @@ pub fn parse_record_to_fragment(
     }
 
     // Get or create the record in the fragment
-    // IMPORTANT: The record may already have names/streams from extension records
-    // that were processed BEFORE this base record in the same fragment.
-    // We must preserve those extension names/streams and chain them to base record
-    // data.
+    // IMPORTANT: The record may already have names/streams from extension
+    // records that were processed BEFORE this base record in the same
+    // fragment. We must preserve those extension names/streams and chain
+    // them to base record data.
     let record = fragment.get_or_create(frs_typed);
 
     // Save any existing extension data BEFORE overwriting
@@ -414,7 +426,8 @@ pub fn parse_record_to_fragment(
     let existing_stream_count = if existing_stream_next == NO_ENTRY {
         0
     } else {
-        // Extension records added ADS - count is stream_count - 1 (exclude default)
+        // Extension records added ADS - count is stream_count - 1 (exclude
+        // default)
         record.stream_count.saturating_sub(1)
     };
 
@@ -455,12 +468,13 @@ pub fn parse_record_to_fragment(
     let first_name_next_entry: u32;
 
     if existing_name_valid {
-        // Extension had first_name set - add it as a new link in the links array
+        // Extension had first_name set - add it as a new link in the links
+        // array
         let ext_link_idx = len_to_u32(fragment.links.len());
         fragment.links.push(existing_first_name);
 
-        // Chain: base first_name -> base additional links -> ext first_name -> ext
-        // overflow
+        // Chain: base first_name -> base additional links -> ext first_name ->
+        // ext overflow
         if let Some((&head, &last)) = link_indices.first().zip(link_indices.last()) {
             first_name_next_entry = head;
             fragment.links[u32_as_usize(last)].next_entry = ext_link_idx;
@@ -535,8 +549,9 @@ pub fn parse_record_to_fragment(
         let parent_idx = {
             let p_frs_usize = frs_to_usize(p_frs);
             if p_frs_usize >= frag.frs_to_idx.len() {
-                // `p_frs` is masked to 48 bits, so `+ 1` cannot overflow usize on
-                // 64-bit; saturate defensively to keep arithmetic panic-free.
+                // `p_frs` is masked to 48 bits, so `+ 1` cannot overflow usize
+                // on 64-bit; saturate defensively to keep
+                // arithmetic panic-free.
                 frag.frs_to_idx
                     .resize(p_frs_usize.saturating_add(1), NO_ENTRY);
             }

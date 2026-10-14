@@ -32,7 +32,8 @@ fn parse_columns_list() {
 
 #[test]
 fn parse_columns_with_spaces() {
-    // "Name,Size,Path Only" — the exact failing case from CLI validation test 22
+    // "Name,Size,Path Only" — the exact failing case from CLI validation test
+    // 22
     let cols = OutputConfig::parse_columns("Name,Size,Path Only").expect("should parse");
     assert_eq!(cols.len(), 3);
     assert_eq!(cols.first(), Some(&OutputColumn::Name));
@@ -308,8 +309,8 @@ fn parity_compat_directory_formatting() {
         .unwrap();
     let normal = String::from_utf8(normal_out).unwrap();
 
-    // Normal mode: path has NO trailing `\`, name = "Temp", size = 0, sizeondisk =
-    // own allocated
+    // Normal mode: path has NO trailing `\`, name = "Temp", size = 0,
+    // sizeondisk = own allocated
     assert!(
         normal.contains("\"C:\\Temp\""),
         "normal: path without trailing \\"

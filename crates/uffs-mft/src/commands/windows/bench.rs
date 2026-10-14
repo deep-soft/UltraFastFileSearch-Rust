@@ -69,7 +69,8 @@ pub(crate) async fn cmd_bench(
         "📊 Starting benchmark"
     );
 
-    // Open the reader once (opening is fast, we don't need to re-open for each run)
+    // Open the reader once (opening is fast, we don't need to re-open for each
+    // run)
     let reader = MftReader::open(drive)
         .with_context(|| format!("Failed to open drive {drive}:"))?
         .with_mode(mode)

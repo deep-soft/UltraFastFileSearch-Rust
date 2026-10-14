@@ -224,9 +224,10 @@ impl DriveCompactIndex {
             return Some(Vec::new());
         }
 
-        // Per needle-trigram effective posting = base ∪ delta. An absent trigram
-        // (empty in both) is skipped, never zeroing the result — the trigram
-        // index is a candidate pre-filter, exactly as the base search treats it.
+        // Per needle-trigram effective posting = base ∪ delta. An absent
+        // trigram (empty in both) is skipped, never zeroing the result
+        // — the trigram index is a candidate pre-filter, exactly as the
+        // base search treats it.
         let mut lists: Vec<Vec<u32>> = Vec::with_capacity(trigrams.len());
         for &tri in &trigrams {
             let base = self.trigram.get_posting(tri).unwrap_or(&[]);
@@ -248,8 +249,9 @@ impl DriveCompactIndex {
             }
         }
 
-        // Final tombstone resolution: keep a tombstoned candidate only if it was
-        // re-added under a name covering every needle trigram (see doc above).
+        // Final tombstone resolution: keep a tombstoned candidate only if it
+        // was re-added under a name covering every needle trigram (see
+        // doc above).
         if !delta.tombstones.is_empty() {
             result.retain(|&idx| {
                 !delta.is_tombstoned(idx)
@@ -402,16 +404,16 @@ impl DriveCompactIndex {
             let Some(rec) = self.records.get(change.idx as usize) else {
                 continue;
             };
-            // A record tombstoned this same batch (e.g. created-then-deleted) is
-            // gone; skip its add entirely.
+            // A record tombstoned this same batch (e.g. created-then-deleted)
+            // is gone; skip its add entirely.
             if rec.name_len == 0 {
                 continue;
             }
             // Trigram postings only for names ≥ 3 codepoints (shorter names are
             // found via linear scan, not the trigram pre-filter — matching the
             // base build); but the extension + children overlays are added for
-            // EVERY record regardless of name length, so an `--ext` / tree query
-            // never misses a short-named create/rename.
+            // EVERY record regardless of name length, so an `--ext` / tree
+            // query never misses a short-named create/rename.
             let trigrams =
                 crate::trigram::needle_trigrams(rec.name(&self.names), fold).unwrap_or_default();
             delta.add_record(change.idx, &trigrams, rec.extension_id, rec.parent_idx);

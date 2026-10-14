@@ -718,8 +718,8 @@ mod load_concurrency_tests {
 
     #[test]
     fn low_core_count_keeps_a_floor_of_parallelism() {
-        // Single-core hosts still get a floor of 2 (when there are >= 2 drives),
-        // but never more permits than drives.
+        // Single-core hosts still get a floor of 2 (when there are >= 2
+        // drives), but never more permits than drives.
         assert_eq!(max_concurrent_drive_loads(100, 1), 2);
         assert_eq!(max_concurrent_drive_loads(2, 1), 2);
         assert_eq!(max_concurrent_drive_loads(1, 1), 1);

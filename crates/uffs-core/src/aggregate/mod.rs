@@ -240,11 +240,12 @@ pub fn run_aggregate(
 
     // 2. Drive-level parallel scan.  Outer `par_iter` fans the work out over
     //    drives; each drive's inner scan is sequential.  The per-record work
-    //    (`accumulator.feed`) is only a few nanoseconds, which makes wrapping it in
-    //    a second layer of `par_iter().fold().reduce()` a net loss under concurrent
-    //    load: each nested fold chunk clones a full `Vec<GroupAccumulator>` and
-    //    then has to be reduced back together, and with K concurrent aggregate
-    //    queries the rayon pool ends up oversubscribed K×cores².  See
+    //    (`accumulator.feed`) is only a few nanoseconds, which makes wrapping
+    //    it in a second layer of `par_iter().fold().reduce()` a net loss under
+    //    concurrent load: each nested fold chunk clones a full
+    //    `Vec<GroupAccumulator>` and then has to be reduced back together, and
+    //    with K concurrent aggregate queries the rayon pool ends up
+    //    oversubscribed K×cores².  See
     //    `LOG/2026_04_18_08_09_CHANGELOG_HEALING.md` Run 7 for the measurements
     //    that drove this decision.
     let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
@@ -342,8 +343,8 @@ pub(crate) fn run_aggregate_filtered(
     // Build cross-drive extension mapping.
     let ext_map = ExtensionMap::build(drives);
 
-    // 2. Drive-level parallel scan with inline pattern filter.  Inner record loop
-    //    is sequential — see the rationale block in `run_aggregate` above.
+    // 2. Drive-level parallel scan with inline pattern filter.  Inner record
+    //    loop is sequential — see the rationale block in `run_aggregate` above.
     let index_pat_ref = &index_pat;
     let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
         .par_iter()
@@ -506,7 +507,8 @@ pub fn run_aggregate_with_filters(
             for (idx, record) in drive.records.iter().enumerate() {
                 scanned += 1;
 
-                // Record-level filter (O(1) — extension ID + directory flag + size).
+                // Record-level filter (O(1) — extension ID + directory flag +
+                // size).
                 if !filter.matches(record, &resolved_ext_ids) {
                     continue;
                 }

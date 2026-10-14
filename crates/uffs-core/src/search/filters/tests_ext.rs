@@ -311,8 +311,8 @@ fn filter_max_tree_allocated_rejects_large_tree() {
 #[test]
 fn filter_allowed_months_accepts_matching_month() {
     let mut names = Vec::new();
-    // test_record sets modified = 200_000_000 µs = 200 seconds = 1970-01-01 → month
-    // 1
+    // test_record sets modified = 200_000_000 µs = 200 seconds = 1970-01-01 →
+    // month 1
     let rec = test_record("file.txt", &mut names);
     let filters = SearchFilters {
         allowed_months: vec![1],

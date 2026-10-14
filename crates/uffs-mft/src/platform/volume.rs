@@ -784,7 +784,8 @@ impl VolumeHandle {
         };
         let mut bytes_returned: u32 = 0;
 
-        // The combined buffer (base + extended) is ~140 bytes — always fits u32.
+        // The combined buffer (base + extended) is ~140 bytes — always fits
+        // u32.
         let combined_size = u32::try_from(size_of::<NtfsVolumeDataCombined>()).unwrap_or(u32::MAX);
 
         // SAFETY: `handle` is an open volume handle, `combined` points to valid
@@ -1281,8 +1282,7 @@ impl VolumeHandle {
                         && attr.header.name_length == 0
                 })
             })
-            .map(|attr| attr.data_runs())
-            .unwrap_or_default();
+            .map_or_default(|attr| attr.data_runs());
         let extents = super::extents::data_runs_to_extents(&runs);
 
         if extents.is_empty() {
@@ -1389,9 +1389,9 @@ impl VolumeHandle {
             tracing::info!(volume = %self.volume, bitmap_path = %bitmap_path_str, "Opening MFT bitmap");
         }
 
-        // SAFETY: `bitmap_path` is UTF-16 and NUL-terminated for the duration of
-        // the call, optional pointers are `None`, and any returned handle is
-        // wrapped in `HandleGuard` before use.
+        // SAFETY: `bitmap_path` is UTF-16 and NUL-terminated for the duration
+        // of the call, optional pointers are `None`, and any returned
+        // handle is wrapped in `HandleGuard` before use.
         let bitmap_handle = match unsafe {
             CreateFileW(
                 PCWSTR::from_raw(bitmap_path.as_ptr()),
@@ -1672,8 +1672,8 @@ impl Drop for HandleGuard {
     #[expect(unsafe_code, reason = "FFI: windows API (CloseHandle)")]
     fn drop(&mut self) {
         if !self.0.is_invalid() {
-            // SAFETY: `HandleGuard` exclusively owns this valid handle and drops
-            // it exactly once when the guard is destroyed.
+            // SAFETY: `HandleGuard` exclusively owns this valid handle and
+            // drops it exactly once when the guard is destroyed.
             _ = unsafe { CloseHandle(self.0) };
         }
     }

@@ -264,9 +264,9 @@ fn run_item(
         outcome.record(description, status);
         return;
     }
-    // The broker service is staying (declined, or the non-elevated run left it),
-    // so it still runs and locks uffs-broker.exe: delete the other runtime
-    // binaries, leave the broker's alongside its service.
+    // The broker service is staying (declined, or the non-elevated run left
+    // it), so it still runs and locks uffs-broker.exe: delete the other
+    // runtime binaries, leave the broker's alongside its service.
     if let PlanTarget::DeleteBinaries { dir, stems } = &item.target
         && *broker_remains
         && stems.iter().any(|stem| is_broker_stem(stem))
@@ -520,8 +520,8 @@ mod tests {
     fn broker_remains_leaves_the_broker_binary_up_front() {
         // The `c` path leaves the broker: the gate dropped the service item, so
         // the plan has NO RemoveService (modelled here with the service absent)
-        // and `broker_remains` is true from the start. The broker binary is then
-        // left without any remove_service call — no Access-denied.
+        // and `broker_remains` is true from the start. The broker binary is
+        // then left without any remove_service call — no Access-denied.
         let report = DetectionReport {
             roots: vec![InstallRoot {
                 dir: PathBuf::from("/opt/uffs"),

@@ -64,7 +64,8 @@ impl PipelinedMftReader {
         bitmap: Option<crate::platform::MftBitmap>,
         drive_type: crate::platform::DriveType,
     ) -> Self {
-        // Chunk size based on drive type (use optimal_chunk_size for consistency)
+        // Chunk size based on drive type (use optimal_chunk_size for
+        // consistency)
         let chunk_size = drive_type.optimal_chunk_size();
 
         // Pipeline depth: 2-3 buffers is optimal
