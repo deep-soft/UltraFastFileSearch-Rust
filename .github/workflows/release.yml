@@ -510,8 +510,14 @@ jobs:
 
       - name: Build optimized release binaries
         shell: bash
+        # The matrix target reaches the script as an environment variable, not
+        # as `${{ }}` text spliced into it: shellcheck can then see the real
+        # comparisons (SC2193 flagged them as never-equal literals), and no
+        # expression value is ever interpreted as shell syntax.
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          echo "🔨 Building optimized release binaries for ${{ matrix.target }}"
+          echo "🔨 Building optimized release binaries for ${TARGET}"
           echo "   RUSTFLAGS=$RUSTFLAGS"
 
           # Build all workspace binaries for the target.  Profile settings
@@ -528,9 +534,9 @@ jobs:
           # instead.
           # musl → cargo-zigbuild (static C toolchain via zig); everything else
           # → the native cargo build. Same flags/profile either way.
-          if [[ "${{ matrix.target }}" == *musl* ]]; then
-            cargo zigbuild --locked --release --target ${{ matrix.target }} --workspace --bins
-          elif [[ "${{ matrix.target }}" == *windows* ]]; then
+          if [[ "$TARGET" == *musl* ]]; then
+            cargo zigbuild --locked --release --target "$TARGET" --workspace --bins
+          elif [[ "$TARGET" == *windows* ]]; then
             # Windows-ONLY size strip: rebuild std with panic=immediate-abort +
             # size-optimized std, so a field panic is a bare, process-local
             # abort() with no backtrace. The gimli/addr2line DWARF machinery is
@@ -544,17 +550,17 @@ jobs:
             cargo build --locked --profile ship \
               -Z build-std=std,panic_abort \
               -Z build-std-features=optimize_for_size \
-              --target ${{ matrix.target }} --workspace --bins
+              --target "$TARGET" --workspace --bins
             # The `ship` profile outputs to target/<triple>/ship/, but every
             # packaging step below reads target/<triple>/release/ — mirror the
             # built .exe files across so none of those paths need to change.
-            mkdir -p "target/${{ matrix.target }}/release"
-            cp "target/${{ matrix.target }}/ship/"*.exe "target/${{ matrix.target }}/release/"
+            mkdir -p "target/${TARGET}/release"
+            cp "target/${TARGET}/ship/"*.exe "target/${TARGET}/release/"
           else
-            cargo build --locked --release --target ${{ matrix.target }} --workspace --bins
+            cargo build --locked --release --target "$TARGET" --workspace --bins
           fi
 
-          echo "✅ Build completed for ${{ matrix.target }}"
+          echo "✅ Build completed for ${TARGET}"
 
       - name: Re-codesign macOS binaries (post-strip)
         if: contains(matrix.target, 'apple-darwin')
