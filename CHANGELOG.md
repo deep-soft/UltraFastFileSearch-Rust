@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.45] - 2026-10-13
+
+### Fixed
+
+- vss-requestor: retry the real freeze/flush timeouts, not two transposed codes
+- lints: clear every non-upstream finding from the floating-nightly canary
+
 ## [0.6.44] - 2026-10-03
 
 ### Added
@@ -2896,7 +2903,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.44...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.45...HEAD
+[0.6.45]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.44...v0.6.45
 [0.6.44]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.43...v0.6.44
 [0.6.43]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.42...v0.6.43
 [0.6.42]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.41...v0.6.42
