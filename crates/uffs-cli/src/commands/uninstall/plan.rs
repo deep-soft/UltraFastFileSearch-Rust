@@ -328,9 +328,10 @@ pub(crate) fn build_plan(
     push_group(&mut groups, "Binaries", binaries, args.scope);
 
     // 2. PATH entries that point at a removed unmanaged/dev root that is
-    // *dedicated* to UFFS (only uffs* files) — provably ours, so safe to drop. A
-    // shared bin dir (~/bin, ~/.local/bin) is filtered out upstream and never
-    // appears here. WinGet roots are managed by winget. Skipped under --no-path.
+    // *dedicated* to UFFS (only uffs* files) — provably ours, so safe to drop.
+    // A shared bin dir (~/bin, ~/.local/bin) is filtered out upstream and
+    // never appears here. WinGet roots are managed by winget. Skipped under
+    // --no-path.
     if !args.no_path {
         let path_items: Vec<PlanItem> = report
             .roots

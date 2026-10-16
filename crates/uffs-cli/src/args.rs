@@ -493,19 +493,19 @@ fn parse_daemon_changed_since(rest: &[String]) -> Result<DaemonAction, anyhow::E
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--journal-id" => {
-                let val = iter.next().map(String::as_str).unwrap_or_default();
+                let val = iter.next().map_or_default(String::as_str);
                 journal_id = val
                     .parse::<u64>()
                     .map_err(|err| anyhow::anyhow!("--journal-id '{val}' is not a u64: {err}"))?;
             }
             "--since-usn" => {
-                let val = iter.next().map(String::as_str).unwrap_or_default();
+                let val = iter.next().map_or_default(String::as_str);
                 since_usn = val
                     .parse::<i64>()
                     .map_err(|err| anyhow::anyhow!("--since-usn '{val}' is not an i64: {err}"))?;
             }
             "--max-records" => {
-                let val = iter.next().map(String::as_str).unwrap_or_default();
+                let val = iter.next().map_or_default(String::as_str);
                 max_records =
                     Some(val.parse::<u32>().map_err(|err| {
                         anyhow::anyhow!("--max-records '{val}' is not a u32: {err}")

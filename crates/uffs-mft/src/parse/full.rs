@@ -140,7 +140,8 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 // Parse $REPARSE_POINT to get the reparse tag and size.
                 // Both resident and non-resident forms are handled:
                 // - Resident: ValueLength from the attribute header
-                // - Non-resident: DataSize (rare, but possible for large reparse data)
+                // - Non-resident: DataSize (rare, but possible for large
+                //   reparse data)
                 //
                 // $REPARSE_POINT is counted as a stream, which affects the
                 // descendants count in tree metrics.
@@ -168,7 +169,8 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     (value_length, 0_u64, true)
                 } else {
                     // Non-resident reparse point (rare - large reparse data)
-                    // Use DataSize from non-resident header (at offset+32, NOT 40)
+                    // Use DataSize from non-resident header (at offset+32, NOT
+                    // 40)
                     let nr_offset = offset + 16; // After common header
                     let (data_size, alloc_size) = if nr_offset + 48 <= data.len() {
                         let ds = i64::from_le_bytes(
@@ -192,8 +194,9 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 };
 
                 // Count $REPARSE_POINT as a stream for descendants calculation
-                // Add it as a special stream with name "$REPARSE" to distinguish from $DATA
-                // Note: The size is already captured in reparse_size for the record's size
+                // Add it as a special stream with name "$REPARSE" to
+                // distinguish from $DATA Note: The size is
+                // already captured in reparse_size for the record's size
                 // calculation, but we need the stream for stream_count.
                 streams.push(StreamInfo {
                     name: String::from("$REPARSE"),
@@ -209,8 +212,9 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
             ) => {
                 // $INDEX_ROOT and $INDEX_ALLOCATION with name $I30 contribute
                 // to directory size (merged into a single stream entry).
-                // NOTE: $I30:$BITMAP is EXCLUDED from directory size (legacy-output parity).
-                // Non-$I30 indexes ($SDH, $SII, $O, $Q, $R) are counted as
+                // NOTE: $I30:$BITMAP is EXCLUDED from directory size
+                // (legacy-output parity). Non-$I30 indexes
+                // ($SDH, $SII, $O, $Q, $R) are counted as
                 // individual streams.
 
                 // Extract attribute name
@@ -243,8 +247,9 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 };
 
                 if is_i30 {
-                    // Include ALL $I30 attributes uniformly (including $BITMAP).
-                    // info->length += IsNonResident ? DataSize : ValueLength for all.
+                    // Include ALL $I30 attributes uniformly (including
+                    // $BITMAP). info->length +=
+                    // IsNonResident ? DataSize : ValueLength for all.
                     {
                         if attr_header.is_non_resident == 0 {
                             // Resident: get size from resident header
@@ -276,11 +281,13 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     }
                 } else {
                     // Non-$I30 index attribute — counted as individual streams.
-                    // Examples: $SDH, $SII (in $Secure), $O, $Q (in $Quota), $R (in $Reparse)
-                    // Also includes unnamed $BITMAP (e.g., in $MFT)
+                    // Examples: $SDH, $SII (in $Secure), $O, $Q (in $Quota), $R
+                    // (in $Reparse) Also includes unnamed
+                    // $BITMAP (e.g., in $MFT)
 
-                    // legacy-output parity: Only primary attributes (LowestVCN == 0) count as
-                    // streams. Continuation extents (LowestVCN > 0) are
+                    // legacy-output parity: Only primary attributes (LowestVCN
+                    // == 0) count as streams. Continuation
+                    // extents (LowestVCN > 0) are
                     // skipped. See ntfs_index_load.hpp:358
                     let is_primary = if attr_header.is_non_resident == 0 {
                         true // Resident attributes are always primary
@@ -297,7 +304,8 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     };
 
                     if !is_primary {
-                        // Skip continuation extents - they don't count as new streams
+                        // Skip continuation extents - they don't count as new
+                        // streams
                         offset += attr_header.length as usize;
                         continue;
                     }
@@ -370,9 +378,10 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 | AttributeType::SecurityDescriptor
                 | AttributeType::AttributeList,
             ) => {
-                // Note: LoggedUtilityStream (0x100) and AttributeList (0x20) are both
-                // counted as streams. This is critical for tree metrics
-                // parity - ~60k records have $ATTRIBUTE_LIST
+                // Note: LoggedUtilityStream (0x100) and AttributeList (0x20)
+                // are both counted as streams. This is critical
+                // for tree metrics parity - ~60k records have
+                // $ATTRIBUTE_LIST
 
                 // Extract attribute name (if any)
                 let attr_name = if attr_header.name_length > 0 {
@@ -394,8 +403,9 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     String::new()
                 };
 
-                // legacy-output parity: Only primary attributes (LowestVCN == 0) count as
-                // streams. Continuation extents (LowestVCN > 0) are skipped.
+                // legacy-output parity: Only primary attributes (LowestVCN ==
+                // 0) count as streams. Continuation extents
+                // (LowestVCN > 0) are skipped.
                 // See ntfs_index_load.hpp:358
                 let is_primary = if attr_header.is_non_resident == 0 {
                     true // Resident attributes are always primary
@@ -412,7 +422,8 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 };
 
                 if !is_primary {
-                    // Skip continuation extents - they don't count as new streams
+                    // Skip continuation extents - they don't count as new
+                    // streams
                     offset += attr_header.length as usize;
                     continue;
                 }
@@ -445,9 +456,11 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 };
 
                 // Create a stream name that identifies the attribute type
-                // Note: LoggedUtilityStream (0x100) must have a synthetic name to survive
-                // the named_streams filter in index.rs - otherwise its size is dropped
-                // while still being counted, causing a 48-byte size discrepancy.
+                // Note: LoggedUtilityStream (0x100) must have a synthetic name
+                // to survive the named_streams filter in
+                // index.rs - otherwise its size is dropped
+                // while still being counted, causing a 48-byte size
+                // discrepancy.
                 let stream_name = if attr_name.is_empty() {
                     match AttributeType::from_u32(attr_header.type_code) {
                         Some(AttributeType::ObjectId) => String::from("$OBJECT_ID"),
@@ -485,8 +498,8 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
             Some(AttributeType::StandardInformation | AttributeType::FileName) => {}
             _ => {
                 // All remaining attribute types are counted as streams.
-                // Any attribute type not explicitly handled above still gets counted.
-                // This includes truly unknown types.
+                // Any attribute type not explicitly handled above still gets
+                // counted. This includes truly unknown types.
                 // that from_u32() returns None for.
                 let type_code = attr_header.type_code;
                 debug!(
@@ -515,8 +528,9 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     String::new()
                 };
 
-                // legacy-output parity: Only primary attributes (LowestVCN == 0) count as
-                // streams. Continuation extents (LowestVCN > 0) are skipped.
+                // legacy-output parity: Only primary attributes (LowestVCN ==
+                // 0) count as streams. Continuation extents
+                // (LowestVCN > 0) are skipped.
                 // See ntfs_index_load.hpp:358
                 let is_primary = if attr_header.is_non_resident == 0 {
                     true // Resident attributes are always primary
@@ -533,7 +547,8 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 };
 
                 if !is_primary {
-                    // Skip continuation extents - they don't count as new streams
+                    // Skip continuation extents - they don't count as new
+                    // streams
                     offset += attr_header.length as usize;
                     continue;
                 }
@@ -604,21 +619,21 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
     // defers extension record merging to a later step.
 
     // Calculate primary size from default stream
-    // For reparse points (junctions/symlinks), use $REPARSE_POINT size if no $DATA
-    // stream
+    // For reparse points (junctions/symlinks), use $REPARSE_POINT size if no
+    // $DATA stream
     // For directories, size includes $INDEX_ROOT + $INDEX_ALLOCATION
     let is_directory = header.is_directory();
 
     // For directories with $I30 index, add a stream entry so it's counted in
     // total_stream_count. The merged $I30 is counted as a stream with
     // type_name_id=0.
-    // This is essential for tree metrics parity - each directory's $I30 contributes
-    // +1 to descendants.
+    // This is essential for tree metrics parity - each directory's $I30
+    // contributes +1 to descendants.
     //
-    // IMPORTANT: Junctions/reparse directories ALSO get the $I30 stream counted.
-    // Two-channel model for reparse directories:
-    //   - Channel A (propagation): ALL streams count (dir + reparse) -> parents see
-    //     2
+    // IMPORTANT: Junctions/reparse directories ALSO get the $I30 stream
+    // counted. Two-channel model for reparse directories:
+    //   - Channel A (propagation): ALL streams count (dir + reparse) -> parents
+    //     see 2
     //   - Channel B (printed): only directory stream -> junction prints
     //     descendants=1
     // The tree metrics algorithm handles this by storing printed_desc = 1 +
@@ -626,8 +641,9 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
     // for propagation.
     if is_directory && dir_index_size > 0 {
         // Add $I30 as the default stream (empty name) for directories
-        // This matches established behavior where $I30 is the "default" stream for
-        // directories just like $DATA is the default stream for files
+        // This matches established behavior where $I30 is the "default" stream
+        // for directories just like $DATA is the default stream for
+        // files
         streams.push(StreamInfo {
             name: String::new(), // Empty name = default stream
             size: dir_index_size,
@@ -639,13 +655,15 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
     }
 
     let (size, allocated_size) = if is_directory && dir_index_size > 0 {
-        // Directory with index allocation - use index size (legacy-output parity)
+        // Directory with index allocation - use index size (legacy-output
+        // parity)
         (dir_index_size, dir_index_allocated)
     } else {
         streams.iter().find(|s| s.name.is_empty()).map_or_else(
             || {
-                // No default $DATA stream — use reparse_size for junctions/symlinks
-                // (resident ValueLength from the $REPARSE_POINT attribute)
+                // No default $DATA stream — use reparse_size for
+                // junctions/symlinks (resident ValueLength from
+                // the $REPARSE_POINT attribute)
                 if reparse_tag != 0 {
                     (reparse_size, 0) // Reparse point data is resident,
                 // allocated=0

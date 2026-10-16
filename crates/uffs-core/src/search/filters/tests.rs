@@ -627,7 +627,8 @@ fn filter_older_created_accepts_old_files() {
 fn filter_older_accessed_rejects_new_files() {
     let mut names = Vec::new();
     let rec = test_record("new.txt", &mut names);
-    // accessed=300M, older_accessed_us=100M → file is NEWER than cutoff → reject
+    // accessed=300M, older_accessed_us=100M → file is NEWER than cutoff →
+    // reject
     let filters = SearchFilters {
         older_accessed_us: Some(100_000_000),
         ..Default::default()
@@ -642,7 +643,8 @@ fn filter_older_accessed_rejects_new_files() {
 fn filter_older_accessed_accepts_old_files() {
     let mut names = Vec::new();
     let rec = test_record("old.txt", &mut names);
-    // accessed=300M, older_accessed_us=999M → file IS older than cutoff → accept
+    // accessed=300M, older_accessed_us=999M → file IS older than cutoff →
+    // accept
     let filters = SearchFilters {
         older_accessed_us: Some(999_000_000),
         ..Default::default()

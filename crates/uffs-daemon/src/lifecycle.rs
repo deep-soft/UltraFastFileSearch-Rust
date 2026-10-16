@@ -286,8 +286,7 @@ impl LifecycleManager {
         let path = self.launch_state_path();
         let image = std::env::current_exe()
             .ok()
-            .map(|exe| exe.display().to_string())
-            .unwrap_or_default();
+            .map_or_default(|exe| exe.display().to_string());
         let command_line = std::env::args().collect::<Vec<_>>().join(" ");
         let started_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -851,9 +850,8 @@ impl LifecycleManager {
         reason = "hashing helper — clarity over inlining"
     )]
     fn exe_path_hash() -> u64 {
-        let exe_path = std::env::current_exe()
-            .map(|exe| exe.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let exe_path =
+            std::env::current_exe().map_or_default(|exe| exe.to_string_lossy().to_string());
         Self::fnv1a_hash(exe_path.as_bytes())
     }
 
@@ -995,8 +993,8 @@ mod tests {
         assert!(LifecycleManager::is_uffsd_image(Path::new(
             "/opt/uffs_daemon.exe"
         )));
-        // Sibling UFFS binaries and unrelated processes must NOT match — this is
-        // what makes a recycled PID read as "not our daemon".
+        // Sibling UFFS binaries and unrelated processes must NOT match — this
+        // is what makes a recycled PID read as "not our daemon".
         assert!(!LifecycleManager::is_uffsd_image(Path::new(
             "/usr/bin/uffs"
         )));
@@ -1027,7 +1025,8 @@ mod tests {
         use std::path::Path;
         let uffsd = Path::new("/usr/bin/uffsd");
         let other = Path::new("/usr/bin/chrome");
-        // Dead process is never a running daemon, whatever the image resolves to.
+        // Dead process is never a running daemon, whatever the image resolves
+        // to.
         assert!(!LifecycleManager::pid_entry_is_running_daemon(
             false,
             Some(uffsd)

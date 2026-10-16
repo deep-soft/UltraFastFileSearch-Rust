@@ -187,7 +187,8 @@ impl ExtensionFilter {
     pub fn matches(&self, filename: &str) -> bool {
         // Extract extension from filename using split to avoid string slicing
         if let Some(ext_part) = filename.rsplit('.').next() {
-            // Only match if there was actually a dot (not just the filename itself)
+            // Only match if there was actually a dot (not just the filename
+            // itself)
             if ext_part.len() < filename.len() {
                 let ext = ext_part.to_lowercase();
                 return self.extensions.contains(&ext);
@@ -245,7 +246,8 @@ impl Default for ExtensionFilter {
 /// ```
 pub fn ext_expr(name_column: &str) -> Expr {
     // Extract extension: everything after the last dot, lowercased
-    // Returns null for files without extensions or hidden files (starting with dot)
+    // Returns null for files without extensions or hidden files (starting with
+    // dot)
     let name_col = col(name_column);
 
     // Find the last dot position

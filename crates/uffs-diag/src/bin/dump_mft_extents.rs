@@ -16,10 +16,6 @@
 //!
 //! (Pass the drive letter without a colon.)
 
-#![expect(
-    unused_crate_dependencies,
-    reason = "standalone binary doesn't use all crate dependencies"
-)]
 // print_stderr is needed on all platforms for the error messages
 #![expect(
     clippy::print_stderr,
@@ -35,13 +31,27 @@
 // on all targets so the workspace stays consistent. We cfg-gate Windows-only
 // types and imports to keep non-Windows builds happy.
 
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
 #[cfg(windows)]
 use std::env;
 
+#[cfg(not(windows))]
+use anyhow as _;
 #[cfg(windows)]
 use anyhow::{Context as _, Result};
+use chrono as _;
+use hex as _;
+use rayon as _;
+use sha2 as _;
+use uffs_diag as _;
+#[cfg(not(windows))]
+use uffs_mft as _;
 #[cfg(windows)]
 use uffs_mft::{MftExtent, VolumeHandle};
+use uffs_polars as _;
 
 fn main() -> std::process::ExitCode {
     uffs_version::handle_version!("uffs-dump-mft-extents");

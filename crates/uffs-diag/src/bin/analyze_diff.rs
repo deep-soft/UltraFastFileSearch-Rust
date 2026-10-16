@@ -22,10 +22,6 @@
 //! - Pattern analysis for system files and unknown paths
 
 #![expect(
-    unused_crate_dependencies,
-    reason = "standalone binary doesn't use all crate dependencies"
-)]
-#![expect(
     clippy::print_stdout,
     clippy::print_stderr,
     clippy::use_debug,
@@ -58,12 +54,21 @@
     reason = "functions factored for readability in this analysis tool"
 )]
 
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
 use core::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
+use chrono as _;
+use hex as _;
+use rayon as _;
+use sha2 as _;
+use uffs_diag as _;
 use uffs_polars::{
     Column, CsvReadOptions, DataFrame, IntoSeries as _, SerReader as _, StringChunked,
 };

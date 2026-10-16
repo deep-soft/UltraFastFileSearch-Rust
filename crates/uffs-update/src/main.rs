@@ -117,12 +117,12 @@ fn run_apply(args: &[String]) -> Result<()> {
     // LocalSystem service: we can neither stop (to unlock its `.exe`) nor
     // restart it without admin. Drop it from this run — update everything else;
     // the running broker keeps serving (its wire protocol is back-compatible)
-    // and catches up on the next elevated update. When the broker is NOT running
-    // (not installed, or just a hand-placed `uffs-broker.exe` file), there is no
-    // service to stop and the binary is swapped in place like any other — so do
-    // not skip it and do not print the "left running" note. `is_elevated()` is
-    // `false` off Windows, but the snapshot has no broker there, so this is a
-    // no-op away from Windows.
+    // and catches up on the next elevated update. When the broker is NOT
+    // running (not installed, or just a hand-placed `uffs-broker.exe`
+    // file), there is no service to stop and the binary is swapped in place
+    // like any other — so do not skip it and do not print the "left
+    // running" note. `is_elevated()` is `false` off Windows, but the
+    // snapshot has no broker there, so this is a no-op away from Windows.
     // Read this BEFORE drop_broker strips the broker entries: when the broker
     // lives in a WinGet-delegated root, the caller's `winget upgrade` refreshes
     // its `.exe` and cycles the service, so it is not left at the old version.

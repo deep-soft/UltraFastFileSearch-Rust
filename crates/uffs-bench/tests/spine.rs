@@ -9,10 +9,16 @@
 //! persistence, the mode-aware confirmation gate, tooling teardown
 //! dispositions, host-fingerprint diffing, and bundle tool resolution.
 
-#![expect(
-    unused_crate_dependencies,
-    reason = "the tempfile dev-dependency is exercised by the SystemHost unit tests; these MockHost-based spine tests need no real filesystem"
-)]
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
+use chrono as _;
+use serde as _;
+use tempfile as _;
+use thiserror as _;
+use toml as _;
+use uffs_version as _;
 
 extern crate alloc;
 

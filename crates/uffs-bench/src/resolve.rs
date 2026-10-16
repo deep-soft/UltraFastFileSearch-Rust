@@ -133,7 +133,8 @@ pub(crate) fn everything_exe(host: &dyn Host) -> String {
 pub(crate) fn es_exe(host: &dyn Host) -> String {
     let bin_name = if cfg!(windows) { "es.exe" } else { "es" };
 
-    // 1. Ask the shell where the binary lives on PATH (gives full absolute path).
+    // 1. Ask the shell where the binary lives on PATH (gives full absolute
+    //    path).
     let where_cmd = if cfg!(windows) { "where.exe" } else { "which" };
     if let Ok(out) = host.run(where_cmd, &[bin_name]) {
         let first = out.stdout.lines().next().unwrap_or("").trim().to_owned();

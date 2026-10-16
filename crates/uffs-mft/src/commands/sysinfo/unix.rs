@@ -105,7 +105,8 @@ fn collect_volumes() -> Vec<Volume> {
     text.lines()
         .skip(1)
         .filter_map(|line| {
-            // POSIX `df -P`: Filesystem 1024-blocks Used Available Capacity Mounted-on
+            // POSIX `df -P`: Filesystem 1024-blocks Used Available Capacity
+            // Mounted-on
             let cols: Vec<&str> = line.split_whitespace().collect();
             let device = *cols.first()?;
             if !device.starts_with("/dev/") {

@@ -342,9 +342,7 @@ fn finalize_one(
 ) -> AggregateResult {
     let label = acc.label.clone();
     let field = acc.field;
-    let field_name = field
-        .map(|f_id| f_id.metadata().canonical_name.to_owned())
-        .unwrap_or_default();
+    let field_name = field.map_or_default(|f_id| f_id.metadata().canonical_name.to_owned());
 
     let data = match acc.kind {
         AccumulatorKind::Count { count } => AggregateResultData::Count { value: count },
@@ -522,9 +520,7 @@ fn finalize_terms(
 
     // Materialize sample rows for surviving buckets only.
     if let Some(ref mut heaps) = sample_heaps {
-        let projection = sample_spec
-            .map(super::spec::TopHitsSpec::effective_projection)
-            .unwrap_or_default();
+        let projection = sample_spec.map_or_default(super::spec::TopHitsSpec::effective_projection);
         for (group_key, row) in &mut keyed_rows {
             if let Some(heap) = heaps.get_mut(group_key) {
                 let entries = heap.drain_sorted();
@@ -707,8 +703,7 @@ fn format_field(
             drive
                 .ext_names
                 .get(ext_id)
-                .map(ToString::to_string)
-                .unwrap_or_default()
+                .map_or_default(ToString::to_string)
         }
         FieldId::Path | FieldId::PathOnly => {
             // Full path resolution is expensive — return parent index

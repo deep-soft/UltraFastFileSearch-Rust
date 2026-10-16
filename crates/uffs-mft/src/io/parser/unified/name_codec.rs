@@ -193,7 +193,8 @@ pub(super) fn wtf8_from_utf16le(bytes: &[u8], out: &mut Vec<u8>) {
         let code = u16::from_le_bytes(pair);
         i = i.saturating_add(2);
         if (0xD800..=0xDBFF).contains(&code) {
-            // High surrogate: combine with a following low surrogate if present.
+            // High surrogate: combine with a following low surrogate if
+            // present.
             if let Some(low) = i
                 .checked_add(2)
                 .and_then(|end| bytes.get(i..end))

@@ -20,10 +20,6 @@
 //! ```
 
 #![expect(
-    unused_crate_dependencies,
-    reason = "shared Cargo.toml dependencies not used by all binaries"
-)]
-#![expect(
     clippy::print_stdout,
     clippy::print_stderr,
     clippy::use_debug,
@@ -70,6 +66,10 @@
     reason = "style lints — current form is clearer in this context"
 )]
 
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -78,7 +78,9 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
+use hex as _;
 use rayon::prelude::*;
+use sha2 as _;
 use uffs_diag::parity::stats::{ComparisonResults, FieldStats};
 use uffs_polars::{CsvReadOptions, DataFrame, SerReader as _, StringChunked};
 

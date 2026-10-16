@@ -57,24 +57,24 @@ const DAEMON_READY_STATUS: &str = "Version:       0.0.0\n\
 fn dry_run_host() -> MockHost {
     let evr = "C:\\Program Files (x86)\\Everything\\Everything.exe";
     MockHost::new()
-        .with_run_result(stdout_of(""))                       //  1: initial daemon kill
-        .with_run_result(stdout_of(""))                       //  2: initial daemon start (all drives)
-        .with_run_result(stdout_of("C:\\bin\\es.exe"))         //  3: where.exe es.exe
-        .with_run_result(stdout_of("C:\\bin\\es.exe"))         //  4: where.exe es.exe
-        .with_run_result(stdout_of(evr))                      //  5: where.exe Everything.exe
-        .with_run_result(stdout_of("myhost"))                 //  6: hostname
-        .with_run_result(stdout_of("Name=Test CPU"))          //  7: cpu
-        .with_run_result(stdout_of("8"))                      //  8: logical_cpus
-        .with_run_result(stdout_of("8589934592"))             //  9: total_ram
-        .with_run_result(stdout_of("uffs 0.0.0"))             // 10: uffs --version
+        .with_run_result(stdout_of("")) //  1: initial daemon kill
+        .with_run_result(stdout_of("")) //  2: initial daemon start (all drives)
+        .with_run_result(stdout_of("C:\\bin\\es.exe")) //  3: where.exe es.exe
+        .with_run_result(stdout_of("C:\\bin\\es.exe")) //  4: where.exe es.exe
+        .with_run_result(stdout_of(evr)) //  5: where.exe Everything.exe
+        .with_run_result(stdout_of("myhost")) //  6: hostname
+        .with_run_result(stdout_of("Name=Test CPU")) //  7: cpu
+        .with_run_result(stdout_of("8")) //  8: logical_cpus
+        .with_run_result(stdout_of("8589934592")) //  9: total_ram
+        .with_run_result(stdout_of("uffs 0.0.0")) // 10: uffs --version
         .with_run_result(stdout_of("\tUFFS version:\t1.0.0")) // 11: uffs_cpp --version
-        .with_run_result(stdout_of(""))                       // 12: tasklist (everything stopped)
-        .with_run_result(stdout_of("1.1.0.30"))               // 13: es -version
-        .with_run_result(stdout_of(""))                       // 14: tasklist (everything_gui stopped)
-        .with_run_result(stdout_of("1.4.1.1032"))             // 15: es -get-everything-version
-        .with_run_result(stdout_of(DAEMON_READY_STATUS))      // 16: ensure_daemon_ready (all-drives)
-        .with_run_result(stdout_of("1.4.1.1032"))             // 17: preflight es availability
-        .with_run_result(stdout_of(DAEMON_READY_STATUS))      // 18: preflight daemon status
+        .with_run_result(stdout_of("")) // 12: tasklist (everything stopped)
+        .with_run_result(stdout_of("1.1.0.30")) // 13: es -version
+        .with_run_result(stdout_of("")) // 14: tasklist (everything_gui stopped)
+        .with_run_result(stdout_of("1.4.1.1032")) // 15: es -get-everything-version
+        .with_run_result(stdout_of(DAEMON_READY_STATUS)) // 16: ensure_daemon_ready (all-drives)
+        .with_run_result(stdout_of("1.4.1.1032")) // 17: preflight es availability
+        .with_run_result(stdout_of(DAEMON_READY_STATUS)) // 18: preflight daemon status
         .with_run_result(stdout_of("1000")) // 19: es result-count C
 }
 
@@ -115,31 +115,31 @@ fn dry_run_host() -> MockHost {
 fn autopilot_host() -> MockHost {
     let evr = "C:\\Program Files (x86)\\Everything\\Everything.exe";
     MockHost::new()
-        .with_run_result(stdout_of("running"))                 //  1: teardown daemon status
-        .with_run_result(stdout_of(""))                       //  2: initial daemon kill
-        .with_run_result(stdout_of(""))                       //  3: initial daemon start (all drives)
-        .with_run_result(stdout_of("C:\\bin\\es.exe"))         //  4: where.exe es.exe
-        .with_run_result(stdout_of("C:\\bin\\es.exe"))         //  5: where.exe es.exe
-        .with_run_result(stdout_of(evr))                      //  6: where.exe Everything.exe
-        .with_run_result(stdout_of("myhost"))                 //  7: hostname
-        .with_run_result(stdout_of("Name=Test CPU"))          //  8: cpu
-        .with_run_result(stdout_of("8"))                      //  9: logical_cpus
-        .with_run_result(stdout_of("8589934592"))             // 10: total_ram
-        .with_run_result(stdout_of("uffs 0.0.0"))             // 11: uffs --version
+        .with_run_result(stdout_of("running")) //  1: teardown daemon status
+        .with_run_result(stdout_of("")) //  2: initial daemon kill
+        .with_run_result(stdout_of("")) //  3: initial daemon start (all drives)
+        .with_run_result(stdout_of("C:\\bin\\es.exe")) //  4: where.exe es.exe
+        .with_run_result(stdout_of("C:\\bin\\es.exe")) //  5: where.exe es.exe
+        .with_run_result(stdout_of(evr)) //  6: where.exe Everything.exe
+        .with_run_result(stdout_of("myhost")) //  7: hostname
+        .with_run_result(stdout_of("Name=Test CPU")) //  8: cpu
+        .with_run_result(stdout_of("8")) //  9: logical_cpus
+        .with_run_result(stdout_of("8589934592")) // 10: total_ram
+        .with_run_result(stdout_of("uffs 0.0.0")) // 11: uffs --version
         .with_run_result(stdout_of("\tUFFS version:\t1.0.0")) // 12: uffs_cpp --version
-        .with_run_result(stdout_of(""))                       // 13: tasklist (everything stopped)
-        .with_run_result(stdout_of("1.1.0.30"))               // 14: es -version
-        .with_run_result(stdout_of(""))                       // 15: tasklist (everything_gui stopped)
-        .with_run_result(stdout_of("1.4.1.1032"))             // 16: es -get-everything-version
-        .with_run_result(stdout_of(DAEMON_READY_STATUS))      // 17: ensure_daemon_ready (all-drives)
-        .with_run_result(stdout_of("1.4.1.1032"))             // 18: preflight es availability
-        .with_run_result(stdout_of(DAEMON_READY_STATUS))      // 19: preflight daemon status
-        .with_run_result(stdout_of("1000"))                   // 20: es result-count C
-        .with_run_result(stdout_of(""))                       // 21: daemon kill (gated restart)
-        .with_run_result(stdout_of(""))                       // 22: daemon start --drive C
-        .with_run_result(stdout_of(DAEMON_READY_STATUS))      // 23: ensure_daemon_ready poll
-        .with_run_result(stdout_of("1.4.1.1032"))             // 24: 2nd-pass preflight es avail
-        .with_run_result(stdout_of(DAEMON_READY_STATUS))      // 25: 2nd-pass preflight status
+        .with_run_result(stdout_of("")) // 13: tasklist (everything stopped)
+        .with_run_result(stdout_of("1.1.0.30")) // 14: es -version
+        .with_run_result(stdout_of("")) // 15: tasklist (everything_gui stopped)
+        .with_run_result(stdout_of("1.4.1.1032")) // 16: es -get-everything-version
+        .with_run_result(stdout_of(DAEMON_READY_STATUS)) // 17: ensure_daemon_ready (all-drives)
+        .with_run_result(stdout_of("1.4.1.1032")) // 18: preflight es availability
+        .with_run_result(stdout_of(DAEMON_READY_STATUS)) // 19: preflight daemon status
+        .with_run_result(stdout_of("1000")) // 20: es result-count C
+        .with_run_result(stdout_of("")) // 21: daemon kill (gated restart)
+        .with_run_result(stdout_of("")) // 22: daemon start --drive C
+        .with_run_result(stdout_of(DAEMON_READY_STATUS)) // 23: ensure_daemon_ready poll
+        .with_run_result(stdout_of("1.4.1.1032")) // 24: 2nd-pass preflight es avail
+        .with_run_result(stdout_of(DAEMON_READY_STATUS)) // 25: 2nd-pass preflight status
         .with_run_result(stdout_of("1000")) // 26: 2nd-pass es result-count C
 }
 

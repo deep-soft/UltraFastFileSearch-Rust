@@ -107,8 +107,9 @@ impl Drop for IoCompletionPort {
     fn drop(&mut self) {
         use windows::Win32::Foundation::CloseHandle;
         if !self.handle.is_invalid() {
-            // SAFETY: `self.handle` was created by `CreateIoCompletionPort` and is
-            // closed exactly once during drop after `is_invalid()` checked validity.
+            // SAFETY: `self.handle` was created by `CreateIoCompletionPort` and
+            // is closed exactly once during drop after
+            // `is_invalid()` checked validity.
             _ = unsafe { CloseHandle(self.handle) };
         }
     }

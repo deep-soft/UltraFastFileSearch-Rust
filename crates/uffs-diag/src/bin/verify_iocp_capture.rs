@@ -16,10 +16,6 @@
 
 // Diagnostic binary: relaxed lints for user-facing output and one-time verification
 #![expect(
-    unused_crate_dependencies,
-    reason = "shared Cargo.toml dependencies not used by all binaries"
-)]
-#![expect(
     clippy::print_stdout,
     clippy::print_stderr,
     reason = "diagnostic tool — stdout/stderr output is intentional"
@@ -43,15 +39,23 @@
     reason = "diagnostic tool — args indexing is guarded by length check"
 )]
 
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
 use std::env;
 use std::io::Write as _;
 use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context as _, Result};
+use chrono as _;
+use rayon as _;
 use sha2::{Digest as _, Sha256};
+use uffs_diag as _;
 use uffs_mft::raw::{LoadRawOptions, load_raw_mft};
 use uffs_mft::raw_iocp::load_iocp_capture;
+use uffs_polars as _;
 
 /// Chunk size for progress updates during hashing (256 MB).
 const HASH_CHUNK_SIZE: usize = 256 * 1024 * 1024;

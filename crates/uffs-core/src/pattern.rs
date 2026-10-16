@@ -377,7 +377,8 @@ mod tests {
 
     #[test]
     fn leading_slash_not_path_aware() -> TestResult {
-        // Leading slash is a glob prefix, not a path separator between components
+        // Leading slash is a glob prefix, not a path separator between
+        // components
         let parsed = ParsedPattern::parse("/pro*")?;
         assert!(
             !parsed.is_path_pattern(),

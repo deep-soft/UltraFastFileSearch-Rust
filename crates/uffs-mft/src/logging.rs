@@ -47,8 +47,8 @@ pub(crate) fn init_logging(verbose: bool) -> tracing_appender::non_blocking::Wor
 
     // Create rolling file appender (daily rotation).
     // Use the builder API which returns Result instead of panicking, and retry
-    // briefly to handle transient Windows file-lock races (e.g. previous process
-    // still releasing the log file handle).
+    // briefly to handle transient Windows file-lock races (e.g. previous
+    // process still releasing the log file handle).
     let max_attempts = 4_u32;
     let mut file_log_err: Option<String> = None;
     let mut file_log_attempt = 0_u32;
@@ -97,8 +97,8 @@ pub(crate) fn init_logging(verbose: bool) -> tracing_appender::non_blocking::Wor
     // Timer format
     let timer = UtcTime::rfc_3339();
 
-    // Terminal layer (to stderr to avoid corrupting output when redirecting stdout,
-    // with ANSI colors, file/line info, thread IDs)
+    // Terminal layer (to stderr to avoid corrupting output when redirecting
+    // stdout, with ANSI colors, file/line info, thread IDs)
     let terminal_layer = tracing_subscriber::fmt::layer()
         .with_writer(io::stderr)
         .with_timer(timer.clone())

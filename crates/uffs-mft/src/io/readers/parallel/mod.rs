@@ -175,7 +175,8 @@ impl ParallelMftReader {
     pub fn new(extent_map: MftExtentMap, bitmap: Option<crate::platform::MftBitmap>) -> Self {
         let drive_type = crate::platform::DriveType::Unknown;
         let chunk_size = Self::DEFAULT_CHUNK_SIZE_HDD;
-        // M1 8.4: Pre-allocate reusable buffer for chunk_size + sector alignment
+        // M1 8.4: Pre-allocate reusable buffer for chunk_size + sector
+        // alignment
         let buffer = AlignedBuffer::new(chunk_size + SECTOR_SIZE);
         Self {
             extent_map,
@@ -197,7 +198,8 @@ impl ParallelMftReader {
         drive_type: crate::platform::DriveType,
     ) -> Self {
         let chunk_size = drive_type.optimal_chunk_size();
-        // M1 8.4: Pre-allocate reusable buffer for chunk_size + sector alignment
+        // M1 8.4: Pre-allocate reusable buffer for chunk_size + sector
+        // alignment
         let buffer = AlignedBuffer::new(chunk_size + SECTOR_SIZE);
         info!(
             drive_type = ?drive_type,

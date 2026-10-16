@@ -41,21 +41,43 @@
 // The bench binary links uffs-core's full dependency set but uses only a
 // subset; this is a structural fact of compiling a bench inside the crate, not
 // a code-quality lint to fix.
-#![expect(
-    unused_crate_dependencies,
-    reason = "bench links uffs-core's full dependency set but uses only a subset"
-)]
 
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
 use core::hint::black_box;
 
+use anyhow as _;
+use bytemuck as _;
+use chrono as _;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use devicons as _;
+use globset as _;
+use itoa as _;
+use memchr as _;
+use memmap2 as _;
+use rayon as _;
+use regex as _;
+use rustc_hash as _;
+use serde_json as _;
+use sha2 as _;
+use tempfile as _;
+use thiserror as _;
+use tokio as _;
+use tracing as _;
 use uffs_core::compact::{
     ChildrenIndex, CompactRecord, DriveCompactIndex, ExtensionIndex, IndexSource, apply_usn_patch,
 };
 use uffs_core::compact_storage::ColumnStorage;
 use uffs_core::trigram::TrigramIndex;
+use uffs_format as _;
 use uffs_mft::usn::FileChange;
+use uffs_polars as _;
+use uffs_security as _;
 use uffs_text::case_fold::CaseFold;
+use uffs_time as _;
+use zstd as _;
 
 /// Directories created directly under the fixture root.
 const NUM_DIRS: usize = 2_000;

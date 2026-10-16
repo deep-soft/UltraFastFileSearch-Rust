@@ -23,19 +23,25 @@
 //! ```
 
 #![expect(
-    unused_crate_dependencies,
-    reason = "shared Cargo.toml dependencies not used by all binaries"
-)]
-#![expect(
     clippy::print_stdout,
     clippy::print_stderr,
     reason = "diagnostic tool — stdout/stderr output is intentional"
 )]
 
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
 use std::env;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
+use chrono as _;
+use hex as _;
+use rayon as _;
+use sha2 as _;
+use uffs_diag as _;
+use uffs_mft as _;
 use uffs_polars::{
     BooleanChunked, CsvParseOptions, CsvReadOptions, DataFrame, DataFrameJoinOps as _, DataType,
     JoinArgs, JoinType, SerReader as _,
@@ -88,14 +94,14 @@ fn main() -> Result<()> {
     // immediately inspect them once the reference CSV is present.
     let focus_frs = [2_640_657_u64, 2_631_176, 2_628_892, 2_628_924, 2_627_024];
 
-    // 1) Look at any joined rows (where both reference and Parquet have a record
-    //    for the FRS).
+    // 1) Look at any joined rows (where both reference and Parquet have a
+    //    record for the FRS).
     print_focus_frs(&joined, &focus_frs)?;
 
-    // 2) Additionally, inspect reference-only parents and all of their children in
-    //    the Parquet file. This is crucial for understanding high-impact missing
-    //    parents where the parent FRS never appears as a row in `f_mft.parquet`,
-    //    but is heavily referenced by children.
+    // 2) Additionally, inspect reference-only parents and all of their children
+    //    in the Parquet file. This is crucial for understanding high-impact
+    //    missing parents where the parent FRS never appears as a row in
+    //    `f_mft.parquet`, but is heavily referenced by children.
     print_reference_and_children(&df_ref, &df_parquet, &focus_frs)?;
 
     Ok(())
@@ -218,8 +224,8 @@ fn summarize_directory_agreement(df: &DataFrame) -> Result<()> {
         .context("is_directory column is not boolean-compatible")?;
 
     // We currently do not have an explicit is_base_record flag in the Parquet
-    // schema; approximate using the absence of a non-zero base_file_record_segment
-    // column where present.
+    // schema; approximate using the absence of a non-zero
+    // base_file_record_segment column where present.
     let has_base_segment_col = df
         .get_column_names()
         .iter()

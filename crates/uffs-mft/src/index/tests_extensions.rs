@@ -82,7 +82,8 @@ fn extension_table_serialization() {
     // Create an index with some extensions
     let mut index = MftIndex::new(crate::platform::DriveLetter::C);
 
-    // Add names and extensions first (before getting mutable references to records)
+    // Add names and extensions first (before getting mutable references to
+    // records)
     let name1_offset = index.add_name("test.txt");
     let ext_id1 = index.intern_extension("test.txt");
     index.extensions.record_file(ext_id1, 1024);

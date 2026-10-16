@@ -267,7 +267,8 @@ impl SearchParams {
                     }
                 });
 
-                // Resolve direction: suffix > prefix > flag (first field) > default.
+                // Resolve direction: suffix > prefix > flag (first field) >
+                // default.
                 let direction = parsed_dir.or_else(|| {
                     if has_dash_prefix {
                         return Some(SearchSortDirection::Desc);

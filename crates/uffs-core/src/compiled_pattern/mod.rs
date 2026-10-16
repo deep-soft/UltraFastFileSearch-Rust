@@ -142,9 +142,10 @@ impl CompiledPattern {
                   the pattern→expr mapping across functions"
     )]
     pub(crate) fn to_expr(&self, column: &str, case_sensitive: bool) -> Expr {
-        // For case-sensitive matching, use optimized string operations directly.
-        // For case-insensitive matching, we use regex with (?i) flag which is
-        // more efficient than calling to_lowercase() on every row.
+        // For case-sensitive matching, use optimized string operations
+        // directly. For case-insensitive matching, we use regex with
+        // (?i) flag which is more efficient than calling to_lowercase()
+        // on every row.
         let col_expr = col(column);
 
         match self {
@@ -242,7 +243,8 @@ impl CompiledPattern {
                         .str()
                         .contains_any(lit(series).implode(true), false)
                 } else {
-                    // Use ascii_case_insensitive=true for case-insensitive matching
+                    // Use ascii_case_insensitive=true for case-insensitive
+                    // matching
                     let series = Series::new(PlSmallStr::EMPTY, patterns);
                     col_expr.str().contains_any(lit(series).implode(true), true)
                 }

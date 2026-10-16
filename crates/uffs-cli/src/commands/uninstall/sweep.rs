@@ -98,9 +98,10 @@ pub(crate) fn version_strays(paths: &[PathBuf]) -> Vec<StrayHit> {
     if paths.is_empty() {
         return Vec::new();
     }
-    // Probes are subprocess spawns (I/O bound), so a small fixed pool of workers
-    // pulling from a shared cursor beats sequential (minutes on a dev box with
-    // hundreds of `target/` binaries) without spawning one thread per path.
+    // Probes are subprocess spawns (I/O bound), so a small fixed pool of
+    // workers pulling from a shared cursor beats sequential (minutes on a
+    // dev box with hundreds of `target/` binaries) without spawning one
+    // thread per path.
     let worker_count = std::thread::available_parallelism()
         .map_or(4, core::num::NonZeroUsize::get)
         .min(paths.len());
@@ -118,7 +119,8 @@ pub(crate) fn version_strays(paths: &[PathBuf]) -> Vec<StrayHit> {
                         let Some(path) = paths.get(idx) else { break };
                         // The legacy C++ `uffs.exe` is a Windows GUI app — a
                         // different product, not our console CLI. Drop it:
-                        // probing it pops a window, is slow, and it is not ours.
+                        // probing it pops a window, is slow, and it is not
+                        // ours.
                         if is_legacy_gui_uffs(path) {
                             legacy_gui.fetch_add(1, Ordering::Relaxed);
                             continue;
@@ -358,10 +360,11 @@ impl Search for DaemonSearch {
         // bug, where a real multi-hit Windows sweep returned a blob and the
         // JSON `"path"`-key walk found nothing).
         //
-        // `--name-only` anchors the match to the **filename**: a bare `uffs.exe`
-        // token is a full-path substring match, so it also returns files merely
-        // living under a path that contains "uffs.exe" (e.g. an `…\uffs.exe.bak\`
-        // dir). We only ever want files actually named like a family binary.
+        // `--name-only` anchors the match to the **filename**: a bare
+        // `uffs.exe` token is a full-path substring match, so it also
+        // returns files merely living under a path that contains
+        // "uffs.exe" (e.g. an `…\uffs.exe.bak\` dir). We only ever want
+        // files actually named like a family binary.
         let mut args = vec![
             pattern.to_owned(),
             "--files-only".to_owned(),
@@ -403,8 +406,7 @@ fn payload_paths(payload: uffs_client::protocol::response::SearchPayload) -> Vec
             .collect(),
         Payload::ShmemRows { path, .. } => {
             uffs_client::shmem::read_search_results(Path::new(&path))
-                .map(|resp| payload_paths(resp.payload))
-                .unwrap_or_default()
+                .map_or_default(|resp| payload_paths(resp.payload))
         }
         Payload::InlineBlob(blob) => blob_lines_to_paths(&blob),
         Payload::ShmemBlob(path) => {
@@ -488,8 +490,9 @@ mod tests {
         ]);
         let known = [PathBuf::from("/opt/uffs")];
         let strays = find_strays(&mut search, &known).unwrap();
-        // The /opt/uffs hit is already planned; only the Downloads stray remains,
-        // de-duplicated despite being returned once per pattern.
+        // The /opt/uffs hit is already planned; only the Downloads stray
+        // remains, de-duplicated despite being returned once per
+        // pattern.
         assert_eq!(strays.len(), 1);
         assert_eq!(
             strays.first().expect("a stray"),

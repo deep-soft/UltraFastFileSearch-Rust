@@ -196,8 +196,8 @@ fn undecodable_standard_info_reports_malformed_not_a_1601_timestamp() {
 
     assert_eq!(header_status, StdInfoParse::Malformed);
 
-    // 4. A genuine 1601-01-01 record: same zero timestamps, decoded status. This is
-    //    the pair the status exists to separate.
+    // 4. A genuine 1601-01-01 record: same zero timestamps, decoded status.
+    //    This is the pair the status exists to separate.
     let mut epoch = vec![0_u8; si_offset + 72];
     write_u32_le(&mut epoch, attr_offset + 16, 72);
     write_u16_le(&mut epoch, attr_offset + 20, value_offset);

@@ -272,16 +272,19 @@ pub(super) fn parse_extension_to_index(
                 }
             }
             Some(AttributeType::Data) => {
-                // legacy-output parity: Only primary attributes (LowestVCN == 0) count as
-                // streams. Continuation extents (LowestVCN > 0) are skipped.
+                // legacy-output parity: Only primary attributes (LowestVCN ==
+                // 0) count as streams. Continuation extents
+                // (LowestVCN > 0) are skipped.
                 // See ntfs_index_load.hpp:358
                 if !is_primary_attribute(data, offset, &attr_header) {
-                    // Skip continuation extents - they don't count as new streams
+                    // Skip continuation extents - they don't count as new
+                    // streams
                     offset += u32_as_usize(attr_header.length);
                     continue;
                 }
 
-                // Parse $DATA attribute — default stream (unnamed) or ADS (named)
+                // Parse $DATA attribute — default stream (unnamed) or ADS
+                // (named)
                 let name_len = usize::from(attr_header.name_length);
                 let (size, allocated) = read_size_allocated(data, offset, &attr_header);
                 let (is_resident, is_sparse) = resident_and_sparse(&attr_header);
@@ -307,7 +310,8 @@ pub(super) fn parse_extension_to_index(
                         let stream_name = crate::io::parser::unified::decode_name_u16(&name_u16).0;
                         // ALL named $DATA streams create regular
                         // stream entries.  Internal ones are filtered from
-                        // output by is_internal_windows_stream in the output layer.
+                        // output by is_internal_windows_stream in the output
+                        // layer.
                         streams.push((stream_name, size, allocated, is_sparse, is_resident));
                     }
                 }
@@ -509,16 +513,19 @@ pub(super) fn parse_extension_to_index(
     let record_idx = index.frs_to_idx[base_frs_usize];
     if record_idx != NO_ENTRY {
         let record = &mut index.records[u32_as_usize(record_idx)];
-        // Snapshot name_count BEFORE link-chaining modifies it (for child entries)
+        // Snapshot name_count BEFORE link-chaining modifies it (for child
+        // entries)
         let pre_chain_name_count = record.name_count;
 
         // Add new links to the record
         if !link_indices.is_empty() {
             // Check if base record has no name (first_name is empty)
-            // This happens when the $FILE_NAME attribute is ONLY in extension records
+            // This happens when the $FILE_NAME attribute is ONLY in extension
+            // records
             if !record.first_name.name.is_valid() {
                 // Copy the first extension name directly into first_name
-                // This matches established behavior (ntfs_index.hpp lines 559-567)
+                // This matches established behavior (ntfs_index.hpp lines
+                // 559-567)
                 let first_link = &index.links[u32_as_usize(link_indices[0])];
                 record.first_name.name = first_link.name;
                 record.first_name.parent_frs = first_link.parent_frs;
@@ -534,7 +541,8 @@ pub(super) fn parse_extension_to_index(
                 record.fn_modified = fn_modified;
                 record.fn_accessed = fn_accessed;
                 record.fn_mft_changed = fn_mft_changed;
-                // Don't increment name_count for the first name (it's already counted as 1)
+                // Don't increment name_count for the first name (it's already
+                // counted as 1)
 
                 // Chain remaining links (if any) to first_name.next_entry
                 if link_indices.len() > 1 {
@@ -551,8 +559,9 @@ pub(super) fn parse_extension_to_index(
                     record.name_count += len_to_u16(link_indices.len().saturating_sub(1));
                 }
             } else {
-                // Base record already has a name - chain extension names as additional hard
-                // links Find the end of the current link chain
+                // Base record already has a name - chain extension names as
+                // additional hard links Find the end of the
+                // current link chain
                 let last_link_idx = if record.first_name.next_entry != NO_ENTRY {
                     let mut idx = record.first_name.next_entry;
                     while index.links[u32_as_usize(idx)].next_entry != NO_ENTRY {
@@ -628,8 +637,9 @@ pub(super) fn parse_extension_to_index(
         if found_default_data {
             let record = &mut index.records[u32_as_usize(record_idx)];
 
-            // If base record has no $DATA (both fields are 0), use extension's $DATA.
-            // Otherwise, accumulate extension $DATA to base $DATA.
+            // If base record has no $DATA (both fields are 0), use extension's
+            // $DATA. Otherwise, accumulate extension $DATA to base
+            // $DATA.
             if record.first_stream.size.length == 0 && record.first_stream.size.allocated == 0 {
                 // Base has no $DATA — use extension's values
                 record.first_stream.size.length = default_data_size;
@@ -670,9 +680,9 @@ pub(super) fn parse_extension_to_index(
             let record = &mut index.records[u32_as_usize(record_idx)];
 
             // CRITICAL: Handle IOCP out-of-order scenarios.
-            // Apply the same snapshot/restore pattern as default $DATA (lines 718-733).
-            // If base record has no first_stream size (both 0), either:
-            // (a) base hasn't been parsed yet, OR
+            // Apply the same snapshot/restore pattern as default $DATA (lines
+            // 718-733). If base record has no first_stream size
+            // (both 0), either: (a) base hasn't been parsed yet, OR
             // (b) genuinely has no $DATA/$I30
             //
             // We use the same pattern: write if empty, accumulate otherwise.
@@ -696,9 +706,10 @@ pub(super) fn parse_extension_to_index(
             }
         }
 
-        // Build parent-child relationship for names added from extension records
-        // This is critical for compute_tree_metrics() to work correctly.
-        // Use the name_count from BEFORE link-chaining to avoid overflow
+        // Build parent-child relationship for names added from extension
+        // records This is critical for compute_tree_metrics() to work
+        // correctly. Use the name_count from BEFORE link-chaining to
+        // avoid overflow
         let existing_name_count = pre_chain_name_count;
 
         for (name_idx, (_, parent_frs, ..)) in names.iter().enumerate() {
@@ -725,11 +736,13 @@ pub(super) fn parse_extension_to_index(
             };
 
             // Add child entry
-            // name_index is the position in the combined name list (existing + new)
-            // For extension records, the first name might replace first_name (if empty),
-            // so we need to account for that
+            // name_index is the position in the combined name list (existing +
+            // new) For extension records, the first name might
+            // replace first_name (if empty), so we need to account
+            // for that
             let effective_name_idx = if existing_name_count == 0 {
-                // First extension name became first_name, so name_index starts at 0
+                // First extension name became first_name, so name_index starts
+                // at 0
                 len_to_u16(name_idx)
             } else {
                 // Extension names are appended after existing names

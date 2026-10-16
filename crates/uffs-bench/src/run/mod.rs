@@ -193,7 +193,8 @@ impl Orchestrator<'_> {
         preflight::write(self.host, preflight, &self.bundle_dir)?;
         matrix::write(self.host, matrix, &self.bundle_dir)?;
         // Capture the full storage-device inventory (`uffs-mft drives`) for the
-        // report's `## Storage devices` section. Best-effort — never fails the run.
+        // report's `## Storage devices` section. Best-effort — never fails the
+        // run.
         let drives = storage::capture_and_write(self.host, &self.bundle_dir);
         // Synthesize the at-a-glance header from the live structured data (env
         // fingerprint with the backfilled Everything GUI version, drive

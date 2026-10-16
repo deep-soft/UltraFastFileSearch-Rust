@@ -142,8 +142,8 @@ pub(crate) fn bootstrap_lifecycle_manager(
 ) -> anyhow::Result<lifecycle::LifecycleManager> {
     // Determine data directory:
     // - lifecycle_dir: %LOCALAPPDATA%\uffs (or, for an ephemeral instance — see
-    //   `DaemonConfig::ephemeral_id` — `.../uffs/ephemeral/<id>`) — PID/socket/lock
-    //   files
+    //   `DaemonConfig::ephemeral_id` — `.../uffs/ephemeral/<id>`) —
+    //   PID/socket/lock files
     // - data_dir: user-supplied --data-dir (for MFT file discovery/hot-load)
     let lifecycle_dir = config.ephemeral_id.as_deref().map_or_else(
         || {

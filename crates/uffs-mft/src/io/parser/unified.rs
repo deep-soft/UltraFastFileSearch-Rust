@@ -305,8 +305,9 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                     // Read stream name (non-$I30, named attributes)
                     let has_stream_name = !is_i30 && aname_len > 0;
                     // WI-4.4: track whether the stream name decoded lossily and
-                    // the raw UTF-16LE range, so the store site below can retain
-                    // byte-faithful WTF-8 for an ill-formed stream name.
+                    // the raw UTF-16LE range, so the store site below can
+                    // retain byte-faithful WTF-8 for an
+                    // ill-formed stream name.
                     let mut stream_name_lossy: u32 = 0;
                     let mut stream_name_raw: Option<&[u8]> = None;
                     if has_stream_name {
@@ -413,7 +414,8 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         if has_stream_name && !name_buf.is_empty() {
                             // WI-4.4: store the stream name losslessly (WTF-8
                             // for an ill-formed name; identical bytes for the
-                            // common case). `stream_name_raw` is `Some` whenever
+                            // common case). `stream_name_raw` is `Some`
+                            // whenever
                             // `has_stream_name` decoded a non-empty buffer.
                             let (sn_off, sn_len) = if let Some(raw) = stream_name_raw {
                                 store_name_lossless(index, name_buf, raw, stream_name_lossy)

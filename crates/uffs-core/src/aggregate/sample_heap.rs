@@ -11,7 +11,8 @@
 //! After the scan,
 //! [`SampleHeap::drain_sorted`](crate::aggregate::sample_heap::SampleHeap::drain_sorted)
 //! returns the entries in final display order (descending or ascending)
-//! so they can be materialized into [`SampleRow`]s by the finalize step.
+//! so they can be materialized into [`SampleRow`](super::finalize::SampleRow)s
+//! by the finalize step.
 
 use alloc::collections::BinaryHeap;
 

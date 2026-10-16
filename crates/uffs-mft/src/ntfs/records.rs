@@ -3,6 +3,20 @@
 
 //! NTFS record headers, fixup, and attribute iteration.
 
+// zerocopy-derive emits an uninhabited `enum ẕ<field> {}` per field for every
+// `#[derive(FromBytes)]` in this module, inside a generated `#[allow(...)]`
+// list that lacks `clippy::empty_enums` (google/zerocopy#3414, fix proposed in
+// #3600, tracked here in #617).  Since never_type stabilized on nightly
+// 2026-08-24 that lint fires on our derive lines.  The derive output is a
+// sibling item, so an attribute on each struct cannot reach it; the module is
+// the narrowest scope that does.  `expect`, not `allow`: the day a zerocopy
+// release carries the fix, this expectation goes unfulfilled, fails the build,
+// and must be deleted.  Owner ruling 2026-10-13.
+#![expect(
+    clippy::empty_enums,
+    reason = "zerocopy-derive FromBytes expansion (google/zerocopy#3414 / #3600, UFFS #617)"
+)]
+
 use core::mem::size_of;
 
 use zerocopy::{FromBytes, Immutable, KnownLayout};

@@ -144,7 +144,8 @@ fn clean_child_under_crooked_dir_is_path_malformed_not_leaf_malformed() {
     assert!(child_row.name_hex.is_none());
 
     // The crooked DIRECTORY itself: leaf malformed + name_hex evidence present.
-    // Its lossy `&str` view is empty, so match it by its true bytes via name_hex.
+    // Its lossy `&str` view is empty, so match it by its true bytes via
+    // name_hex.
     let dir_row = rows
         .iter()
         .find(|row| row.malformed)

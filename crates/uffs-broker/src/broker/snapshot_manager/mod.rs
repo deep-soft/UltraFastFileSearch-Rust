@@ -515,7 +515,8 @@ fn write_framed_message(pipe: HANDLE, payload: &[u8]) -> anyhow::Result<()> {
     if let Err(win_err) = result {
         anyhow::bail!("WriteFile failed: {win_err}");
     }
-    // SAFETY: `pipe` is the same valid, still-open pipe HANDLE written to above.
+    // SAFETY: `pipe` is the same valid, still-open pipe HANDLE written to
+    // above.
     if let Err(win_err) = unsafe { FlushFileBuffers(pipe) } {
         anyhow::bail!("FlushFileBuffers failed: {win_err}");
     }

@@ -112,8 +112,9 @@ impl StreamingRawMftWriter {
             )
             .map_err(|err| MftError::Io(std::io::Error::other(err)))?;
 
-            // Create a dummy writer - we use encoder instead for compressed output
-            // We need a valid File handle, so create a temp file that we'll never use
+            // Create a dummy writer - we use encoder instead for compressed
+            // output We need a valid File handle, so create a temp
+            // file that we'll never use
             let temp_path = std::env::temp_dir().join(".uffs_streaming_dummy");
             let dummy_file = File::create(&temp_path)?;
 

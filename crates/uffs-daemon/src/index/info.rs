@@ -115,7 +115,8 @@ impl IndexManager {
                     }
                 }
             } else {
-                // Subsequent segments: match against children of previous matches.
+                // Subsequent segments: match against children of previous
+                // matches.
                 for &child_idx in &candidates {
                     if let Some(rec) = drive.records.get(uffs_mft::u32_as_usize(child_idx)) {
                         let name = rec.name(&drive.names);

@@ -136,8 +136,8 @@ impl MftExtentMap {
         // Calculate offset within the cluster
         let offset_in_cluster = virtual_byte_offset % u64::from(self.bytes_per_cluster);
 
-        // Physical offset = LCN * bytes_per_cluster + offset within extent + offset in
-        // cluster
+        // Physical offset = LCN * bytes_per_cluster + offset within extent +
+        // offset in cluster
         let physical = extent.lcn.raw_unsigned() * u64::from(self.bytes_per_cluster)
             + cluster_byte_offset
             + offset_in_cluster;

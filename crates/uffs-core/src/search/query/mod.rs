@@ -309,8 +309,9 @@ fn collect_match_indices(
     // valid matches that sit past the cutoff — the `pcl5 --ext pdf --limit 5`
     // regression, where eight `.dll` matches preceded the one `.pdf`. The
     // `matches_record` predicate is a no-op for an empty filter set, so an
-    // unfiltered search keeps its original behaviour. `filters.resolved_ext_ids`
-    // must already be resolved for THIS drive (see `search_compact_drive`).
+    // unfiltered search keeps its original behaviour.
+    // `filters.resolved_ext_ids` must already be resolved for THIS drive
+    // (see `search_compact_drive`).
     let keep = |rec: &CompactRecord, name: &str, buf: &mut Vec<u8>| -> bool {
         matches(name, buf) && filters.matches_record(rec, &drive.names, buf, drive.fold)
     };
@@ -575,7 +576,7 @@ pub(crate) fn search_compact_drive_tree(
                 volume_prefix,
                 &mut dir_cache,
                 &mut mal_cache,
-                    render,
+                render,
             );
             let forensics = row_forensics(rec, &drive.names, path_malformed);
             Some(make_display_row(

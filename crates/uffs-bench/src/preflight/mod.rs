@@ -440,8 +440,7 @@ fn feasibility_cells(
 pub fn capture(host: &dyn Host, spec: &PreflightSpec) -> PreflightResult {
     let ini = host
         .read_file(&spec.ini_path)
-        .map(|bytes| String::from_utf8(bytes).unwrap_or_default())
-        .unwrap_or_default();
+        .map_or_default(|bytes| String::from_utf8(bytes).unwrap_or_default());
     let configured_drives = parse_drives_from_ini(&ini);
 
     let es_available = check_es_available(host, &spec.es_exe, &spec.es_instance_name);
@@ -511,8 +510,7 @@ pub fn capture(host: &dyn Host, spec: &PreflightSpec) -> PreflightResult {
 /// Run `uffs --daemon status` once and return the raw stdout (`""` on failure).
 fn daemon_status_output(host: &dyn Host, uffs_exe: &str) -> String {
     host.run(uffs_exe, &["--daemon", "status"])
-        .map(|out| out.stdout)
-        .unwrap_or_default()
+        .map_or_default(|out| out.stdout)
 }
 
 /// Preload any candidate drive that is absent from `warm_counts` (i.e. parked

@@ -116,7 +116,7 @@ pub(crate) fn find_pids_by_name(stem: &str) -> Vec<u32> {
         .output()
         .ok()
         .filter(|out| out.status.success())
-        .map(|out| {
+        .map_or_default(|out| {
             // AUDIT-OK(bytes): pgrep emits one ASCII pid per line; a lossy
             // decode cannot fabricate digits (U+FFFD fails `parse::<u32>`),
             // it can only drop a line — best-effort by design.
@@ -125,7 +125,6 @@ pub(crate) fn find_pids_by_name(stem: &str) -> Vec<u32> {
                 .filter_map(|line| line.trim().parse::<u32>().ok())
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 // ─────────────────────────────────────────────────────────────────────

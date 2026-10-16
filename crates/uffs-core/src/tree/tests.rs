@@ -107,12 +107,12 @@ fn bulkiness() {
     let df = create_test_df();
     let mut tree = TreeIndex::from_dataframe(&df).unwrap();
 
-    // file.txt (102): allocated=4096, bulkiness_sum = 4096 (file's own allocated
-    // size)
+    // file.txt (102): allocated=4096, bulkiness_sum = 4096 (file's own
+    // allocated size)
     assert_eq!(tree.bulkiness(102), 4096);
 
-    // doc.pdf (104): allocated=53248, bulkiness_sum = 53248 (file's own allocated
-    // size)
+    // doc.pdf (104): allocated=53248, bulkiness_sum = 53248 (file's own
+    // allocated size)
     assert_eq!(tree.bulkiness(104), 53248);
 
     // john (101): tree_allocated = 4096 + 4096 = 8192
@@ -131,8 +131,8 @@ fn bulkiness() {
 #[test]
 fn bulkiness_with_many_small_files() {
     // Create a directory with many small files to test bulkiness filtering
-    // parent (frs=1) with 10 small files (100 bytes each) and 1 large file (10000
-    // bytes)
+    // parent (frs=1) with 10 small files (100 bytes each) and 1 large file
+    // (10000 bytes)
     let df = DataFrame::new_infer_height(vec![
         Column::new("frs".into(), &[
             1_u64, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,

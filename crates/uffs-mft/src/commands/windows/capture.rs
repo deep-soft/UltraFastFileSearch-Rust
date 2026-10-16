@@ -289,8 +289,7 @@ fn archive_dir(dir: &Path, split_gib: u64) -> Result<()> {
     for path in &files {
         let name = path
             .file_name()
-            .map(|os| os.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|os| os.to_string_lossy().into_owned());
         let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         let mtime = std::fs::metadata(path)
             .and_then(|meta| meta.modified())

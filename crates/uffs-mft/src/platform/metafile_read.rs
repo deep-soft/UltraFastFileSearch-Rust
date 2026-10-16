@@ -362,7 +362,8 @@ fn resolve_extend_child(
         }
     }
 
-    // 1. Search the resident $INDEX_ROOT (its INDEX_HEADER begins at offset 16).
+    // 1. Search the resident $INDEX_ROOT (its INDEX_HEADER begins at offset
+    //    16).
     if let Some(frs) = root_value
         .as_deref()
         .and_then(|root| scan_index_entries(root, 16, &target))

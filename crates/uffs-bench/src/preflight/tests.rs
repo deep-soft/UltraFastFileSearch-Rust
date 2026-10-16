@@ -131,10 +131,10 @@ fn capture_is_read_only_and_records_state() {
     //  5. feasibility estimate for (C, all_dlls)
     let host = MockHost::new()
         .with_file("/Everything.ini", b"ntfs_volume_paths=C:\\,D:\\".to_vec())
-        .with_run_result(stdout_of("1.4.1.1032"))       // 1: es availability
+        .with_run_result(stdout_of("1.4.1.1032")) // 1: es availability
         .with_run_result(stdout_of(daemon_status_cd())) // 2: uffs --daemon status
-        .with_run_result(stdout_of("1000"))             // 3: C es result-count
-        .with_run_result(stdout_of("0"))                // 4: D es result-count
+        .with_run_result(stdout_of("1000")) // 3: C es result-count
+        .with_run_result(stdout_of("0")) // 4: D es result-count
         .with_run_result(stdout_of("5000")); // 5: uffs estimate C/all_dlls
     let spec = spec_for(&['C', 'D'], 1);
 
@@ -177,12 +177,13 @@ fn capture_is_read_only_and_records_state() {
 fn configured_zero_drive_is_polled_with_backoff() {
     let host = MockHost::new()
         .with_file("/Everything.ini", b"ntfs_volume_paths=C:\\".to_vec())
-        .with_run_result(stdout_of("1.4.1.1032"))    // 1: es availability
-        .with_run_result(stdout_of(                  // 2: uffs --daemon status
-            "Status: Ready\n  [Warm]   C: \u{2014}  500,000 records (live) \u{2014} 50 MB\n"
+        .with_run_result(stdout_of("1.4.1.1032")) // 1: es availability
+        .with_run_result(stdout_of(
+            // 2: uffs --daemon status
+            "Status: Ready\n  [Warm]   C: \u{2014}  500,000 records (live) \u{2014} 50 MB\n",
         ))
-        .with_run_result(stdout_of("0"))             // 3: C es poll 1
-        .with_run_result(stdout_of("0"))             // 4: C es poll 2
+        .with_run_result(stdout_of("0")) // 3: C es poll 1
+        .with_run_result(stdout_of("0")) // 4: C es poll 2
         .with_run_result(stdout_of("7")); // 5: C es poll 3 → loaded
     let mut spec = spec_for(&['C'], 3);
     spec.patterns.clear();
@@ -207,9 +208,10 @@ fn drive_unknown_to_daemon_is_skipped() {
     // it must be filtered out entirely: no es-probe, drives list is empty.
     let host = MockHost::new()
         .with_file("/Everything.ini", b"ntfs_volume_paths=C:\\".to_vec())
-        .with_run_result(stdout_of("1.4.1.1032"))    // 1: es availability
-        .with_run_result(stdout_of(                  // 2: uffs --daemon status (E absent)
-            "Status: Ready\n  [Warm]   C: \u{2014}  100,000 records (live) \u{2014} 10 MB\n"
+        .with_run_result(stdout_of("1.4.1.1032")) // 1: es availability
+        .with_run_result(stdout_of(
+            // 2: uffs --daemon status (E absent)
+            "Status: Ready\n  [Warm]   C: \u{2014}  100,000 records (live) \u{2014} 10 MB\n",
         ));
     // E is not in known_drives at all — no preload attempt, no re-check.
     let mut spec = spec_for(&['E'], 5);
@@ -240,13 +242,15 @@ fn parked_drive_is_preloaded_and_count_populated() {
     // second status returns C as Warm with 500,000 records.
     let host = MockHost::new()
         .with_file("/Everything.ini", b"ntfs_volume_paths=C:\\".to_vec())
-        .with_run_result(stdout_of("1.4.1.1032"))    // 1: es availability
-        .with_run_result(stdout_of(                  // 2: status (C parked — in known_drives)
-            "Status: Ready\n  [Parked]  C:\n"
+        .with_run_result(stdout_of("1.4.1.1032")) // 1: es availability
+        .with_run_result(stdout_of(
+            // 2: status (C parked — in known_drives)
+            "Status: Ready\n  [Parked]  C:\n",
         ))
-        .with_run_result(stdout_of("Promoted to Hot"))          // 3: preload C
-        .with_run_result(stdout_of(                  // 4: status re-check (C now Warm)
-            "Status: Ready\n  [Warm]   C: \u{2014}  500,000 records (live) \u{2014} 50 MB\n"
+        .with_run_result(stdout_of("Promoted to Hot")) // 3: preload C
+        .with_run_result(stdout_of(
+            // 4: status re-check (C now Warm)
+            "Status: Ready\n  [Warm]   C: \u{2014}  500,000 records (live) \u{2014} 50 MB\n",
         ))
         .with_run_result(stdout_of("100")); // 5: es result-count → loaded
     let mut spec = spec_for(&['C'], 1);
@@ -266,11 +270,12 @@ fn parked_drive_is_preloaded_and_count_populated() {
 fn cell_above_ipc_ceiling_is_infeasible() {
     let host = MockHost::new()
         .with_file("/Everything.ini", b"ntfs_volume_paths=C:\\".to_vec())
-        .with_run_result(stdout_of("1.4.1.1032"))    // 1: es availability
-        .with_run_result(stdout_of(                  // 2: uffs --daemon status
-            "Status: Ready\n  [Warm]   C: \u{2014}  500,000 records (live) \u{2014} 50 MB\n"
+        .with_run_result(stdout_of("1.4.1.1032")) // 1: es availability
+        .with_run_result(stdout_of(
+            // 2: uffs --daemon status
+            "Status: Ready\n  [Warm]   C: \u{2014}  500,000 records (live) \u{2014} 50 MB\n",
         ))
-        .with_run_result(stdout_of("100"))           // 3: C es result-count → loaded
+        .with_run_result(stdout_of("100")) // 3: C es result-count → loaded
         .with_run_result(stdout_of("200000")); // 4: estimate over the 150k ceiling
     let spec = spec_for(&['C'], 1);
 

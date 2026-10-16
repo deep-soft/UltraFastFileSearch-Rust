@@ -156,9 +156,10 @@ fn reload_daemon_for_coverage(
     };
     let list = reason.as_str();
     // Loud mode announces the attempt live; quiet mode stays silent until the
-    // OUTCOME is known — a pre-declared "reloaded" note would contradict a later
-    // start failure (e.g. a declined UAC prompt), which is exactly what the user
-    // saw. The truthful note is pushed only once `start` actually succeeds.
+    // OUTCOME is known — a pre-declared "reloaded" note would contradict a
+    // later start failure (e.g. a declined UAC prompt), which is exactly
+    // what the user saw. The truthful note is pushed only once `start`
+    // actually succeeds.
     if !quiet {
         emit(
             quiet,
@@ -173,8 +174,9 @@ fn reload_daemon_for_coverage(
     // Stop the running daemon COOPERATIVELY (an IPC shutdown it honors
     // regardless of its own elevation — the same-user pipe), NOT the
     // policy-gated `daemon kill`, which a non-elevated shell cannot use on an
-    // elevated daemon (the loud failure the user hit). Only if the daemon cannot
-    // be stopped at all do we fall back to scanning what is already indexed.
+    // elevated daemon (the loud failure the user hit). Only if the daemon
+    // cannot be stopped at all do we fall back to scanning what is already
+    // indexed.
     if !stop_running_daemon(quiet) {
         emit(
             quiet,

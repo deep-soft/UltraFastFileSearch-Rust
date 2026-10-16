@@ -58,7 +58,8 @@ impl IndexDelta {
             sorted_insert(self.trigram.entry(key).or_default(), idx);
         }
         sorted_insert(self.ext.entry(ext_id).or_default(), idx);
-        // u32::MAX parent = root sentinel; root has no parent posting to add to.
+        // u32::MAX parent = root sentinel; root has no parent posting to add
+        // to.
         if parent_idx != u32::MAX {
             sorted_insert(self.children.entry(parent_idx).or_default(), idx);
         }

@@ -364,7 +364,8 @@ impl TreeTraversal<'_> {
                 break;
             };
             // WoF stream: use 0 for both length and allocated in the
-            // Channel-A propagation (allocated already merged into first_alloc).
+            // Channel-A propagation (allocated already merged into
+            // first_alloc).
             let is_wof = stream_idx == snap.wof_stream_idx;
             let slen = if is_wof { 0 } else { stream.size.length };
             let salloc = if is_wof { 0 } else { stream.size.allocated };
@@ -389,7 +390,8 @@ impl TreeTraversal<'_> {
 
         let total_names = total_names_raw.max(1);
 
-        // Snapshot only the fields we need (avoid cloning the whole `FileRecord`).
+        // Snapshot only the fields we need (avoid cloning the whole
+        // `FileRecord`).
         let snap = self.snapshot_record(record_idx);
 
         // WoF (Windows Overlay Filter) compression merging.
@@ -409,7 +411,8 @@ impl TreeTraversal<'_> {
             Agg::default()
         };
 
-        // 2) Own streams (Channel A): default + ADS + internal, delta-distributed.
+        // 2) Own streams (Channel A): default + ADS + internal,
+        //    delta-distributed.
         let own_snap = RecordSnapshot {
             first_len: snap.first_len,
             first_alloc,

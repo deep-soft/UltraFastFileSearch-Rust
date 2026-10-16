@@ -232,11 +232,11 @@ impl MftReader {
         }
 
         // M2 9.1-9.3: Select reader based on mode
-        // Historical benchmark insight: "read all then parse" is faster than pipelining
-        // even on HDD because: no context switching, CPU cache stays hot, no
-        // channel overhead, OS can optimize continuous sequential reads better.
-        // For read_all() (returns Vec<ParsedRecord>), use SlidingIocp for IOCP-based
-        // I/O.
+        // Historical benchmark insight: "read all then parse" is faster than
+        // pipelining even on HDD because: no context switching, CPU
+        // cache stays hot, no channel overhead, OS can optimize
+        // continuous sequential reads better. For read_all() (returns
+        // Vec<ParsedRecord>), use SlidingIocp for IOCP-based I/O.
         let effective_mode = dataframe_effective_mode(self.mode, drive_type);
 
         info!(
@@ -250,7 +250,8 @@ impl MftReader {
         // Read using the selected mode
         let mut parsed_records = match effective_mode {
             MftReadMode::Parallel | MftReadMode::Auto => {
-                // Parallel mode: read all chunks then parse in parallel (best for SSD)
+                // Parallel mode: read all chunks then parse in parallel (best
+                // for SSD)
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
 
@@ -279,7 +280,8 @@ impl MftReader {
                 }
             }
             MftReadMode::Streaming => {
-                // Streaming mode: sequential reads with immediate parsing (lower memory)
+                // Streaming mode: sequential reads with immediate parsing
+                // (lower memory)
                 let mut streaming_reader =
                     crate::io::StreamingMftReader::new(extent_map, bitmap, drive_type);
 
@@ -307,7 +309,8 @@ impl MftReader {
                 }
             }
             MftReadMode::Prefetch => {
-                // Prefetch mode: double-buffered reads for I/O overlap (good for HDD)
+                // Prefetch mode: double-buffered reads for I/O overlap (good
+                // for HDD)
                 let prefetch_reader =
                     crate::io::PrefetchMftReader::new(extent_map, bitmap, drive_type);
 
@@ -335,7 +338,8 @@ impl MftReader {
                 }
             }
             MftReadMode::Pipelined => {
-                // Pipelined mode: true I/O+CPU overlap with separate threads (best for HDD)
+                // Pipelined mode: true I/O+CPU overlap with separate threads
+                // (best for HDD)
                 let pipelined_reader =
                     crate::io::PipelinedMftReader::new(extent_map, bitmap, drive_type);
 
@@ -363,7 +367,8 @@ impl MftReader {
                 }
             }
             MftReadMode::PipelinedParallel => {
-                // Pipelined parallel mode: I/O overlap + multi-core parsing (best for HDD)
+                // Pipelined parallel mode: I/O overlap + multi-core parsing
+                // (best for HDD)
                 let pipelined_reader =
                     crate::io::PipelinedMftReader::new(extent_map, bitmap, drive_type);
 
@@ -392,8 +397,9 @@ impl MftReader {
                 }
             }
             MftReadMode::IocpParallel => {
-                // IOCP parallel mode: Multiple overlapped reads in flight (best for HDD)
-                // IOCP requires FILE_FLAG_OVERLAPPED, so we open a separate handle
+                // IOCP parallel mode: Multiple overlapped reads in flight (best
+                // for HDD) IOCP requires FILE_FLAG_OVERLAPPED,
+                // so we open a separate handle
                 let overlapped_handle = self.require_handle()?.open_overlapped_handle()?;
                 let iocp_reader = crate::io::IocpMftReader::new(extent_map, bitmap, drive_type);
 
@@ -424,7 +430,8 @@ impl MftReader {
                 // Close the overlapped handle
                 #[expect(unsafe_code, reason = "FFI: CloseHandle on valid overlapped handle")]
                 {
-                    // SAFETY: `overlapped_handle` came from `open_overlapped_handle` and is
+                    // SAFETY: `overlapped_handle` came from
+                    // `open_overlapped_handle` and is
                     // closed exactly once here.
                     _ = unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) };
                 };
@@ -498,15 +505,18 @@ impl MftReader {
                 // Close the overlapped handle
                 #[expect(unsafe_code, reason = "FFI: CloseHandle on valid overlapped handle")]
                 {
-                    // SAFETY: `overlapped_handle` came from `open_overlapped_handle`, is
-                    // no longer used after the read completes, and is closed exactly once.
+                    // SAFETY: `overlapped_handle` came from
+                    // `open_overlapped_handle`, is
+                    // no longer used after the read completes, and is closed
+                    // exactly once.
                     _ = unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) };
                 };
 
                 result?
             }
             MftReadMode::SlidingIocp => {
-                // Sliding window IOCP mode: adaptive concurrency with multiple reads in flight
+                // Sliding window IOCP mode: adaptive concurrency with multiple
+                // reads in flight
                 let overlapped_handle = self.require_handle()?.open_overlapped_handle()?;
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
@@ -544,8 +554,10 @@ impl MftReader {
                 // Close the overlapped handle
                 #[expect(unsafe_code, reason = "FFI: CloseHandle on valid overlapped handle")]
                 {
-                    // SAFETY: `overlapped_handle` came from `open_overlapped_handle`, is
-                    // no longer used after the read completes, and is closed exactly once.
+                    // SAFETY: `overlapped_handle` came from
+                    // `open_overlapped_handle`, is
+                    // no longer used after the read completes, and is closed
+                    // exactly once.
                     _ = unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) };
                 };
 
@@ -553,8 +565,8 @@ impl MftReader {
             }
             MftReadMode::SlidingIocpInline => {
                 // SlidingIocpInline is designed for direct index building.
-                // For read_mft_internal (which returns Vec<ParsedRecord>), fall back to
-                // SlidingIocp.
+                // For read_mft_internal (which returns Vec<ParsedRecord>), fall
+                // back to SlidingIocp.
                 let overlapped_handle = self.require_handle()?.open_overlapped_handle()?;
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
@@ -592,8 +604,10 @@ impl MftReader {
                 // Close the overlapped handle
                 #[expect(unsafe_code, reason = "FFI: CloseHandle on valid overlapped handle")]
                 {
-                    // SAFETY: `overlapped_handle` came from `open_overlapped_handle`, is
-                    // no longer used after the read completes, and is closed exactly once.
+                    // SAFETY: `overlapped_handle` came from
+                    // `open_overlapped_handle`, is
+                    // no longer used after the read completes, and is closed
+                    // exactly once.
                     _ = unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) };
                 };
 
@@ -617,9 +631,10 @@ impl MftReader {
         };
 
         // Add placeholder records for missing parent directories.
-        // This matches the legacy output behavior where `at()` creates placeholder
-        // records for any referenced FRS that hasn't been seen yet.
-        // Can be disabled with `with_add_placeholders(false)` for ~15% speedup.
+        // This matches the legacy output behavior where `at()` creates
+        // placeholder records for any referenced FRS that hasn't been
+        // seen yet. Can be disabled with `with_add_placeholders(false)`
+        // for ~15% speedup.
         if self.add_placeholders {
             let placeholders_added =
                 crate::io::add_missing_parent_placeholders_to_vec(&mut parsed_records);

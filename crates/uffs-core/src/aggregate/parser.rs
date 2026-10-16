@@ -253,7 +253,8 @@ fn parse_range(rest: &str) -> Result<AggregateSpec, ParseAggSpecError> {
         match *key {
             "bins" | "boundaries" => {
                 for boundary_str in val.split('+') {
-                    // Each bin can be "A..B" or just "A". Extract the boundary values.
+                    // Each bin can be "A..B" or just "A". Extract the boundary
+                    // values.
                     for part in boundary_str.split("..") {
                         if !part.is_empty() {
                             let boundary_val: u64 = part

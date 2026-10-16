@@ -532,8 +532,8 @@ mod tests {
 
     #[test]
     fn semantic_type_disk_image() {
-        // Note: "iso" is in ARCHIVES (checked before DISK_IMAGES), so it maps to
-        // "archive".
+        // Note: "iso" is in ARCHIVES (checked before DISK_IMAGES), so it maps
+        // to "archive".
         for ext in &["vmdk", "vhd", "img", "wim"] {
             assert_eq!(semantic_type_from_extension(ext), "disk", "ext={ext}");
         }
@@ -541,7 +541,8 @@ mod tests {
 
     #[test]
     fn semantic_type_data() {
-        // Note: "csv" is in DOCUMENTS (checked before DATA), so it maps to "document".
+        // Note: "csv" is in DOCUMENTS (checked before DATA), so it maps to
+        // "document".
         for ext in &["parquet", "avro", "arrow", "ndjson"] {
             assert_eq!(semantic_type_from_extension(ext), "data", "ext={ext}");
         }

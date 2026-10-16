@@ -97,10 +97,7 @@ pub fn paginate_result(
     let total = rows.len();
     let start = cursor.offset.min(total);
     let end = start.saturating_add(cursor.page_size).min(total);
-    let page_rows = rows
-        .get(start..end)
-        .map(<[BucketRow]>::to_vec)
-        .unwrap_or_default();
+    let page_rows = rows.get(start..end).map_or_default(<[BucketRow]>::to_vec);
     let has_more = end < total;
 
     let next_cursor = has_more.then(|| cursor.next().encode());

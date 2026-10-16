@@ -106,7 +106,8 @@ impl ParallelMftReader {
         let parse_start = std::time::Instant::now();
         let buffer_slice = mft_buffer.as_mut_slice();
 
-        // Extract bitmap reference before parallel section (avoids capturing self)
+        // Extract bitmap reference before parallel section (avoids capturing
+        // self)
         let bitmap_ref = self.bitmap.as_ref();
 
         // Estimate capacity

@@ -238,8 +238,8 @@ impl MftIndex {
             );
             for _ in 0..record_count {
                 let frs = read_u64!();
-                // Version 4+: sequence_number and namespace (read sequentially to avoid
-                // unsequenced reads)
+                // Version 4+: sequence_number and namespace (read sequentially
+                // to avoid unsequenced reads)
                 let sequence_number = if version >= 4 { read_u16!() } else { 0 };
                 let namespace = if version >= 4 { read_u8!() } else { 1 }; // Default: Win32
                 let forensic_flags = if version >= 4 { read_u8!() } else { 0 }; // Version 7: renamed from reserved
@@ -269,8 +269,9 @@ impl MftIndex {
                 // Counts
                 let name_count = read_u16!();
                 let rec_stream_count = read_u16!();
-                // Version 8+: total_stream_count for full tree-metrics accounting
-                // For older versions, default to stream_count (user-visible = total)
+                // Version 8+: total_stream_count for full tree-metrics
+                // accounting For older versions, default to
+                // stream_count (user-visible = total)
                 let total_stream_count = if version >= 8 {
                     read_u16!()
                 } else {
@@ -633,8 +634,9 @@ impl MftIndex {
                     .get(pos..pos + postings_bytes)
                     .ok_or("ExtensionIndex postings truncated")?;
                 let ext_postings: Vec<u32> = super::aligned_vec_from_bytes(post_slice);
-                // postings_bytes intentionally not consumed — this is the last section.
-                // The variable exists for clarity in the sequential decode pattern.
+                // postings_bytes intentionally not consumed — this is the last
+                // section. The variable exists for clarity in
+                // the sequential decode pattern.
 
                 Some(super::super::ExtensionIndex {
                     offsets: ext_offsets,
@@ -778,7 +780,8 @@ const fn v8_flags_to_raw_ntfs(old: u32) -> u32 {
     if old & (1_u32 << 16_u32) != 0 {
         ntfs |= StandardInfo::IS_VIRTUAL;
     }
-    // Preserve DELETED_FLAG (bit 31) — internal USN marker, not an NTFS attribute
+    // Preserve DELETED_FLAG (bit 31) — internal USN marker, not an NTFS
+    // attribute
     if old & 0x8000_0000 != 0 {
         ntfs |= 0x8000_0000;
     }

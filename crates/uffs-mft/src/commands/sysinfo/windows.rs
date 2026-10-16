@@ -163,7 +163,8 @@ fn collect_volumes() -> Vec<Volume> {
     };
     use windows::core::PCWSTR;
 
-    // SAFETY: `GetLogicalDrives` takes no pointers and returns a bitmask by value.
+    // SAFETY: `GetLogicalDrives` takes no pointers and returns a bitmask by
+    // value.
     let mask = unsafe { GetLogicalDrives() };
     let mut volumes = Vec::new();
     for index in 0_u8..26 {
@@ -177,9 +178,9 @@ fn collect_volumes() -> Vec<Volume> {
             .collect();
 
         let mut fs_buf = [0_u16; 32];
-        // SAFETY: `root` is NUL-terminated UTF-16 valid for the call; `fs_buf` is
-        // a writable 32-element buffer for the filesystem name; the other
-        // out-parameters are documented as accepting `None`.
+        // SAFETY: `root` is NUL-terminated UTF-16 valid for the call; `fs_buf`
+        // is a writable 32-element buffer for the filesystem name; the
+        // other out-parameters are documented as accepting `None`.
         let info = unsafe {
             GetVolumeInformationW(
                 PCWSTR(root.as_ptr()),
@@ -299,8 +300,8 @@ fn reg_u32(subkey: &str, value: &str) -> Option<u32> {
     let mut cb: u32 = 4;
 
     // SAFETY: NUL-terminated UTF-16 key/value valid for the call; `data` is a
-    // writable `u32` of `cb` bytes; `RRF_RT_REG_DWORD` restricts the result to a
-    // DWORD.
+    // writable `u32` of `cb` bytes; `RRF_RT_REG_DWORD` restricts the result to
+    // a DWORD.
     let status = unsafe {
         RegGetValueW(
             HKEY_LOCAL_MACHINE,

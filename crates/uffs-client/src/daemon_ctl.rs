@@ -487,7 +487,8 @@ mod deep_health_check_tests {
         body();
         match previous {
             Some(prev) => {
-                // SAFETY: same as above — restore original value under the same lock.
+                // SAFETY: same as above — restore original value under the same
+                // lock.
                 #[expect(unsafe_code, reason = "std::env::set_var is unsafe in Rust 2024")]
                 unsafe {
                     std::env::set_var("UFFS_CLIENT_SKIP_HEALTH_CHECK", prev);

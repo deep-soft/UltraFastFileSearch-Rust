@@ -218,10 +218,12 @@ fn render_malformed(bytes: &[u8], render: MalformedRender) -> String {
                     match render {
                         MalformedRender::Lossy => out.push('\u{FFFD}'),
                         MalformedRender::Normalized => {
-                            // Decode the WTF-8 lone surrogate back to its 16-bit
+                            // Decode the WTF-8 lone surrogate back to its
+                            // 16-bit
                             // code unit (lead nibble is the fixed 0xD of 0xED),
-                            // then emit `<BAD:HHHH>`. `wrapping_sh*` + bit-ops +
-                            // `char::from_digit` are all panic-free here (values
+                            // then emit `<BAD:HHHH>`. `wrapping_sh*` + bit-ops
+                            // + `char::from_digit`
+                            // are all panic-free here (values
                             // masked to ≤ 0xF, base 16).
                             let unit: u32 = 0xD000
                                 | (u32::from(*b1) & 0x3F).wrapping_shl(6)

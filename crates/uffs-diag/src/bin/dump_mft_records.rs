@@ -14,19 +14,24 @@
 //! ```
 
 #![expect(
-    unused_crate_dependencies,
-    reason = "standalone binary doesn't use all crate dependencies"
-)]
-#![expect(
     clippy::print_stdout,
     clippy::print_stderr,
     reason = "diagnostic tool — stdout/stderr output is intentional"
 )]
 
+// This target links its package's full dependency list but uses only
+// part of it.  Naming the rest keeps `unused_crate_dependencies` exact on
+// every toolchain (newer nightlies stopped reporting it for bench, bin and
+// test targets; the pinned one still does), with no lint suppression.
 use std::env;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
+use chrono as _;
+use hex as _;
+use rayon as _;
+use sha2 as _;
+use uffs_diag as _;
 use uffs_mft::parse::{MftRecordMerger, ParseResult, parse_record_full};
 use uffs_mft::raw::{LoadRawOptions, load_raw_mft};
 // This binary intentionally pulls in uffs_polars via the uffs-diag crate

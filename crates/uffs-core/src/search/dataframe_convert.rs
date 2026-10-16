@@ -66,7 +66,8 @@ pub fn display_rows_to_dataframe(
     let tree_allocated: Vec<u64> = rows.iter().map(tree_allocated_for_row).collect();
     let bulkiness: Vec<u64> = rows.iter().map(bulkiness_for_row).collect();
 
-    // path_only = directory portion of path (up to and including last backslash).
+    // path_only = directory portion of path (up to and including last
+    // backslash).
     let path_only: Vec<&str> = rows.iter().map(DisplayRow::path_dir).collect();
 
     DataFrame::new(rows.len(), vec![
@@ -203,8 +204,9 @@ fn col_timestamp(data_frame: &uffs_polars::DataFrame, col_name: &str, row_idx: u
                 .ok()
                 .and_then(|arr| arr.get(row_idx))
                 .or_else(|| {
-                    // Try Datetime(Microseconds) (from legacy MftIndex DataFrames).
-                    // `.phys` gives the underlying Int64 chunked array.
+                    // Try Datetime(Microseconds) (from legacy MftIndex
+                    // DataFrames). `.phys` gives the
+                    // underlying Int64 chunked array.
                     column.datetime().ok().and_then(|dt| dt.phys.get(row_idx))
                 })
         })

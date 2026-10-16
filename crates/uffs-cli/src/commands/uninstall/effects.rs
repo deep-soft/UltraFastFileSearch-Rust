@@ -472,7 +472,8 @@ fn remove_service_via_uac(service: &str) -> Result<()> {
         .context("spawning the elevated service-removal helper")?;
     match status.code() {
         Some(0) => {
-            // Trust but verify: the helper said OK, confirm the service is gone.
+            // Trust but verify: the helper said OK, confirm the service is
+            // gone.
             if uffs_winsvc::is_installed(service) {
                 bail!("elevated helper reported success but service {service} is still installed");
             }

@@ -284,7 +284,8 @@ impl MftIndex {
                 }
             }
 
-            // Re-borrow after the links section (prior mutable borrow was consumed).
+            // Re-borrow after the links section (prior mutable borrow was
+            // consumed).
             let Some(rec) = self.records.get_mut(existing_idx as usize) else {
                 continue;
             };
