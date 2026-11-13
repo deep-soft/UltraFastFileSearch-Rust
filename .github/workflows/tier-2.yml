@@ -81,13 +81,13 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: tier-2-coverage
           cache-on-failure: 'true'
 
       - name: Install tools
-        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
@@ -145,7 +145,7 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: tier-2-build-validation
           cache-on-failure: 'true'
@@ -186,13 +186,13 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: tier-2-udeps
           cache-on-failure: 'true'
 
       - name: Install cargo-udeps
-        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-udeps
 
@@ -261,13 +261,13 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: tier-2-hack
           cache-on-failure: 'true'
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-hack
 
@@ -311,7 +311,7 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: tier-2-miri
           cache-on-failure: 'true'
@@ -398,7 +398,7 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Dedicated cache key — cargo-careful's `-Zbuild-std`
           # rebuild produces a distinct sysroot / target-dir layout
@@ -408,7 +408,7 @@ jobs:
           cache-on-failure: 'true'
 
       - name: Install cargo-careful
-        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-careful
 
@@ -519,7 +519,7 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Dedicated cache key — cargo-mutants does many short
           # per-mutant rebuilds and benefits from its own cache so
@@ -532,7 +532,7 @@ jobs:
           cache-on-failure: 'true'
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-mutants
 
@@ -561,7 +561,7 @@ jobs:
         # per-mutant diff, log, and overall summary in
         # `outcomes.json`.
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cargo-mutants-output-${{ github.run_id }}
           path: mutants.out/
@@ -672,7 +672,7 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Dedicated cache key — the fuzz crate has its own
           # `[workspace] members = ["."]` and a separate target-dir
@@ -685,7 +685,7 @@ jobs:
           cache-on-failure: 'true'
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-fuzz
 
@@ -732,7 +732,7 @@ jobs:
         # promote to a hard gate we'll switch this to
         # `actions/cache` so each run builds on the last.
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cargo-fuzz-output-${{ github.run_id }}
           path: |

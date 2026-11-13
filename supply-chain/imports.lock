@@ -7,8 +7,8 @@ when = "2026-06-17"
 trusted-publisher = "github:RustCrypto/traits"
 
 [[publisher.aes]]
-version = "0.9.3"
-when = "2026-08-28"
+version = "0.9.4"
+when = "2026-11-02"
 trusted-publisher = "github:RustCrypto/block-ciphers"
 
 [[publisher.anyhow]]
@@ -53,8 +53,8 @@ user-login = "Darksonn"
 user-name = "Alice Ryhl"
 
 [[publisher.cc]]
-version = "1.8.0"
-when = "2026-10-11"
+version = "1.11.1"
+when = "2026-11-06"
 trusted-publisher = "github:rust-lang/cc-rs"
 
 [[publisher.cfg-if]]
@@ -138,8 +138,8 @@ when = "2026-05-20"
 trusted-publisher = "github:RustCrypto/block-modes"
 
 [[publisher.ctutils]]
-version = "0.4.3"
-when = "2026-10-05"
+version = "0.4.8"
+when = "2026-11-02"
 trusted-publisher = "github:RustCrypto/utils"
 
 [[publisher.digest]]
@@ -160,8 +160,8 @@ user-login = "cuviper"
 user-name = "Josh Stone"
 
 [[publisher.find-msvc-tools]]
-version = "0.1.14"
-when = "2026-09-25"
+version = "0.1.15"
+when = "2026-10-19"
 trusted-publisher = "github:rust-lang/cc-rs"
 
 [[publisher.flate2]]
@@ -183,8 +183,8 @@ user-id = 55123
 user-login = "rust-lang-owner"
 
 [[publisher.globset]]
-version = "0.4.20"
-when = "2026-08-04"
+version = "0.4.21"
+when = "2026-10-27"
 user-id = 189
 user-login = "BurntSushi"
 user-name = "Andrew Gallant"
@@ -243,12 +243,54 @@ user-id = 359
 user-login = "seanmonstar"
 user-name = "Sean McArthur"
 
+[[publisher.icu_collections]]
+version = "2.4.0"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
+
+[[publisher.icu_locale_core]]
+version = "2.4.0"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
+
+[[publisher.icu_normalizer]]
+version = "2.4.0"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
+
 [[publisher.icu_normalizer_data]]
-version = "2.2.0"
-when = "2026-04-01"
-user-id = 1139
-user-login = "Manishearth"
-user-name = "Manish Goregaokar"
+version = "2.4.0"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
+
+[[publisher.icu_properties]]
+version = "2.4.0"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
+
+[[publisher.icu_properties_data]]
+version = "2.4.0"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
+
+[[publisher.icu_provider]]
+version = "2.4.0"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
 
 [[publisher.idna]]
 version = "1.0.2"
@@ -264,9 +306,14 @@ user-id = 539
 user-login = "cuviper"
 user-name = "Josh Stone"
 
+[[publisher.inout]]
+version = "0.2.6"
+when = "2026-11-07"
+trusted-publisher = "github:RustCrypto/utils"
+
 [[publisher.js-sys]]
-version = "0.3.106"
-when = "2026-09-25"
+version = "0.3.107"
+when = "2026-10-30"
 trusted-publisher = "github:wasm-bindgen/wasm-bindgen"
 
 [[publisher.jsonpath_lib_polars_vendor]]
@@ -277,10 +324,9 @@ user-login = "ritchie46"
 user-name = "Ritchie Vink"
 
 [[publisher.libc]]
-version = "0.2.189"
-when = "2026-07-21"
-user-id = 55123
-user-login = "rust-lang-owner"
+version = "0.2.191"
+when = "2026-10-16"
+trusted-publisher = "github:rust-lang/libc"
 
 [[publisher.litemap]]
 version = "0.8.2"
@@ -297,8 +343,8 @@ user-login = "BurntSushi"
 user-name = "Andrew Gallant"
 
 [[publisher.mime]]
-version = "0.3.17"
-when = "2023-03-20"
+version = "0.3.18"
+when = "2026-11-05"
 user-id = 359
 user-login = "seanmonstar"
 user-name = "Sean McArthur"
@@ -316,6 +362,13 @@ when = "2025-05-30"
 user-id = 359
 user-login = "seanmonstar"
 user-name = "Sean McArthur"
+
+[[publisher.openssl-probe]]
+version = "0.2.2"
+when = "2026-10-26"
+user-id = 4556
+user-login = "djc"
+user-name = "Dirkjan Ochtman"
 
 [[publisher.polars]]
 version = "0.55.2"
@@ -540,8 +593,8 @@ user-login = "seanmonstar"
 user-name = "Sean McArthur"
 
 [[publisher.rustix]]
-version = "1.1.5"
-when = "2026-09-16"
+version = "1.1.6"
+when = "2026-10-27"
 user-id = 6825
 user-login = "sunfishcode"
 user-name = "Dan Gohman"
@@ -582,8 +635,8 @@ user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.serde_spanned]]
-version = "1.1.2"
-when = "2026-10-08"
+version = "1.1.3"
+when = "2026-11-06"
 user-id = 6743
 user-login = "epage"
 user-name = "Ed Page"
@@ -594,8 +647,8 @@ when = "2026-10-12"
 trusted-publisher = "github:RustCrypto/hashes"
 
 [[publisher.signal-hook]]
-version = "0.4.5"
-when = "2026-10-04"
+version = "0.4.6"
+when = "2026-10-31"
 user-id = 5906
 user-login = "vorner"
 user-name = "Michal 'vorner' Vaner"
@@ -608,8 +661,8 @@ user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.syn]]
-version = "3.0.9"
-when = "2026-10-12"
+version = "3.0.10"
+when = "2026-11-09"
 user-id = 3618
 user-login = "dtolnay"
 user-name = "David Tolnay"
@@ -628,9 +681,16 @@ user-id = 3618
 user-login = "dtolnay"
 user-name = "David Tolnay"
 
+[[publisher.tinystr]]
+version = "0.8.5"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
+
 [[publisher.tokio]]
-version = "1.53.3"
-when = "2026-10-13"
+version = "1.54.1"
+when = "2026-10-21"
 user-id = 6741
 user-login = "Darksonn"
 user-name = "Alice Ryhl"
@@ -643,22 +703,22 @@ user-login = "Darksonn"
 user-name = "Alice Ryhl"
 
 [[publisher.toml]]
-version = "1.1.8+spec-1.1.0"
-when = "2026-10-09"
+version = "1.2.1+spec-1.1.0"
+when = "2026-11-06"
 user-id = 6743
 user-login = "epage"
 user-name = "Ed Page"
 
 [[publisher.toml_datetime]]
-version = "1.1.2+spec-1.1.0"
-when = "2026-10-08"
+version = "1.1.3+spec-1.1.0"
+when = "2026-11-06"
 user-id = 6743
 user-login = "epage"
 user-name = "Ed Page"
 
 [[publisher.toml_edit]]
-version = "0.25.17+spec-1.1.0"
-when = "2026-10-09"
+version = "0.25.19+spec-1.1.0"
+when = "2026-11-06"
 user-id = 6743
 user-login = "epage"
 user-name = "Ed Page"
@@ -671,8 +731,8 @@ user-login = "epage"
 user-name = "Ed Page"
 
 [[publisher.toml_writer]]
-version = "1.1.3+spec-1.1.0"
-when = "2026-10-08"
+version = "1.2.0+spec-1.1.0"
+when = "2026-11-04"
 user-id = 6743
 user-login = "epage"
 user-name = "Ed Page"
@@ -699,8 +759,8 @@ user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.unicode-normalization]]
-version = "0.1.25"
-when = "2025-10-30"
+version = "0.1.26"
+when = "2026-10-16"
 user-id = 1139
 user-login = "Manishearth"
 user-name = "Manish Goregaokar"
@@ -713,8 +773,8 @@ user-login = "Manishearth"
 user-name = "Manish Goregaokar"
 
 [[publisher.unicode-width]]
-version = "0.2.2"
-when = "2025-10-06"
+version = "0.2.3"
+when = "2026-10-28"
 user-id = 1139
 user-login = "Manishearth"
 user-name = "Manish Goregaokar"
@@ -732,15 +792,22 @@ user-login = "Manishearth"
 user-name = "Manish Goregaokar"
 
 [[publisher.utf8_iter]]
-version = "1.0.4"
-when = "2023-12-01"
+version = "1.1.0"
+when = "2026-10-29"
+user-id = 4484
+user-login = "hsivonen"
+user-name = "Henri Sivonen"
+
+[[publisher.utf_types]]
+version = "1.0.0"
+when = "2026-10-29"
 user-id = 4484
 user-login = "hsivonen"
 user-name = "Henri Sivonen"
 
 [[publisher.uuid]]
-version = "1.28.0"
-when = "2026-10-10"
+version = "1.29.2"
+when = "2026-11-09"
 user-id = 3204
 user-login = "KodrAus"
 user-name = "Ashley Mannix"
@@ -753,38 +820,38 @@ user-login = "alexcrichton"
 user-name = "Alex Crichton"
 
 [[publisher.wasm-bindgen]]
-version = "0.2.129"
-when = "2026-09-25"
+version = "0.2.130"
+when = "2026-10-30"
 trusted-publisher = "github:wasm-bindgen/wasm-bindgen"
 
 [[publisher.wasm-bindgen-futures]]
-version = "0.4.79"
-when = "2026-09-25"
+version = "0.4.80"
+when = "2026-10-30"
 trusted-publisher = "github:wasm-bindgen/wasm-bindgen"
 
 [[publisher.wasm-bindgen-macro]]
-version = "0.2.129"
-when = "2026-09-25"
+version = "0.2.130"
+when = "2026-10-30"
 trusted-publisher = "github:wasm-bindgen/wasm-bindgen"
 
 [[publisher.wasm-bindgen-macro-support]]
-version = "0.2.129"
-when = "2026-09-25"
+version = "0.2.130"
+when = "2026-10-30"
 trusted-publisher = "github:wasm-bindgen/wasm-bindgen"
 
 [[publisher.wasm-bindgen-shared]]
-version = "0.2.129"
-when = "2026-09-25"
+version = "0.2.130"
+when = "2026-10-30"
 trusted-publisher = "github:wasm-bindgen/wasm-bindgen"
 
 [[publisher.web-sys]]
-version = "0.3.106"
-when = "2026-09-25"
+version = "0.3.107"
+when = "2026-10-30"
 trusted-publisher = "github:wasm-bindgen/wasm-bindgen"
 
 [[publisher.winnow]]
-version = "1.0.4"
-when = "2026-07-13"
+version = "1.0.5"
+when = "2026-11-05"
 user-id = 6743
 user-login = "epage"
 user-name = "Ed Page"
@@ -800,6 +867,13 @@ when = "2026-04-02"
 user-id = 1139
 user-login = "Manishearth"
 user-name = "Manish Goregaokar"
+
+[[publisher.yoke]]
+version = "0.8.4"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
 
 [[publisher.zerocopy]]
 version = "0.8.63"
@@ -823,12 +897,19 @@ version = "1.9.1"
 when = "2026-10-06"
 trusted-publisher = "github:RustCrypto/utils"
 
+[[publisher.zerovec]]
+version = "0.11.9"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
+
 [[publisher.zerovec-derive]]
-version = "0.11.5"
-when = "2026-08-18"
-user-id = 1139
-user-login = "Manishearth"
-user-name = "Manish Goregaokar"
+version = "0.11.7"
+when = "2026-10-22"
+user-id = 166196
+user-login = "robertbastian"
+user-name = "Robert Bastian"
 
 [[publisher.zmij]]
 version = "1.0.23"
@@ -838,8 +919,8 @@ user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.zstd-sys]]
-version = "2.1.1+zstd.1.5.7"
-when = "2026-10-09"
+version = "2.1.2+zstd.1.5.7"
+when = "2026-10-16"
 user-id = 3203
 user-login = "gyscos"
 user-name = "Alexandre Bury"
@@ -930,6 +1011,26 @@ who = "Dan Gohman <dev@sunfishcode.online>"
 criteria = "safe-to-deploy"
 delta = "0.3.9 -> 0.3.10"
 
+[[audits.bytecode-alliance.audits.futures]]
+who = "Joel Dice <joel.dice@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.3.31"
+
+[[audits.bytecode-alliance.audits.futures]]
+who = "Pat Hickey <p.hickey@f5.com>"
+criteria = "safe-to-deploy"
+delta = "0.3.31 -> 0.3.34"
+
+[[audits.bytecode-alliance.audits.futures-channel]]
+who = "Joel Dice <joel.dice@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.3.31"
+
+[[audits.bytecode-alliance.audits.futures-channel]]
+who = "Pat Hickey <p.hickey@f5.com>"
+criteria = "safe-to-deploy"
+delta = "0.3.31 -> 0.3.34"
+
 [[audits.bytecode-alliance.audits.futures-core]]
 who = "Pat Hickey <phickey@fastly.com>"
 criteria = "safe-to-deploy"
@@ -940,6 +1041,26 @@ notes = "Unsafe used to implement a concurrency primitive AtomicWaker. Well-comm
 who = "Pat Hickey <pat@moreproductive.org>"
 criteria = "safe-to-deploy"
 delta = "0.3.28 -> 0.3.31"
+
+[[audits.bytecode-alliance.audits.futures-executor]]
+who = "Joel Dice <joel.dice@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.3.31"
+
+[[audits.bytecode-alliance.audits.futures-executor]]
+who = "Pat Hickey <p.hickey@f5.com>"
+criteria = "safe-to-deploy"
+delta = "0.3.31 -> 0.3.34"
+
+[[audits.bytecode-alliance.audits.futures-io]]
+who = "Joel Dice <joel.dice@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.3.31"
+
+[[audits.bytecode-alliance.audits.futures-io]]
+who = "Pat Hickey <p.hickey@f5.com>"
+criteria = "safe-to-deploy"
+delta = "0.3.31 -> 0.3.34"
 
 [[audits.bytecode-alliance.audits.futures-macro]]
 who = "Joel Dice <joel.dice@gmail.com>"
@@ -956,6 +1077,12 @@ who = "Pat Hickey <pat@moreproductive.org>"
 criteria = "safe-to-deploy"
 delta = "0.3.28 -> 0.3.31"
 
+[[audits.bytecode-alliance.audits.getrandom]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+delta = "0.4.1 -> 0.4.2"
+notes = "Nothing awry in this update, standard updates for some platforms and other misc things."
+
 [[audits.bytecode-alliance.audits.heck]]
 who = "Alex Crichton <alex@alexcrichton.com>"
 criteria = "safe-to-deploy"
@@ -966,12 +1093,6 @@ notes = "Minor changes for a `no_std` upgrade but otherwise everything looks as 
 who = "Dan Gohman <dev@sunfishcode.online>"
 criteria = "safe-to-deploy"
 version = "0.1.2"
-
-[[audits.bytecode-alliance.audits.inout]]
-who = "Andrew Brown <andrew.brown@intel.com>"
-criteria = "safe-to-deploy"
-version = "0.1.3"
-notes = "A part of RustCrypto/utils, this crate is designed to handle unsafe buffers and carefully documents the safety concerns throughout. Older versions of this tally up to ~130k daily downloads."
 
 [[audits.bytecode-alliance.audits.itertools]]
 who = "Nick Fitzgerald <fitzgen@gmail.com>"
@@ -1116,6 +1237,18 @@ criteria = "safe-to-deploy"
 delta = "0.3.0 -> 0.4.0"
 notes = "Minor updates for a new `rand` crate version, nothing awry."
 
+[[audits.bytecode-alliance.audits.rustls-webpki]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+delta = "0.103.13 -> 0.103.15"
+notes = "Minor updates and feature shufflings."
+
+[[audits.bytecode-alliance.audits.rustls-webpki]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+delta = "0.103.15 -> 0.103.16"
+notes = "Updated with new certificates"
+
 [[audits.bytecode-alliance.audits.sharded-slab]]
 who = "Pat Hickey <phickey@fastly.com>"
 criteria = "safe-to-deploy"
@@ -1133,6 +1266,16 @@ who = "Alex Crichton <alex@alexcrichton.com>"
 criteria = "safe-to-deploy"
 delta = "1.13.2 -> 1.14.0"
 notes = "Minor new feature, nothing out of the ordinary."
+
+[[audits.bytecode-alliance.audits.tinyvec]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+version = "1.6.0"
+notes = """
+This crate, while it implements collections, does so without `std::*` APIs and
+without `unsafe`. Skimming the crate everything looks reasonable and what one
+would expect from idiomatic safe collections in Rust.
+"""
 
 [[audits.bytecode-alliance.audits.tracing-core]]
 who = "Alex Crichton <alex@alexcrichton.com>"
@@ -1497,6 +1640,15 @@ For more detailed unsafe review notes please see https://crrev.com/c/6362797
 """
 aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
 
+[[audits.google.audits.rand_core]]
+who = "Lukasz Anforowicz <lukasza@chromium.org>"
+criteria = "safe-to-deploy"
+version = "0.6.4"
+notes = """
+For more detailed unsafe review notes please see https://crrev.com/c/6362797
+"""
+aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
+
 [[audits.google.audits.smallvec]]
 who = "Manish Goregaokar <manishearth@google.com>"
 criteria = "safe-to-deploy"
@@ -1560,6 +1712,42 @@ criteria = "safe-to-run"
 version = "1.2.1"
 aggregated-from = "https://chromium.googlesource.com/chromiumos/third_party/rust_crates/+/refs/heads/main/cargo-vet/audits.toml?format=TEXT"
 
+[[audits.google.audits.tinyvec]]
+who = "Adrian Taylor <adetaylor@chromium.org>"
+criteria = "safe-to-deploy"
+delta = "1.6.0 -> 1.6.1"
+aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
+
+[[audits.google.audits.tinyvec]]
+who = "Adrian Taylor <adetaylor@chromium.org>"
+criteria = "safe-to-deploy"
+delta = "1.6.1 -> 1.7.0"
+aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
+
+[[audits.google.audits.tinyvec]]
+who = "Dustin J. Mitchell <djmitche@chromium.org>"
+criteria = "safe-to-deploy"
+delta = "1.7.0 -> 1.8.0"
+aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
+
+[[audits.google.audits.tinyvec]]
+who = "Adrian Taylor <adetaylor@chromium.org>"
+criteria = "safe-to-deploy"
+delta = "1.8.0 -> 1.8.1"
+aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
+
+[[audits.google.audits.tinyvec]]
+who = "Daniel Cheng <dcheng@chromium.org>"
+criteria = "safe-to-deploy"
+delta = "1.8.1 -> 1.9.0"
+notes = """
+Larger delta, but no unsafe code introduced. Deltas for:
+- borsh (Binary Object Representation Serializer for Hashing) serialization/deserialization support behind the `borsh` feature.
+- trait implementations to interoperate with the generic-array crate
+- miscellaneous helper functions and support code, e.g. `into_vec()`.
+"""
+aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
+
 [[audits.google.audits.utf8parse]]
 who = "David Koloski <dkoloski@google.com>"
 criteria = "safe-to-deploy"
@@ -1578,6 +1766,11 @@ who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-run"
 version = "0.4.0"
 
+[[audits.isrg.audits.chacha20]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+version = "0.10.0"
+
 [[audits.isrg.audits.criterion-plot]]
 who = "J.C. Jones <jc@divviup.org>"
 criteria = "safe-to-run"
@@ -1588,10 +1781,15 @@ who = "J.C. Jones <jc@divviup.org>"
 criteria = "safe-to-run"
 delta = "0.8.1 -> 0.8.2"
 
-[[audits.isrg.audits.inout]]
+[[audits.isrg.audits.getrandom]]
 who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
-delta = "0.1.4 -> 0.2.2"
+delta = "0.3.4 -> 0.4.0"
+
+[[audits.isrg.audits.getrandom]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "0.4.0 -> 0.4.1"
 
 [[audits.isrg.audits.itertools]]
 who = "Tim Geoghegan <timg@divviup.org>"
@@ -1619,6 +1817,21 @@ who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
 delta = "0.9.2 -> 0.10.0"
 
+[[audits.isrg.audits.rand_core]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "0.6.4 -> 0.9.3"
+
+[[audits.isrg.audits.rand_core]]
+who = "J.C. Jones <jc@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "0.9.3 -> 0.9.5"
+
+[[audits.isrg.audits.rand_core]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "0.9.5 -> 0.10.0"
+
 [[audits.isrg.audits.rand_distr]]
 who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
@@ -1644,6 +1857,11 @@ who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
 delta = "2.5.0 -> 2.6.1"
 
+[[audits.isrg.audits.untrusted]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+version = "0.7.1"
+
 [[audits.mozilla.wildcard-audits.unicode-normalization]]
 who = "Manish Goregaokar <manishsmail@gmail.com>"
 criteria = "safe-to-deploy"
@@ -1662,22 +1880,22 @@ end = "2027-04-23"
 notes = "All code written or reviewed by Manish"
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
-[[audits.mozilla.wildcard-audits.unicode-width]]
-who = "Manish Goregaokar <manishsmail@gmail.com>"
-criteria = "safe-to-deploy"
-user-id = 1139 # Manish Goregaokar (Manishearth)
-start = "2019-12-05"
-end = "2026-02-01"
-notes = "All code written or reviewed by Manish"
-aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
-
 [[audits.mozilla.wildcard-audits.utf8_iter]]
-who = "Makoto Kato <m_kato@ga2.so-net.ne.jp>"
+who = "Henri Sivonen <hsivonen@hsivonen.fi>"
 criteria = "safe-to-deploy"
 user-id = 4484 # Henri Sivonen (hsivonen)
 start = "2022-04-19"
-end = "2024-06-16"
-notes = "Maintained by Henri Sivonen who works at Mozilla."
+end = "2027-10-30"
+notes = "I wrote this crate."
+aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
+
+[[audits.mozilla.wildcard-audits.utf_types]]
+who = "Henri Sivonen <hsivonen@hsivonen.fi>"
+criteria = "safe-to-deploy"
+user-id = 4484 # Henri Sivonen (hsivonen)
+start = "2026-09-24"
+end = "2027-10-30"
+notes = "I wrote this crate."
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
 [[audits.mozilla.audits.adler2]]
@@ -1790,6 +2008,12 @@ who = "Erich Gubler <erichdongubler@gmail.com>"
 criteria = "safe-to-deploy"
 delta = "0.2.1 -> 0.2.2"
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
+
+[[audits.mozilla.audits.chacha20]]
+who = "Alex Franchuk <afranchuk@mozilla.com>"
+criteria = "safe-to-deploy"
+delta = "0.10.0 -> 0.10.2"
+aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
 
 [[audits.mozilla.audits.core_detect]]
 who = "Henri Sivonen <hsivonen@hsivonen.fi>"
@@ -1918,6 +2142,12 @@ criteria = "safe-to-deploy"
 delta = "0.3.27 -> 0.3.28"
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
+[[audits.mozilla.audits.getrandom]]
+who = "Alex Franchuk <afranchuk@mozilla.com>"
+criteria = "safe-to-deploy"
+delta = "0.4.2 -> 0.4.3"
+aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
+
 [[audits.mozilla.audits.hashbrown]]
 who = "Erich Gubler <erichdongubler@gmail.com>"
 criteria = "safe-to-deploy"
@@ -1940,6 +2170,12 @@ aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/mai
 who = "Simon Friedberger <simon@mozilla.com>"
 criteria = "safe-to-deploy"
 version = "0.4.3"
+aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
+
+[[audits.mozilla.audits.humantime]]
+who = "Max Inden <mail@max-inden.de>"
+criteria = "safe-to-deploy"
+version = "2.4.0"
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
 [[audits.mozilla.audits.idna]]
@@ -2095,6 +2331,12 @@ criteria = "safe-to-deploy"
 delta = "1.0.45 -> 1.0.47"
 aggregated-from = "https://raw.githubusercontent.com/mozilla/glean/main/supply-chain/audits.toml"
 
+[[audits.mozilla.audits.rand_core]]
+who = "Alex Franchuk <afranchuk@mozilla.com>"
+criteria = "safe-to-deploy"
+delta = "0.10.0 -> 0.10.1"
+aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
+
 [[audits.mozilla.audits.rand_distr]]
 who = "Ben Dean-Kawamura <bdk@mozilla.com>"
 criteria = "safe-to-deploy"
@@ -2104,6 +2346,13 @@ Simple crate that extends `rand`.  It has little unsafe code and uses Miri to te
 As far as I can tell, it does not have any file IO or network access.
 """
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
+
+[[audits.mozilla.audits.rand_pcg]]
+who = "Alex Franchuk <afranchuk@mozilla.com>"
+criteria = "safe-to-deploy"
+version = "0.10.2"
+notes = "no_std crate with unsafe code forbidden."
+aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
 
 [[audits.mozilla.audits.rmp]]
 who = "Ben Dean-Kawamura <bdk@mozilla.com>"
@@ -2199,6 +2448,13 @@ version = "2.5.0"
 notes = "The goal is to provide some constant-time correctness for cryptographic implementations. The approach is reasonable, it is known to be insufficient but this is pointed out in the documentation."
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
+[[audits.mozilla.audits.sync_wrapper]]
+who = "Alex Franchuk <afranchuk@mozilla.com>"
+criteria = "safe-to-deploy"
+version = "1.0.2"
+notes = "Simple crate, nothing out of the ordinary."
+aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
+
 [[audits.mozilla.audits.synstructure]]
 who = "Nika Layzell <nika@thelayzells.com>"
 criteria = "safe-to-deploy"
@@ -2278,6 +2534,13 @@ delta = "0.1.4 -> 0.1.8"
 notes = "No unsafe code"
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
+[[audits.mozilla.audits.tinyvec]]
+who = "Alex Franchuk <afranchuk@mozilla.com>"
+criteria = "safe-to-deploy"
+delta = "1.9.0 -> 1.13.3"
+notes = "Unsafe code is forbidden, so there's no new unsafe code. There are 3 new optional dependencies, all reasonable (adding trait impls)."
+aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
+
 [[audits.mozilla.audits.tracing-core]]
 who = "Alex Franchuk <afranchuk@mozilla.com>"
 criteria = "safe-to-deploy"
@@ -2301,6 +2564,13 @@ criteria = "safe-to-deploy"
 delta = "0.1.34 -> 0.1.36"
 aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
 
+[[audits.mozilla.audits.untrusted]]
+who = "Alex Franchuk <afranchuk@mozilla.com>"
+criteria = "safe-to-deploy"
+delta = "0.7.1 -> 0.9.0"
+notes = "Mostly a refactor of existing code. No use of std, no unsafe, no dependencies."
+aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
+
 [[audits.mozilla.audits.utf8parse]]
 who = "Nika Layzell <nika@thelayzells.com>"
 criteria = "safe-to-deploy"
@@ -2312,6 +2582,13 @@ who = "Jan-Erik Rediger <jrediger@mozilla.com>"
 criteria = "safe-to-run"
 delta = "0.2.0 -> 0.2.1"
 aggregated-from = "https://raw.githubusercontent.com/mozilla/glean/main/supply-chain/audits.toml"
+
+[[audits.mozilla.audits.web-time]]
+who = "Alex Franchuk <afranchuk@mozilla.com>"
+criteria = "safe-to-deploy"
+version = "1.1.0"
+notes = "Reasonable dependencies, unsafe code denied. The only use of std is to forward std::time when used on non-wasm targets and to reuse a few std::time things that are still applicable."
+aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
 
 [[audits.mozilla.audits.windows-link]]
 who = "Mark Hammond <mhammond@skippinet.com.au>"
@@ -2379,12 +2656,6 @@ who = "Jack Grigg <jack@electriccoin.co>"
 criteria = "safe-to-deploy"
 delta = "0.3.13 -> 0.3.14"
 aggregated-from = "https://raw.githubusercontent.com/zcash/librustzcash/main/supply-chain/audits.toml"
-
-[[audits.zcash.audits.inout]]
-who = "Jack Grigg <jack@electriccoin.co>"
-criteria = "safe-to-deploy"
-delta = "0.1.3 -> 0.1.4"
-aggregated-from = "https://raw.githubusercontent.com/zcash/wallet/main/supply-chain/audits.toml"
 
 [[audits.zcash.audits.proc-macro-crate]]
 who = "Jack Grigg <jack@z.cash>"

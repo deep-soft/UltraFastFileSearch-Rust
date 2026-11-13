@@ -14,6 +14,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.47] - 2026-11-10
+
+### Fixed
+
+- lints: clear what the newest nightly clippy flags (the floating-nightly canary, #641)
+- deps: zstd 0.13.4 / zstd-safe 7.4.0 for polars' copy, so RUSTSEC-2026-0391, -0398 and -0403 no longer need an ignore
+- release: the crates.io publish job builds with the pinned toolchain, not a floating nightly
+- merge: the ship pipeline merges main into the release branch and enrolls it in the merge queue without a squash flag; merge commits are signature-checked
+- just: three recipe messages no longer run the names they quote in backticks
+- citation: CITATION.cff names the current release, and `just ship` keeps it in sync
+
+### Changed
+
+- toolchain: nightly-2026-10-29 -> nightly-2026-11-10
+- deps: every dependency at its latest release, each new version vetted (reqwest held at 0.12, see Cargo.toml)
+- ci: the weekly cargo-vet refresh reports the new imports instead of opening a PR; failed workflows file an issue and send mail
+- ci: every GitHub Action pinned to its latest release SHA
+
+## [0.6.46] - 2026-10-29
+
+### Fixed
+
+- daemon: stop journal saves from taking the machine under heavy churn
+- daemon: seed the startup cursor only after the rebuilt cache is written
+- broker: keep a client that connected before ConnectNamedPipe
+- status: report a re-warming drive truthfully and count its promotions
+- cli: wait up to 10 minutes for a search, silently, and name what did not finish
+- deps: rustls 0.23.46, rustls-webpki 0.103.16, ctutils 0.4.6 and the zstd 0.14 line for RUSTSEC advisories
+- lints: give every #[deprecated] the version that deprecated it
+
+### Performance
+
+- daemon: re-warm a parked drive from its cache plus the journal
+- daemon: write saves without copying the index; skip near-empty age saves
+- cache: load caches with one buffer per stage, sized exactly
+
 ## [0.6.45] - 2026-10-13
 
 ### Fixed
@@ -2903,7 +2939,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.45...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.46...HEAD
+[0.6.46]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.45...v0.6.46
 [0.6.45]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.44...v0.6.45
 [0.6.44]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.43...v0.6.44
 [0.6.43]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.42...v0.6.43
